@@ -1,0 +1,19 @@
+# 构建产物
+out
+dist
+
+# 依赖与发布包
+node_modules
+release
+.vscode-test/
+*.vsix
+
+# 缓存与日志
+*.tsbuildinfo
+.eslintcache
+coverage
+*.log
+
+# 系统文件
+.DS_Store
+Thumbs.db
