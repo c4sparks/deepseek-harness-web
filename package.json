@@ -2,7 +2,7 @@
   "name": "deepseek-harness-web",
   "displayName": "DeepSeek Harness Web",
   "description": "DeepSeek Harness 插件",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "publisher": "sparks-dev",
   "icon": "assets/icon.png",
   "engines": {
@@ -12,18 +12,179 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onView:dsh.launcher",
+    "onWebviewView:dsh.launcher",
+    "onCommand:dsh.open"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
+        "command": "dsh.workspace",
+        "title": "工作区",
+        "icon": "$(folder)",
+        "category": "DSH"
+      },
+      {
         "command": "dsh.open",
         "title": "DeepSeek Harness"
+      },
+      {
+        "command": "dsh.applySelected",
+        "title": "用 dsh 处理选中代码",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.askSelected",
+        "title": "用 dsh 提问选中代码",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.sendToDsh",
+        "title": "发送选中代码到 dsh 会话",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.openInBrowser",
+        "title": "在浏览器中打开",
+        "icon": "$(globe)",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.openInEditor",
+        "title": "在本地打开",
+        "icon": "$(desktop-download)",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.reload",
+        "title": "刷新 dsh 页面",
+        "icon": "$(refresh)",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.newSession",
+        "title": "开启新会话",
+        "icon": "$(add)",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.usage",
+        "title": "查看消费记录",
+        "icon": "$(graph-line)",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.closeSidebar",
+        "title": "关闭侧边栏",
+        "icon": "$(eye)",
+        "category": "DSH"
+      },
+      {
+        "command": "dsh.moveToEditor",
+        "title": "移动到编辑器",
+        "icon": "$(open-preview)",
+        "category": "DSH"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "dsh",
+          "title": "DeepSeek Harness",
+          "icon": "assets/icon.png"
+        }
+      ]
+    },
+    "views": {
+      "dsh": [
+        {
+          "id": "dsh.launcher",
+          "name": "DeepSeek Harness",
+          "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "dsh.applySelected",
+          "when": "editorHasSelection",
+          "group": "DSH@1"
+        },
+        {
+          "command": "dsh.askSelected",
+          "when": "editorHasSelection",
+          "group": "DSH@2"
+        },
+        {
+          "command": "dsh.sendToDsh",
+          "when": "editorHasSelection",
+          "group": "DSH@3"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "dsh.workspace",
+          "when": "(view == 'dsh.launcher' || webviewId == 'dsh.launcher')",
+          "group": "navigation@1"
+        },
+        {
+          "command": "dsh.openInBrowser",
+          "when": "(view == 'dsh.launcher' || webviewId == 'dsh.launcher') && dshPanelOpen == true && dshViewMode == 'internal'",
+          "group": "navigation@1"
+        },
+        {
+          "command": "dsh.openInEditor",
+          "when": "(view == 'dsh.launcher' || webviewId == 'dsh.launcher') && (dshPanelOpen == false || dshViewMode == 'browser')",
+          "group": "navigation@1"
+        },
+        {
+          "command": "dsh.reload",
+          "when": "(view == 'dsh.launcher' || webviewId == 'dsh.launcher') && dshPanelOpen == true",
+          "group": "navigation@2"
+        },
+        {
+          "command": "dsh.newSession",
+          "when": "view == 'dsh.launcher' || webviewId == 'dsh.launcher'",
+          "group": "navigation@3"
+        },
+        {
+          "command": "dsh.closeSidebar",
+          "when": "view == 'dsh.launcher' || webviewId == 'dsh.launcher'",
+          "group": "navigation@4"
+        },
+        {
+          "command": "dsh.moveToEditor",
+          "when": "view == 'dsh.launcher' || webviewId == 'dsh.launcher'",
+          "group": "navigation@5"
+        },
+        {
+          "command": "dsh.usage",
+          "when": "view == 'dsh.launcher' || webviewId == 'dsh.launcher'",
+          "group": "1_dsh@6"
+        }
+      ]
+    },
     "configuration": {
       "title": "DeepSeek Harness Web",
       "properties": {
+        "dsh.port": {
+          "type": "number",
+          "default": 0,
+          "description": "指向既有 DSH 实例的端口（>0 时插件只复用该端口，不自动启动；0 = 自动：先探测默认 3080，未运行则自启）"
+        },
+        "dsh.cliPath": {
+          "type": "string",
+          "default": "",
+          "description": "显式 dsh CLI 路径（优先级最高；留空则依次用 dsh.repoPath 源码仓 / PATH 上的 dsh / npx 兜底）"
+        },
+        "dsh.repoPath": {
+          "type": "string",
+          "default": "",
+          "description": "DSH 源码仓库根目录（插件能力基于该仓库，启动方式：在仓库根执行 pnpm dsh web）。留空则回退 PATH 上的 dsh / npx 兜底；开发环境建议写在本仓库 .vscode/settings.json，不随插件发布"
+        },
         "dsh.retainContextWhenHidden": {
           "type": "boolean",
           "default": true,
@@ -34,11 +195,13 @@
   },
   "scripts": {
     "vscode:prepublish": "pnpm run package",
-    "compile": "pnpm run check-types && pnpm run lint && node esbuild.js",
+    "compile": "pnpm run check-types && pnpm run lint && pnpm run build:chat && node esbuild.js",
+    "build:chat": "node scripts/build-chat.mjs",
+    "vsix": "node -e \"require('fs').mkdirSync('release',{recursive:true})\" && npx --yes @vscode/vsce@latest package --allow-missing-repository -o \"release/deepseek-harness-web.vsix\"",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "pnpm run check-types && pnpm run lint && node esbuild.js --production",
+    "package": "pnpm run check-types && pnpm run lint && pnpm run build:chat && node esbuild.js --production",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "pnpm run compile-tests && pnpm run compile && pnpm run lint",

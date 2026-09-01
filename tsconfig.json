@@ -1,4 +1,7 @@
 {
+    "include": [
+        "src"
+    ],
     "compilerOptions": {
         "module": "NodeNext",
         "target": "ES2023",

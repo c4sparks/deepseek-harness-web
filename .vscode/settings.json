@@ -9,5 +9,7 @@
         "dist": true // set this to false to include "dist" folder in search results
     },
     // Turn off tsc task auto detection since we have the necessary tasks as npm scripts
-    "js/ts.tsc.autoDetect": "off"
+    "js/ts.tsc.autoDetect": "off",
+    // 开发环境专用：指向本机 DSH 源码仓（不随插件发布；发布版默认走 PATH dsh / npx 兜底）
+    "dsh.repoPath": "E:\\workspace\\github_project\\AI\\other_dsh_plugins\\0.1.2-alpha.3\\deepseek-harness"
 }

@@ -1,2 +1,6 @@
+packages:
+  - .
+  - webview/chat
+
 allowBuilds:
   esbuild: true
