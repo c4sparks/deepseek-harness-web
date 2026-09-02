@@ -835,7 +835,10 @@ export function activate(context: vscode.ExtensionContext) {
     );
 }
 
-// 扩展停用时回收后台进程
+// 扩展停用/被卸载前收尾：先关掉自己开的 Webview（避免宿主在卸载时解析已移除扩展的
+// extensionId 报错），再回收后台进程
 export function deactivate() {
+    chatPanel?.dispose();
+    chatPanel = undefined;
     dsh.dispose();
 }

@@ -367,9 +367,13 @@ export class DshService {
         }
     }
 
-    /** 扩展停用时回收后台进程 */
+    /** 扩展停用时收尾：先关掉本服务打开的所有 Webview 面板，再回收后台进程 */
     dispose(): void {
         this.ready = false;
+        for (const p of [...this.openPanels]) {
+            p.dispose();
+        }
+        this.openPanels.clear();
         this.killDshIfOwned();
     }
 

@@ -24,7 +24,7 @@
 
 - 当前支持平台：VS Code
 - Node.js 22.19+（或 24+）
-- VS Code 1.111.0+
+- VS Code 1.110.0+（兼容 sidex）
 
 ## 版本兼容
 
