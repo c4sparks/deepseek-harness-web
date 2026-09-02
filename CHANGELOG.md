@@ -3,6 +3,12 @@
 All notable changes to the "deepseek-harness-web" extension will be documented in this file.
 
 
+## [0.1.2] - 2026-09-03
+
+### 修复
+
+- **标题栏/视图命令**：激活事件调整
+
 ## [0.1.1] - 2026-09-03
 
 ### 新增
