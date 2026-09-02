@@ -199,6 +199,70 @@ async function rpcCallAt<T = unknown>(port: number, method: string, payload: unk
     });
 }
 
+/** 执行斜杠命令的返回（commands/execute 成功值；未匹配命令时整个 value 为 undefined） */
+export interface DshCommandExec {
+    commandId?: string;
+    result?: { kind?: 'success' | 'error'; text?: string };
+}
+
+/**
+ * 执行一条斜杠命令（如 /permission workspace-write）。
+ * 注意：命令远程是「namespace/method」斜杠端点 + `args` 包装（agentId 作用域），
+ * 与普通会话/工作区那种「点号 + 平铺 payload」的旧端点不同，故单独实现。
+ */
+export async function runSessionCommand(sessionId: string, line: string): Promise<DshCommandExec | undefined> {
+    const method = 'commands/execute';
+    const body: RpcRequest = {
+        type: 'client-request',
+        rpcId: crypto.randomUUID(),
+        method,
+        payload: { args: { agentId: sessionId, line, images: [] } },
+    };
+    const json = JSON.stringify(body);
+    return new Promise<DshCommandExec | undefined>((resolve, reject) => {
+        const req = http.request(
+            {
+                host: '127.0.0.1',
+                port: currentEndpoint.port,
+                path: `/api/${method}`,
+                method: 'POST',
+                headers: { 'content-type': 'application/json', host: `127.0.0.1:${currentEndpoint.port}` },
+                timeout: RPC_TIMEOUT_MS,
+            },
+            (res) => {
+                let data = '';
+                res.on('data', (chunk) => (data += chunk));
+                res.on('end', () => {
+                    if (res.statusCode !== 200) {
+                        reject(new Error(`DSH 接口 ${method} 失败：HTTP ${res.statusCode}`));
+                        return;
+                    }
+                    let parsed: RpcResponse<DshCommandExec | undefined>;
+                    try {
+                        parsed = JSON.parse(data) as RpcResponse<DshCommandExec | undefined>;
+                    } catch {
+                        reject(new Error(`DSH 接口 ${method} 返回了非 JSON 内容`));
+                        return;
+                    }
+                    if (parsed.result.ok) {
+                        resolve(parsed.result.value);
+                    } else {
+                        reject(new DshRpcError(method, parsed.result.error));
+                    }
+                });
+            }
+        );
+        req.on('error', (err) =>
+            reject(new Error(`无法连接 DSH 服务（${endpointBaseUrl({ port: currentEndpoint.port })}）：${err.message}。请先打开「DeepSeek Harness」面板启动服务`))
+        );
+        req.on('timeout', () => {
+            req.destroy();
+            reject(new Error(`DSH 接口 ${method} 请求超时`));
+        });
+        req.end(json);
+    });
+}
+
 // ---------- 握手探测（P0-2） ----------
 
 /** 探测结果 */
@@ -706,7 +770,9 @@ export interface DshReplyStats {
     inputTokens?: number;
     outputTokens?: number;
     cacheReadTokens?: number;
+    cacheWriteTokens?: number;
     reasoningTokens?: number;
+    totalTokens?: number;
     steps?: number;
 }
 

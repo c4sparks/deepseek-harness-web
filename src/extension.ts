@@ -10,9 +10,6 @@ import { type DshContentPart, type DshReplyStats } from './dshApi';
 // 服务实例（UI 层唯一依赖）
 const dsh = new DshService();
 
-/** 需要弹窗警告确认后才能切换的危险权限预设（value 集合） */
-const DANGEROUS_PERMS = new Set<string>(['danger-full-access']);
-
 // 侧边栏对话视图引用（右键 @ 代码进输入框用）
 let launcherView: vscode.WebviewView | undefined;
 let pendingDraft: string | undefined;
@@ -115,13 +112,15 @@ function getChatContent(): string {
 </html>`;
 }
 
-/** 单条消费记录 */
+/** 单条消费记录：字段按 dsh 返回原样存（未返回则为空，不补 0） */
 interface UsageRecord {
     time: number;
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadTokens: number;
-    reasoningTokens: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+    reasoningTokens?: number;
+    totalTokens?: number;
 }
 
 /** 记录一次对话的消费到持久化存储 */
@@ -132,17 +131,19 @@ async function recordUsage(state: vscode.Memento, stats: DshReplyStats | undefin
     const key = 'dsh.usage';
     const record: UsageRecord = {
         time: Date.now(),
-        inputTokens: stats.inputTokens ?? 0,
-        outputTokens: stats.outputTokens ?? 0,
-        cacheReadTokens: stats.cacheReadTokens ?? 0,
-        reasoningTokens: stats.reasoningTokens ?? 0,
+        inputTokens: stats.inputTokens,
+        outputTokens: stats.outputTokens,
+        cacheReadTokens: stats.cacheReadTokens,
+        cacheWriteTokens: stats.cacheWriteTokens,
+        reasoningTokens: stats.reasoningTokens,
+        totalTokens: stats.totalTokens,
     };
     const existing = state.get<UsageRecord[]>(key) ?? [];
     const next = [...existing, record].slice(-500);
     await state.update(key, next);
 }
 
-/** 打开消费记录报告面板（弹窗展示） */
+/** 打开消费记录报告面板：按自然周/月分组、可折叠（原样展示 dsh 字段，未返回显示 —） */
 async function openUsageReport(state: vscode.Memento): Promise<void> {
     const records = state.get<UsageRecord[]>('dsh.usage') ?? [];
     const panel = vscode.window.createWebviewPanel(
@@ -151,27 +152,126 @@ async function openUsageReport(state: vscode.Memento): Promise<void> {
         vscode.ViewColumn.Beside,
         { enableScripts: false }
     );
-    const total = records.reduce(
-        (a, r) => ({
-            i: a.i + r.inputTokens,
-            o: a.o + r.outputTokens,
-            c: a.c + r.cacheReadTokens,
-            r: a.r + r.reasoningTokens,
-        }),
-        { i: 0, o: 0, c: 0, r: 0 }
-    );
-    let rows: string;
-    if (records.length === 0) {
-        rows = '<tr><td colspan="5" style="text-align:center;color:#888">暂无记录</td></tr>';
-    } else {
-        rows = [...records]
-            .reverse()
-            .map(
-                (r) =>
-                    `<tr><td>${new Date(r.time).toLocaleString()}</td><td>${r.inputTokens}</td><td>${r.outputTokens}</td><td>${r.cacheReadTokens}</td><td>${r.reasoningTokens}</td></tr>`
-            )
-            .join('');
+
+    // ---- 本地自然日/周/月分组 ----
+    const now = new Date();
+    const DAY = 86_400_000;
+    const dayStart = (d: Date): number => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const mondayStart = (d: Date): number => {
+        const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+        return x.getTime();
+    };
+    const todayStart = dayStart(now);
+    const curWeekStart = mondayStart(now);
+    const prevWeekStart = curWeekStart - 7 * DAY;
+    const curMonthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime();
+    const bucketOf = (t: number): string => {
+        if (t >= todayStart) {
+            return '今天';
+        }
+        if (t >= todayStart - DAY) {
+            return '昨天';
+        }
+        if (t >= curWeekStart) {
+            return '本周';
+        }
+        if (t >= prevWeekStart) {
+            return '上周';
+        }
+        if (t >= prevMonthStart && t < curMonthStart) {
+            return '上个月';
+        }
+        return '更早';
+    };
+    const groups = new Map<string, UsageRecord[]>();
+    for (const r of records) {
+        const lb = bucketOf(r.time);
+        const arr = groups.get(lb) ?? [];
+        arr.push(r);
+        groups.set(lb, arr);
     }
+    const ORDER = ['今天', '昨天', '本周', '上周', '上个月', '更早'];
+
+    const fmt = (v: number | undefined): string => (typeof v === 'number' ? String(v) : '—');
+    // 大数缩写（仅用于汇总行）：≥1e3 → 1.0K、≥1e6 → 1.2M，更大 → G/T；<1000 显示原值
+    const compact = (n: number): string => {
+        const abs = Math.abs(n);
+        if (abs < 1000) {
+            return String(n);
+        }
+        const table: Array<[number, string]> = [
+            [1e12, 'T'],
+            [1e9, 'G'],
+            [1e6, 'M'],
+            [1e3, 'K'],
+        ];
+        for (const [base, unit] of table) {
+            if (abs >= base) {
+                return (n / base).toFixed(1) + unit;
+            }
+        }
+        return String(n);
+    };
+    const sum = (k: 'inputTokens' | 'outputTokens' | 'cacheReadTokens' | 'cacheWriteTokens' | 'reasoningTokens' | 'totalTokens'): number =>
+        records.reduce((a, r) => a + (typeof r[k] === 'number' ? (r[k] as number) : 0), 0);
+    const anyOf = (k: 'cacheWriteTokens' | 'totalTokens'): boolean => records.some((r) => typeof r[k] === 'number');
+    const hasCacheWrite = anyOf('cacheWriteTokens');
+    const hasTotal = anyOf('totalTokens');
+    const summary = [
+        `<strong>${records.length} 条对话</strong>`,
+        `总输入 ${compact(sum('inputTokens'))}`,
+        `总输出 ${compact(sum('outputTokens'))}`,
+        `缓存读 ${compact(sum('cacheReadTokens'))}`,
+        hasCacheWrite ? `缓存写 ${compact(sum('cacheWriteTokens'))}` : '',
+        `推理 ${compact(sum('reasoningTokens'))}`,
+        hasTotal ? `合计(totalTokens) ${compact(sum('totalTokens'))}` : '',
+    ]
+        .filter(Boolean)
+        .join(' · ');
+
+    const rowHtml = (r: UsageRecord): string =>
+        `<tr><td>${new Date(r.time).toLocaleString()}</td><td>${fmt(r.inputTokens)}</td><td>${fmt(r.outputTokens)}</td>` +
+        `<td>${fmt(r.cacheReadTokens)}</td><td>${hasCacheWrite ? fmt(r.cacheWriteTokens) : '—'}</td>` +
+        `<td>${fmt(r.reasoningTokens)}</td><td>${hasTotal ? fmt(r.totalTokens) : '—'}</td></tr>`;
+    const thead =
+        '<tr><th>时间</th><th>输入</th><th>输出</th><th>缓存读</th><th>缓存写</th><th>推理</th><th>合计(totalTokens)</th></tr>';
+
+    // 每组内的汇总（只统计该组里真实返回过的数字字段）
+    const grpSumOf = (items: UsageRecord[], k: 'inputTokens' | 'outputTokens' | 'cacheReadTokens' | 'cacheWriteTokens' | 'reasoningTokens' | 'totalTokens'): number =>
+        items.reduce((a, r) => a + (typeof r[k] === 'number' ? (r[k] as number) : 0), 0);
+    const grpStats = (items: UsageRecord[]): string => {
+        const hasCW = items.some((r) => typeof r.cacheWriteTokens === 'number');
+        const hasTT = items.some((r) => typeof r.totalTokens === 'number');
+        return [
+            `总输入 ${compact(grpSumOf(items, 'inputTokens'))}`,
+            `总输出 ${compact(grpSumOf(items, 'outputTokens'))}`,
+            `缓存读 ${compact(grpSumOf(items, 'cacheReadTokens'))}`,
+            hasCW ? `缓存写 ${compact(grpSumOf(items, 'cacheWriteTokens'))}` : '',
+            `推理 ${compact(grpSumOf(items, 'reasoningTokens'))}`,
+            hasTT ? `合计(totalTokens) ${compact(grpSumOf(items, 'totalTokens'))}` : '',
+        ]
+            .filter(Boolean)
+            .join(' · ');
+    };
+
+    const sections = records.length === 0
+        ? '<div class="empty">暂无记录</div>'
+        : ORDER
+              .filter((lb) => groups.has(lb))
+              .map((lb, idx) => {
+                  const items = (groups.get(lb) ?? []).slice().reverse();
+                  return (
+                      `<details class="grp" ${idx === 0 ? 'open' : ''}>` +
+                      `<summary>${lb} · ${items.length} 条` +
+                      `<span class="grp-stat">${grpStats(items)} tok</span></summary>` +
+                      `<table>${thead}${items.map(rowHtml).join('')}</table>` +
+                      `</details>`
+                  );
+              })
+              .join('');
+
     panel.webview.html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -179,18 +279,25 @@ async function openUsageReport(state: vscode.Memento): Promise<void> {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
 <style>
     body { font-family: var(--vscode-font-family, sans-serif); padding: 12px; color: var(--vscode-foreground, #ddd); font-size: 13px; }
-    h1 { font-size: 15px; margin: 0 0 8px; }
+    h1 { font-size: 15px; margin: 0 0 4px; }
+    .note { font-size: 11px; color: var(--vscode-descriptionForeground, #888); margin: 0 0 8px; }
     .summary { margin: 8px 0; }
-    table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    th, td { border: 1px solid rgba(255,255,255,0.12); padding: 4px 8px; text-align: right; }
+    .empty { color: var(--vscode-descriptionForeground, #888); font-size: 12px; }
+    .grp { border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.12)); border-radius: 8px; margin: 6px 0; overflow: hidden; }
+    .grp summary { cursor: pointer; padding: 6px 10px; font-weight: 600; user-select: none; background: rgba(255,255,255,0.04); }
+    .grp summary:hover { background: rgba(255,255,255,0.08); }
+    .grp-stat { font-weight: normal; font-size: 11px; color: var(--vscode-descriptionForeground, #888); margin-left: 12px; }
+    .grp table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { border-top: 1px solid rgba(255,255,255,0.08); padding: 4px 8px; text-align: right; }
     th:first-child, td:first-child { text-align: left; }
-    th { background: rgba(255,255,255,0.06); }
+    th { background: rgba(255,255,255,0.05); }
 </style>
 </head>
 <body>
 <h1>消费记录</h1>
-<div class="summary"><strong>${records.length} 条对话</strong> · 总输入 ${total.i} · 总输出 ${total.o} · 缓存 ${total.c} · 推理 ${total.r} tok</div>
-<table><tr><th>时间</th><th>输入 tok</th><th>输出 tok</th><th>缓存 tok</th><th>推理 tok</th></tr>${rows}</table>
+<div class="note">仅统计本插件发起的对话（侧边栏 / 右键处理）。在 dsh 网页 / 桌面里使用产生的用量不在其中，因此可能与你的总用量不一致。</div>
+<div class="summary">${summary} tok</div>
+${sections}
 </body>
 </html>`;
 }
@@ -229,13 +336,15 @@ async function loadChatHtml(webview: vscode.Webview, extensionUri: vscode.Uri): 
 /** 拉取会话官方投影（统计/权限）+ 模型列表，推给 webview */
 async function postChatInfo(webview: vscode.Webview): Promise<void> {
     try {
-        const projections = await dsh.getProjections();
+        // 先列模型（内部会经 getSession() 确保当前会话存在），再读投影，
+        // 否则第一次推送时会话尚未建立、permissions/统计会为空
         let models: { current?: unknown; groups?: unknown[] } = {};
         try {
             models = await dsh.listModels();
         } catch {
-            // 模型列表失败不阻塞统计
+            // 模型列表失败不阻塞投影
         }
+        const projections = await dsh.getProjections();
         void webview.postMessage({ type: 'chatInfo', projections, models });
     } catch {
         // 服务未就绪时静默
@@ -254,15 +363,16 @@ function setupChatWebview(
     };
     chatTarget = webview;
     void loadChatHtml(webview, extensionUri);
-    // 打开视图即确保 DSH 运行 + 解析文件夹工作区；工作区/会话/统计彼此独立推送，互不阻塞
+    // 打开视图即确保 DSH 运行 + 当前工作区；chatInfo（权限/模型/统计）推送
+    // 改由 webview 的 ready 触发，避免页面 JS 未就绪时 postMessage 丢失
     void (async () => {
         try {
             await dsh.ensureRunning();
-            await dsh.ensureWorkspaceForFolder();
+            // 与 dsh 一致：当前工作区取 dsh 持久化数据里 updatedAt 最新的（不覆盖手动切换、不另存）
+            await dsh.ensureCurrentWorkspace();
         } catch {
             // 服务不可用：后续命令会再触发
         }
-        await Promise.allSettled([postChatInfo(webview)]);
     })();
     // 右键 @代码 草稿补投
     if (pendingDraft) {
@@ -275,7 +385,23 @@ function setupChatWebview(
         void webview.postMessage(msg);
     };
 
+    // 握手：等页面脚本就绪后再推一次 chatInfo（避免重建/切回视图时数据丢失）
+    let chatInfoPushed = false;
+
     webview.onDidReceiveMessage((msg) => {
+        if (msg.type === 'ready' && !chatInfoPushed) {
+            chatInfoPushed = true;
+            void (async () => {
+                try {
+                    await dsh.ensureRunning();
+                    await dsh.ensureCurrentWorkspace();
+                } catch {
+                    // 服务不可用：后续操作再触发
+                }
+                await postChatInfo(webview);
+            })();
+            return;
+        }
         if (msg.type === 'chatSend') {
             const g = gen.n;
             void (async () => {
@@ -410,21 +536,12 @@ function setupChatWebview(
         } else if (msg.type === 'chatSelectPermission') {
             void (async () => {
                 try {
-                    // 危险权限（如完全访问）需弹窗警告确认
-                    if (DANGEROUS_PERMS.has(msg.preset)) {
-                        const choice = await vscode.window.showWarningMessage(
-                            `切换到「完全访问」（${msg.preset}）将允许 dsh 无审批地访问本机文件与执行命令。确定切换？`,
-                            { modal: true },
-                            '确定切换',
-                            '取消'
-                        );
-                        if (choice !== '确定切换') {
-                            return;
-                        }
-                    }
+                    // 危险权限（如 danger-full-access）的确认已由聊天 UI 自绘弹窗完成
                     await dsh.setPermissionPreset(msg.preset);
+                    // 等权限投影落定后再刷新（commands.execute 返回后事件已入账，稍等一拍更稳）
+                    await new Promise((r) => setTimeout(r, 300));
                     await postChatInfo(webview);
-                    vscode.window.showInformationMessage(`已切换权限：${msg.preset}`);
+                    vscode.window.showInformationMessage(`切换至: ${msg.preset}`);
                 } catch (e) {
                     vscode.window.showErrorMessage((e as Error).message);
                 }
@@ -569,110 +686,199 @@ async function runDshTask(prompt: string, ctx: SelectionContext, mode: 'apply' |
 // ---------- 标题栏"工作区"面板 ----------
 
 type WsPick = vscode.QuickPickItem & {
-    action?: 'info' | 'workspace' | 'new' | 'session';
+    action?: 'info' | 'ws' | 'wsnew' | 'session' | 'new';
     workspaceId?: string;
     sessionId?: string;
 };
 
 /**
- * 标题栏"工作区"面板：显示当前工作区、列出全部工作区（切换）、新建工作区、
- * 以及当前工作区的会话（恢复历史）。工作区在面板顶部显示"工作区：xxx"。
+ * 标题栏"工作区"面板：可展开/折叠的树。
+ * 每个工作区一行，前面带折叠图标（▶ 折叠 / ▼ 展开）；展开后在其下方列出
+ * 该工作区的会话（点会话=切到该工作区并恢复），并提供"在此工作区新开会话"。
+ * 顶部显示当前工作区；底部可新建工作区。Esc / 失焦关闭。
  */
 async function showWorkspacePicker(): Promise<void> {
     if (!(await dsh.ensureRunning())) {
         return;
     }
     try {
-        await dsh.ensureWorkspaceForFolder();
+        // 与 dsh 一致：取 dsh 持久化里 updatedAt 最新的工作区，不再强制绑回当前文件夹
+        await dsh.ensureCurrentWorkspace();
     } catch {
         // 忽略：仍可展示已列出的工作区
     }
-    const list = await dsh.listWorkspaces();
-    const workspaces = list.items ?? [];
-    const currentId = dsh.getCurrentWorkspaceId();
-    const curWs = workspaces.find((w) => w.workspaceId === currentId);
-    const sessions = currentId ? await dsh.listWorkspaceSessions(currentId) : [];
 
-    const items: WsPick[] = [
-        {
-            label: `$(folder-opened) 工作区：${curWs?.title || curWs?.path || '未分组'}`,
-            description: currentId ? '当前' : '未选择',
-            action: 'info',
-            alwaysShow: true,
-        },
-        { label: '工作区', kind: vscode.QuickPickItemKind.Separator },
-    ];
-    for (const w of workspaces) {
-        const isCurrent = w.workspaceId === currentId;
-        items.push({
-            label: `${isCurrent ? '$(check) ' : ''}${w.title || w.path}`,
-            description: isCurrent ? '当前' : w.path,
-            action: 'workspace',
-            workspaceId: w.workspaceId,
-            alwaysShow: true,
-        });
-    }
-    items.push({ label: '$(new-folder) ＋ 新建工作区…', action: 'new', alwaysShow: true });
-
-    if (sessions.length > 0) {
-        items.push({
-            label: `恢复会话（${curWs?.title || '当前工作区'}）`,
-            kind: vscode.QuickPickItemKind.Separator,
-        });
-        for (const s of sessions) {
-            items.push({
-                label: `${s.running ? '$(sync~spin) ' : '$(history) '}${s.title}`,
-                description: s.running ? '运行中' : '',
-                action: 'session',
-                sessionId: s.sessionId,
-            });
-        }
-    }
-
-    const pick = await vscode.window.showQuickPick(items, {
-        placeHolder: '选择工作区 / 新建工作区 / 恢复会话',
-        matchOnDescription: true,
-    });
-    if (!pick || !pick.action) {
-        return;
-    }
+    let workspaces: Array<{ workspaceId: string; path: string; title: string; sessionIds: string[] }> = [];
     try {
-        if (pick.action === 'workspace' && pick.workspaceId) {
-            dsh.setCurrentWorkspace(pick.workspaceId);
-            await dsh.newSession(pick.workspaceId);
-            chatTarget?.postMessage({ type: 'clear' });
-            if (chatTarget) {
-                void postChatInfo(chatTarget);
-            }
-            vscode.window.showInformationMessage('已切换工作区');
-        } else if (pick.action === 'new') {
-            const picked = await vscode.window.showOpenDialog({
-                canSelectFolders: true,
-                openLabel: '作为 dsh 工作区',
-            });
-            if (!picked || picked.length === 0) {
-                return;
-            }
-            const dir = picked[0].fsPath;
-            const created = await dsh.createWorkspace(dir);
-            dsh.setCurrentWorkspace(created.workspace.workspaceId);
-            await dsh.newSession(created.workspace.workspaceId);
-            chatTarget?.postMessage({ type: 'clear' });
-            if (chatTarget) {
-                void postChatInfo(chatTarget);
-            }
-            vscode.window.showInformationMessage(`已新建并切换到工作区：${created.workspace.title || dir}`);
-        } else if (pick.action === 'session' && pick.sessionId) {
-            const messages = await dsh.restoreSession(pick.sessionId);
-            chatTarget?.postMessage({ type: 'clear' });
-            chatTarget?.postMessage({ type: 'chatHistory', messages, sessionId: pick.sessionId });
-            if (chatTarget) {
-                void postChatInfo(chatTarget);
-            }
-        }
+        workspaces = (await dsh.listWorkspaces()).items ?? [];
     } catch (e) {
         vscode.window.showErrorMessage((e as Error).message);
+        return;
     }
+
+    const expanded = new Set<string>();
+    const sessionCache = new Map<string, Array<{ sessionId: string; title: string; running: boolean }>>();
+    const pick = vscode.window.createQuickPick<WsPick>();
+    pick.placeholder = '展开工作区查看会话；点会话恢复历史';
+    pick.matchOnDescription = true;
+    pick.matchOnDetail = true;
+
+    let disposed = false;
+    const close = (): void => {
+        if (!disposed) {
+            disposed = true;
+            pick.dispose();
+        }
+    };
+    pick.onDidHide(close);
+
+    const currentId = (): string | undefined => dsh.getCurrentWorkspaceId();
+
+    /** UI 展示用名称：只显示最后一级路径名（title 缺省即 basename）；全路径不进 UI */
+    const displayName = (w: { path: string; title: string }): string => w.title || path.basename(w.path);
+
+    function buildRows(): WsPick[] {
+        const curId = currentId();
+        const curWs = workspaces.find((w) => w.workspaceId === curId);
+        const rows: WsPick[] = [
+            {
+                label: `$(folder-opened) 工作区：${curWs ? displayName(curWs) : '未分组'}`,
+                description: curId ? '当前' : '未选择',
+                action: 'info',
+                alwaysShow: true,
+            },
+            { label: '工作区', kind: vscode.QuickPickItemKind.Separator },
+        ];
+        for (const w of workspaces) {
+            const isCurrent = w.workspaceId === curId;
+            const open = expanded.has(w.workspaceId);
+            rows.push({
+                label: `${open ? '$(chevron-down)' : '$(chevron-right)'} ${isCurrent ? '$(check) ' : ''}${displayName(w)}`,
+                description: isCurrent ? '当前' : undefined,
+                action: 'ws',
+                workspaceId: w.workspaceId,
+                alwaysShow: true,
+            });
+            if (!open) {
+                continue;
+            }
+            rows.push({
+                label: '    $(add) 在此工作区新开会话',
+                description: isCurrent ? '' : '切换到此工作区',
+                action: 'wsnew',
+                workspaceId: w.workspaceId,
+                alwaysShow: true,
+            });
+            const sessions = sessionCache.get(w.workspaceId);
+            if (sessions) {
+                for (const s of sessions) {
+                    rows.push({
+                        label: `        ${s.running ? '$(sync~spin) ' : '$(history) '}${s.title}`,
+                        description: s.running ? '运行中' : '恢复',
+                        action: 'session',
+                        workspaceId: w.workspaceId,
+                        sessionId: s.sessionId,
+                        alwaysShow: true,
+                    });
+                }
+            }
+        }
+        rows.push({ label: '$(new-folder) ＋ 新建工作区…', action: 'new', alwaysShow: true });
+        return rows;
+    }
+
+    const refresh = (): void => {
+        pick.items = buildRows();
+    };
+
+    const loadSessions = async (id: string): Promise<void> => {
+        if (sessionCache.has(id)) {
+            return;
+        }
+        pick.busy = true;
+        try {
+            sessionCache.set(id, await dsh.listWorkspaceSessions(id));
+        } catch {
+            sessionCache.set(id, []);
+        } finally {
+            pick.busy = false;
+        }
+    };
+
+    const switchWsNew = async (id: string): Promise<void> => {
+        dsh.setCurrentWorkspace(id);
+        await dsh.newSession(id);
+        chatTarget?.postMessage({ type: 'clear' });
+        if (chatTarget) {
+            void postChatInfo(chatTarget);
+        }
+        vscode.window.showInformationMessage('已切换工作区');
+    };
+
+    const restoreInto = async (wsId: string, sessionId: string): Promise<void> => {
+        dsh.setCurrentWorkspace(wsId);
+        const messages = await dsh.restoreSession(sessionId);
+        chatTarget?.postMessage({ type: 'clear' });
+        chatTarget?.postMessage({ type: 'chatHistory', messages, sessionId });
+        if (chatTarget) {
+            void postChatInfo(chatTarget);
+        }
+    };
+
+    const createNew = async (): Promise<boolean> => {
+        const picked = await vscode.window.showOpenDialog({
+            canSelectFolders: true,
+            openLabel: '作为 dsh 工作区',
+        });
+        if (!picked || picked.length === 0) {
+            return false;
+        }
+        const dir = picked[0].fsPath;
+        const created = await dsh.createWorkspace(dir);
+        dsh.setCurrentWorkspace(created.workspace.workspaceId);
+        await dsh.newSession(created.workspace.workspaceId);
+        chatTarget?.postMessage({ type: 'clear' });
+        if (chatTarget) {
+            void postChatInfo(chatTarget);
+        }
+        vscode.window.showInformationMessage(`已新建并切换到工作区：${created.workspace.title || path.basename(dir)}`);
+        return true;
+    };
+
+    pick.onDidChangeSelection(async (selection) => {
+        const row = selection[0];
+        if (!row?.action) {
+            return;
+        }
+        try {
+            if (row.action === 'ws' && row.workspaceId) {
+                const id = row.workspaceId;
+                if (expanded.has(id)) {
+                    expanded.delete(id);
+                } else {
+                    expanded.add(id);
+                    refresh();
+                    await loadSessions(id);
+                }
+                refresh();
+            } else if (row.action === 'wsnew' && row.workspaceId) {
+                await switchWsNew(row.workspaceId);
+                close();
+            } else if (row.action === 'session' && row.workspaceId && row.sessionId) {
+                await restoreInto(row.workspaceId, row.sessionId);
+                close();
+            } else if (row.action === 'new') {
+                if (await createNew()) {
+                    close();
+                }
+            }
+        } catch (e) {
+            vscode.window.showErrorMessage((e as Error).message);
+        }
+    });
+
+    refresh();
+    pick.show();
 }
 
 // ---------- 激活入口（薄装配） ----------

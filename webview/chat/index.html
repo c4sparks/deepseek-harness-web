@@ -96,18 +96,22 @@
     width: 22px; height: 22px; border: none; background: none;
     color: var(--vscode-foreground, #ddd); cursor: pointer; border-radius: 4px;
     display: inline-flex; align-items: center; justify-content: center; padding: 0;
+    flex: none;
   }
   #attach svg, #permBtn svg, #modelBtn svg { display: block; }
   #attach:hover { background: rgba(255,255,255,0.1); }
   #permBtn, #modelBtn { font-size: 15px; line-height: 1; }
   #permBtn:hover, #modelBtn:hover { background: rgba(255,255,255,0.1); }
   #permBtn.active, #modelBtn.active { background: rgba(255,255,255,0.14); }
-  /* 图标 + 选择文字作为一个紧凑单元（图标与文字紧贴，组间保持 inputbar 间距） */
-  .sel-group { display: inline-flex; align-items: center; gap: 3px; }
+  /* 图标 + 选择文字作为一个紧凑单元；窄面板可收缩/换行，避免把右侧按钮挤出可视区 */
+  #composer, #inputbox, #inputbar { min-width: 0; }
+  .sel-group { display: inline-flex; align-items: center; gap: 3px; flex: 0 1 auto; min-width: 0; }
   .sel-label {
     font-size: 11px; color: var(--vscode-descriptionForeground, #888);
-    max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    min-width: 0; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  /* 模型标签：宽裕时完整显示，随面板变窄单行收缩并出省略号（不竖排、不横向溢出） */
+  #modelLabel { max-width: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   /* 图标点击后向上展开的选择面板 */
   .popup {
@@ -136,6 +140,7 @@
     width: 24px; height: 24px; border-radius: 50%; border: none;
     background: var(--vscode-button-background, #0e639c); color: var(--vscode-button-foreground, #fff);
     font-size: 14px; line-height: 1; cursor: pointer;
+    flex: none;
   }
   #send:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
   #send:disabled { opacity: 0.4; cursor: default; }
@@ -281,6 +286,76 @@
     color: var(--vscode-foreground, #ddd); font-size: 11px; cursor: pointer;
     border: 1px solid rgba(255,255,255,0.3);
   }
+
+  /* ---------- 通用弹窗（modal）：本插件所有确认/提示类弹层统一复用此样式 ---------- */
+  .modal {
+    position: fixed; inset: 0; z-index: 100;
+    display: flex; align-items: center; justify-content: center;
+    padding: 18px; background: rgba(0, 0, 0, 0.35);
+  }
+  .modal.hidden { display: none; }
+  .modal-card {
+    width: 100%; max-width: 300px;
+    background: var(--vscode-editor-background, #252526);
+    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.15));
+    border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+    padding: 14px; display: flex; flex-direction: column; gap: 12px;
+  }
+  .modal-head { display: flex; gap: 10px; align-items: flex-start; }
+  .modal-icon {
+    flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid transparent;
+  }
+  .modal-icon--warn { color: #ffc107; background: rgba(255, 193, 7, 0.14); border-color: rgba(255, 193, 7, 0.35); }
+  .modal-icon--info { color: #4daafc; background: rgba(77, 170, 252, 0.12); border-color: rgba(77, 170, 252, 0.35); }
+  .modal-title { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .modal-sub { font-size: 11px; color: var(--vscode-descriptionForeground, #888); }
+  .modal-code {
+    font-size: 12px; word-break: break-all;
+    background: var(--vscode-input-background, #1e1e1e);
+    border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.15));
+    border-radius: 6px; padding: 6px 9px;
+    font-family: var(--vscode-editor-font-family, monospace);
+  }
+  .modal-code.hidden { display: none; }
+  .modal-body { font-size: 12px; line-height: 1.55; color: var(--vscode-foreground, #ddd); }
+  .modal-ack {
+    display: flex; align-items: flex-start; gap: 6px;
+    font-size: 12px; color: var(--vscode-foreground, #ddd); cursor: pointer;
+  }
+  .modal-ack input { margin-top: 2px; accent-color: var(--vscode-focusBorder, #4daafc); }
+  .modal-ack.hidden { display: none; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .btn {
+    border-radius: 6px; padding: 5px 14px; font-size: 12px; cursor: pointer;
+    font-family: inherit;
+  }
+  .btn-ghost {
+    background: none; color: var(--vscode-foreground, #ddd);
+    border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.22));
+  }
+  .btn-ghost:hover { background: rgba(255,255,255,0.08); }
+  .btn-primary {
+    background: var(--vscode-button-background, #0e639c);
+    color: var(--vscode-button-foreground, #fff); border: 1px solid transparent;
+  }
+  .btn-primary:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
+  .btn-danger {
+    background: #d13438; /* 固定深红：浅色/深色主题都醒目 */
+    color: #fff;
+    border: 1px solid transparent;
+  }
+  .btn-danger:hover { background: #b52e31; }
+  .btn:disabled { opacity: 0.45; cursor: default; }
+  .modal button:focus-visible { outline: 1px solid var(--vscode-focusBorder, #4daafc); outline-offset: 1px; }
+  @media (prefers-reduced-motion: no-preference) {
+    .modal-card { animation: dsh-modal-in 0.16s ease-out; }
+  }
+  @keyframes dsh-modal-in {
+    from { transform: translateY(6px) scale(0.98); opacity: 0; }
+    to { transform: none; opacity: 1; }
+  }
 </style>
 </head>
 <body>
@@ -322,6 +397,29 @@
   </div>
 
   <div id="statsbar"></div>
+
+  <!-- 通用弹窗（dshModal：插件内所有确认/提示弹层，见 modal.ts 用法） -->
+  <div id="dshModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="dshModalTitle">
+    <div class="modal-card">
+      <div class="modal-head">
+        <span id="dshModalIcon" class="modal-icon modal-icon--info" aria-hidden="true"></span>
+        <div>
+          <div id="dshModalTitle" class="modal-title"></div>
+          <div id="dshModalSub" class="modal-sub"></div>
+        </div>
+      </div>
+      <div id="dshModalCode" class="modal-code hidden"></div>
+      <div id="dshModalBody" class="modal-body"></div>
+      <label id="dshModalAck" class="modal-ack hidden">
+        <input id="dshModalAckCheck" type="checkbox" />
+        <span id="dshModalAckText"></span>
+      </label>
+      <div class="modal-actions">
+        <button id="dshModalCancel" class="btn btn-ghost" type="button">Cancel</button>
+        <button id="dshModalOk" class="btn btn-primary" type="button"></button>
+      </div>
+    </div>
+  </div>
 
   <script src="./chat.js"></script>
 </body>

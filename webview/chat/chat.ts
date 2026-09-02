@@ -2,6 +2,7 @@
 // 注意：acquireVsCodeApi() 每个 webview 只能调用一次
 import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
+import { showDialog } from './modal'
 
 const vscode = acquireVsCodeApi()
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
@@ -712,6 +713,8 @@ let curModel = ''
 let curEffort = ''
 let permOptions: Array<{ value: string; name: string; description?: string }> = []
 let currentPerm = ''
+/** 危险权限预设：切换需先经自绘确认弹窗（与 src/extension.ts 保持一致来源） */
+const DANGEROUS_PERMS = new Set<string>(['danger-full-access'])
 
 /** 关闭所有弹出面板 */
 function closePopups(): void {
@@ -767,6 +770,9 @@ document.addEventListener('click', (e) => {
 /** 渲染权限弹出面板（读取官方 permissions 投影） */
 function renderPermission(options: Array<{ value: string; name: string; description?: string }> | undefined, currentValue: string | undefined): void {
   permOptions = options ?? []
+  for (const o of permOptions) {
+    rememberPermName(o)
+  }
   currentPerm = currentValue ?? ''
   updatePermLabel()
   if (!permPopup.classList.contains('hidden')) {
@@ -776,14 +782,10 @@ function renderPermission(options: Array<{ value: string; name: string; descript
 
 function renderPermPopup(): void {
   permPopup.innerHTML = ''
-  const title = document.createElement('div')
-  title.className = 'popup-title'
-  title.textContent = '权限预设'
-  permPopup.appendChild(title)
   if (permOptions.length === 0) {
     const empty = document.createElement('div')
     empty.className = 'opt'
-    empty.textContent = '无可用权限'
+    empty.textContent = '没有可用的权限'
     empty.style.opacity = '0.6'
     permPopup.appendChild(empty)
     return
@@ -791,13 +793,40 @@ function renderPermPopup(): void {
   for (const opt of permOptions) {
     const el = document.createElement('div')
     el.className = 'opt' + (opt.value === currentPerm ? ' selected' : '')
-    el.textContent = permName(opt.value)
+    el.textContent = opt.name || opt.value
     el.title = opt.description ?? ''
     el.addEventListener('click', () => {
       if (opt.value === currentPerm) {
         closePopups()
         return
       }
+      if (DANGEROUS_PERMS.has(opt.value)) {
+        // 危险权限：先经自绘确认弹窗（仿 dsh 官方文案 + 风险勾选）确认，再切换
+        closePopups()
+        const label = opt.value === 'danger-full-access' ? 'Full access' : opt.name || opt.value
+        void (async () => {
+          const confirmed = await showDialog({
+            icon: 'warn',
+            title: `确认启用 ${label}？`,
+            body:
+              `启用 ${label} 后，agent 将减少确认步骤，并且可以直接执行更多操作，` +
+              `包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。`,
+            ack: '我已了解风险，并愿意继续',
+            okText: '启用',
+            okStyle: 'danger',
+            cancelText: '取消',
+          })
+          if (!confirmed) {
+            return
+          }
+          rememberPermName(opt)
+          currentPerm = opt.value
+          vscode.postMessage({ type: 'chatSelectPermission', preset: opt.value })
+          updatePermLabel()
+        })()
+        return
+      }
+      rememberPermName(opt)
       currentPerm = opt.value
       vscode.postMessage({ type: 'chatSelectPermission', preset: opt.value })
       updatePermLabel()
@@ -807,21 +836,20 @@ function renderPermPopup(): void {
   }
 }
 
-/** 在权限图标旁展示当前选择（用友好名；悬停显示描述即警告） */
-function updatePermLabel(): void {
-  const found = permOptions.find((o) => o.value === currentPerm)
-  const name = found ? permName(found.value) : ''
-  permLabel.textContent = name
-  permBtn.title = found ? `权限：${name}${found.description ? '（' + found.description + '）' : ''}` : '权限'
+/** 权限 value → 显示名缓存（选项加载/点选时记录，回显前不被清掉，保证标签始终跟随选择） */
+const permNameOf = new Map<string, string>()
+
+function rememberPermName(opt: { value: string; name?: string }): void {
+  permNameOf.set(opt.value, opt.name || opt.value)
 }
 
-/** 已知权限预设的友好显示名（DSH 预设 value/name 即英文标识，映射成更直观名称） */
-const PERM_FRIENDLY: Record<string, string> = {
-  'workspace-write': '工作区写入',
-  'danger-full-access': '完全访问',
-}
-function permName(value: string): string {
-  return PERM_FRIENDLY[value] ?? value
+/** 在权限图标旁展示当前选择；名称直接采用后端返回的 name/value，不做本地翻译 */
+function updatePermLabel(): void {
+  const found = permOptions.find((o) => o.value === currentPerm)
+  const name = found ? found.name || found.value : (permNameOf.get(currentPerm) ?? '')
+  permLabel.textContent = name
+  const desc = found?.description ?? ''
+  permBtn.title = name ? `权限：${name}${desc ? ` (${desc})` : ''}` : '权限'
 }
 
 // ---------- 模型 + 推理等级 ----------
@@ -873,9 +901,11 @@ function renderModelPopup(): void {
       el.className = 'opt' + (g.id === curProvider && m.id === curModel ? ' selected' : '')
       el.textContent = m.name || m.id
       el.addEventListener('click', () => {
+        // 切模型与切推理等级解耦：切模型只发 provider+model，不带 effort，
+        // 由 dsh 按该模型默认处理；effort 仅在推理等级行上单独选择。
         curProvider = g.id
         curModel = m.id
-        vscode.postMessage({ type: 'chatSelectModel', provider: g.id, model: m.id, reasoningEffort: curEffort || undefined })
+        vscode.postMessage({ type: 'chatSelectModel', provider: g.id, model: m.id })
         updateModelLabel()
         renderModelPopup()
       })
@@ -911,9 +941,12 @@ function updateModelLabel(): void {
   if (curProvider && curModel) {
     const active = currentModelInfo()
     label = active?.name || curModel
+    // 推理等级按模型显示：只在当前模型自己声明该 effort 时才拼到标签里
     if (curEffort) {
       const effort = active?.reasoning?.efforts?.find((e) => e.id === curEffort)
-      label += ' · ' + (effort?.name || curEffort)
+      if (effort) {
+        label += ' · ' + (effort.name || curEffort)
+      }
     }
   }
   modelLabel.textContent = label
@@ -1019,3 +1052,6 @@ window.addEventListener('message', (e) => {
     clearChat()
   }
 })
+
+// 页面脚本就绪（消息监听已挂上）→ 通知扩展推送 chatInfo，避免视图重建时早推丢失
+vscode.postMessage({ type: 'ready' })

@@ -30,6 +30,7 @@ import {
     type DshContentPart,
     type DshQuestionRequest,
     rpcCall,
+    runSessionCommand,
 } from '../dshApi';
 
 const NODE_REQUIREMENT = '^22.19.0 || >=24.0.0';
@@ -40,6 +41,10 @@ export interface WorkspaceView {
     path: string;
     title: string;
     sessionIds: string[];
+    /** ISO-8601 创建时刻（dsh workspace 域持久化，同 workspace.json） */
+    createdAt?: string;
+    /** ISO-8601 最近一次落盘变更时刻（会话挂载/改名等会刷新；同 workspace.json 的 updatedAt） */
+    updatedAt?: string;
 }
 
 /**
@@ -449,6 +454,42 @@ export class DshService {
     }
 
     /**
+     * 解析“当前工作区”，与 dsh 自身一致：插件不额外存记录，直接取 dsh 持久化的
+     * workspace 数据（workspace.list ← ~/.dsh/storages/workspace.json 同一份存储）
+     * 里 updatedAt 最新者（同值按返回顺序决平手）。
+     * 切换工作区 = 给目标工作区挂会话（newSession），其 updatedAt 随之刷新为最新，
+     * 下次解析仍是它。仅当 dsh 里一个工作区都没有（全新环境）才回退到
+     * “按当前 VS Code 文件夹建首个工作区”兜底，避免会话掉进未分组。
+     */
+    async ensureCurrentWorkspace(): Promise<string | undefined> {
+        if (this.currentWorkspaceId) {
+            return this.currentWorkspaceId;
+        }
+        try {
+            const { items } = await this.listWorkspaces();
+            let best: WorkspaceView | undefined;
+            let bestTime = Number.NEGATIVE_INFINITY;
+            for (const w of items) {
+                const t = Date.parse(w.updatedAt ?? '');
+                if (Number.isNaN(t)) {
+                    continue;
+                }
+                if (t > bestTime) {
+                    bestTime = t;
+                    best = w;
+                }
+            }
+            if (best) {
+                this.currentWorkspaceId = best.workspaceId;
+                return best.workspaceId;
+            }
+        } catch {
+            // 列表读不到时落到文件夹兜底
+        }
+        return this.ensureWorkspaceForFolder();
+    }
+
+    /**
      * 列出某工作区下的已有会话（workspace.list 的 sessionIds + session.list 汇总映射标题）。
      * 排除 subagent 内部会话与空白会话；运行中排前。
      */
@@ -514,14 +555,16 @@ export class DshService {
         });
     }
 
-    /** 切换权限预设：经 session.prompt 派发 /permission 命令 */
+    /** 切换权限预设：执行 /permission 斜杠命令（走 commands/execute 斜杠端点，勿用 session.prompt 文本） */
     async setPermissionPreset(preset: string): Promise<void> {
+        if (!(await this.ensureRunning())) {
+            throw new Error('DSH 服务不可用，无法切换权限');
+        }
         const sid = await this.getSession();
-        await this.call('session.prompt', {
-            sessionId: sid,
-            mode: 'queue',
-            content: [{ type: 'text', text: `/permission ${preset}` }],
-        });
+        const exec = await runSessionCommand(sid, `/permission ${preset}`);
+        if (!exec || exec.result?.kind === 'error') {
+            throw new Error(exec?.result?.text || `未知权限预设：${preset}`);
+        }
     }
 
     /** 对话：确保 DSH 在运行，发消息到共享会话，等 AI 回复 */

@@ -2,7 +2,7 @@
   "name": "deepseek-harness-web",
   "displayName": "DeepSeek Harness Web",
   "description": "DeepSeek Harness 插件",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "sparks-dev",
   "icon": "assets/icon.png",
   "engines": {
@@ -13,9 +13,7 @@
     "Other"
   ],
   "activationEvents": [
-    "onView:dsh.launcher",
-    "onWebviewView:dsh.launcher",
-    "onCommand:dsh.open"
+    "onWebviewView:dsh.launcher"
   ],
   "main": "./dist/extension.js",
   "contributes": {
