@@ -73,12 +73,12 @@
   /* 输入区 */
   #composer {
     position: relative;
-    padding: 8px 12px; border-top: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.1));
+    padding: 8px 12px;
     background: var(--vscode-editor-background, #1e1e1e);
   }
   #inputbox {
     display: flex; flex-direction: column;
-    border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.15));
+    border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.45));
     border-radius: 10px; background: var(--vscode-input-background, #252526);
   }
   #inputbox:focus-within { border-color: var(--vscode-focusBorder, #4daafc); }
@@ -89,20 +89,22 @@
     font-family: inherit; font-size: 13px;
   }
   #inputbar {
-    display: flex; align-items: center; gap: 8px;
-    padding: 2px 10px 6px;
+    display: flex; align-items: center; gap: 4px;
+    padding: 2px 10px 6px 2px;
   }
   #attach, #permBtn, #modelBtn {
     width: 22px; height: 22px; border: none; background: none;
     color: var(--vscode-foreground, #ddd); cursor: pointer; border-radius: 4px;
     display: inline-flex; align-items: center; justify-content: center; padding: 0;
-    flex: none;
+    flex: none; line-height: 0;
   }
   #attach svg, #permBtn svg, #modelBtn svg { display: block; }
-  #attach:hover { background: rgba(255,255,255,0.1); }
   #permBtn, #modelBtn { font-size: 15px; line-height: 1; }
-  #permBtn:hover, #modelBtn:hover { background: rgba(255,255,255,0.1); }
-  #permBtn.active, #modelBtn.active { background: rgba(255,255,255,0.14); }
+  #attach, #permBtn, #modelBtn { border-radius: 6px; transition: background 0.12s ease; }
+  #attach:hover, #permBtn:hover, #modelBtn:hover {
+    background: rgba(128,128,128,0.28);
+  }
+  #permBtn.active, #modelBtn.active { background: rgba(128,128,128,0.35); }
   /* 图标 + 选择文字作为一个紧凑单元；窄面板可收缩/换行，避免把右侧按钮挤出可视区 */
   #composer, #inputbox, #inputbar { min-width: 0; }
   .sel-group { display: inline-flex; align-items: center; gap: 3px; flex: 0 1 auto; min-width: 0; }
@@ -139,12 +141,14 @@
     margin-left: auto;
     width: 24px; height: 24px; border-radius: 50%; border: none;
     background: var(--vscode-button-background, #0e639c); color: var(--vscode-button-foreground, #fff);
-    font-size: 14px; line-height: 1; cursor: pointer;
-    flex: none;
+    cursor: pointer; flex: none; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 14px; line-height: 1;
   }
   #send:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
   #send:disabled { opacity: 0.4; cursor: default; }
   #send.stop { background: var(--vscode-errorForeground, #f14c4c); }
+  #send.stop { font-size: 10px; }
 
   /* 统计脚注 */
   .stats {

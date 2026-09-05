@@ -11,7 +11,6 @@ import { DshPanel } from './dshPanel';
 const dsh = new DshService();
 const panel = new DshPanel({
     ensureRunning: () => dsh.ensureRunning(),
-    releaseOwnedDsh: () => dsh.releaseOwnedDsh(),
 });
 
 // 侧边栏对话视图引用（右键 @ 代码进输入框用）
@@ -1059,10 +1058,12 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     // Activity Bar 对话视图
+    const retainChat = vscode.workspace.getConfiguration('dsh').get<boolean>('retainContextWhenHidden', true);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(
             'dsh.launcher',
-            new DshLauncherProvider(context.extensionUri, context.globalState)
+            new DshLauncherProvider(context.extensionUri, context.globalState),
+            { webviewOptions: { retainContextWhenHidden: retainChat } }
         )
     );
 }

@@ -64,8 +64,8 @@ function updateSendState(): void {
 function setProcessing(p: boolean): void {
   processing = p
   if (p) {
-    sendBtn.textContent = '■'
     sendBtn.classList.add('stop')
+    sendBtn.textContent = '■'
     sendBtn.title = '终止'
     sendBtn.disabled = false
     // 立即显示"思考中…"，避免无反馈误以为卡住
@@ -78,8 +78,8 @@ function setProcessing(p: boolean): void {
       acts.innerHTML = '<div class="act thinking-dots">🧠 思考中…</div>'
     }
   } else {
-    sendBtn.textContent = '↑'
     sendBtn.classList.remove('stop')
+    sendBtn.textContent = '↑'
     sendBtn.title = '发送'
     updateSendState()
   }

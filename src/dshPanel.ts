@@ -14,8 +14,6 @@ import {
 /** DshPanel 需要的宿主能力（由 DshService 提供）。 */
 export interface DshPanelHost {
     ensureRunning(): Promise<boolean>;
-    /** 官方网页面板全部关闭时回收插件自启的 dsh（不回收外部实例）。 */
-    releaseOwnedDsh(): void;
 }
 
 /** 管理“在本地打开/在浏览器打开”的 DSH 网页面板。 */
@@ -161,9 +159,6 @@ export class DshPanel {
         panel.onDidDispose(() => {
             this.openPanels.delete(panel);
             if (this.openPanels.size === 0) {
-                if (!this.disposed) {
-                    this.host.releaseOwnedDsh();
-                }
                 void this.closeWebProxy();
                 vscode.commands.executeCommand('setContext', 'dshPanelOpen', false);
             }

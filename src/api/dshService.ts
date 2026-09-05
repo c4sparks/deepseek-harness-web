@@ -81,6 +81,7 @@ export class DshService {
     private dshStdout = '';
     private ready = false;
     private starting = false;
+    private ensurePromise: Promise<boolean> | undefined;
     // 共享会话（右键/对话/网页同一条线）
     private currentSessionId: string | undefined;
     // 当前工作区（缺省按 VS Code 文件夹自动解析，避免会话全部掉进"未分组"）
@@ -292,17 +293,28 @@ export class DshService {
         this.dshStartedByUs = false;
     }
 
-    /** DshPanel 使用：官方网页面板全部关闭时回收插件自启的 dsh。 */
-    releaseOwnedDsh(): void {
-        this.killDshIfOwned();
-    }
-
     /**
      * 确保 DSH 服务在运行；未运行自动拉起并等待就绪。
      * 端点动态识别链路：① 探测既有实例（默认端口 3080）→ ② 启动器三档回退
      * （源码仓 pnpm dsh web / PATH dsh / npx）→ ③ 解析 stdout 的 URL 行（真实端口 + 鉴权 token）→ ④ 握手探测验证信封。
      */
     async ensureRunning(): Promise<boolean> {
+        if (this.ensurePromise) {
+            // 并发入口（聊天初始化/工作区/本地打开）共享同一次启动，等待其完成即可。
+            return this.ensurePromise;
+        }
+        const task = this.runEnsure();
+        this.ensurePromise = task;
+        try {
+            return await task;
+        } finally {
+            if (this.ensurePromise === task) {
+                this.ensurePromise = undefined;
+            }
+        }
+    }
+
+    private async runEnsure(): Promise<boolean> {
         if (this.ready) {
             // 快速校验当前端点仍存活（DSH 可能已重启 / 换端口 / 停止），避免用旧端口
             const alive = await probeDsh(getEndpoint().port);
