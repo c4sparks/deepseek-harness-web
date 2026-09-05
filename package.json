@@ -2,7 +2,7 @@
   "name": "deepseek-harness-web",
   "displayName": "DeepSeek Harness Web",
   "description": "DeepSeek Harness 插件",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "sparks-dev",
   "icon": "assets/icon.png",
   "engines": {
@@ -14,19 +14,7 @@
   ],
   "activationEvents": [
     "onStartupFinished",
-    "onWebviewView:dsh.launcher",
-    "onCommand:dsh.workspace",
-    "onCommand:dsh.open",
-    "onCommand:dsh.applySelected",
-    "onCommand:dsh.askSelected",
-    "onCommand:dsh.sendToDsh",
-    "onCommand:dsh.openInBrowser",
-    "onCommand:dsh.openInEditor",
-    "onCommand:dsh.reload",
-    "onCommand:dsh.newSession",
-    "onCommand:dsh.usage",
-    "onCommand:dsh.closeSidebar",
-    "onCommand:dsh.moveToEditor"
+    "onWebviewView:dsh.launcher"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -196,10 +184,18 @@
           "default": "",
           "description": "DSH 源码仓库根目录（插件能力基于该仓库，启动方式：在仓库根执行 pnpm dsh web）。留空则回退 PATH 上的 dsh / npx 兜底；开发环境建议写在本仓库 .vscode/settings.json，不随插件发布"
         },
+        "dsh.webArgs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "插件自启 dsh web 时追加的额外 CLI 参数（追加在 web --no-open --port 0 之后，如 --host、--trusted-host ）"
+        },
         "dsh.retainContextWhenHidden": {
           "type": "boolean",
           "default": true,
-          "description": "面板切到其他标签时是否保留 Webview 上下文（开=切回不重载但更占内存；关=更省内存、切回时本地重新加载）"
+          "description": "切走后是否保留 DSH 面板/聊天状态（开=不重载、更占内存；关=省内存、切回重载）"
         }
       }
     }
@@ -237,4 +233,3 @@
     "serialize-javascript": "^7.0.6"
   }
 }
-

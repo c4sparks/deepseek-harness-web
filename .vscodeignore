@@ -1,6 +1,7 @@
 .vscode/**
 .vscode-test/**
 .claude/**
+.codegraph/**
 webview/**
 scripts/**
 out/**
@@ -20,3 +21,5 @@ test.md
 **/.vscode-test.*
 docs/**
 tmp/
+.codex-tmp/**
+release/**

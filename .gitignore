@@ -21,7 +21,12 @@ Thumbs.db
 
 # 工具配置
 .claude/settings.local.json
+.codegraph/
 
 tmp/
-docs/
+.codex-tmp/
 
+# 文档：docs/design/ 与 docs/*.md 入库
+docs/*
+!docs/design/
+!docs/*.md
