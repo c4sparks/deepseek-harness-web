@@ -1,14 +1,18 @@
-// DeepSeek Harness Web 扩展装配层：注册命令、拼装各层。
-//   服务层：src/api/dshService.ts（进程/会话/对话/面板，UI 唯一依赖）
-//   API 层：src/api/dshApi.ts（RPC 传输，全量 DSH API）
-//   UI 层：侧边栏对话视图（本文件内，后续可换 TinyRobot）+ DSH 网页面板
+// 扩展装配层：注册命令、拼装各层。
+//   服务层：src/api/dshService.ts（dsh 进程/会话/对话编排）
+//   dsh 层：src/dsh/（api / events / webProxy，门面 src/dsh/index.ts）
+//   UI 层：侧边栏对话视图（本文件内）+ DSH 网页面板（src/dshPanel.ts）
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { DshService } from './api/dshService';
-import { type DshContentPart, type DshReplyStats } from './dshApi';
+import { type DshContentPart, type DshReplyStats } from './dsh';
+import { DshPanel } from './dshPanel';
 
-// 服务实例（UI 层唯一依赖）
 const dsh = new DshService();
+const panel = new DshPanel({
+    ensureRunning: () => dsh.ensureRunning(),
+    releaseOwnedDsh: () => dsh.releaseOwnedDsh(),
+});
 
 // 侧边栏对话视图引用（右键 @ 代码进输入框用）
 let launcherView: vscode.WebviewView | undefined;
@@ -302,7 +306,7 @@ ${sections}
 </html>`;
 }
 
-/** Activity Bar 对话视图：点图标自动打开 DSH 面板；内容区为对话（TinyRobot / 回退自绘） */
+/** Activity Bar 对话视图：点图标自动打开 DSH 面板；内容区为对话 */
 /** 当前活动的聊天 webview（侧边栏视图或编辑器面板），供右键 @代码 / 新会话 投递 */
 let chatTarget: vscode.Webview | undefined;
 /** 编辑器区的聊天面板（移动到编辑器后创建），供"回到侧边栏"关闭 */
@@ -383,6 +387,20 @@ function setupChatWebview(
     const gen = { n: 0 };
     const post = (msg: unknown) => {
         void webview.postMessage(msg);
+    };
+
+    /** 整轮停止：使进行中的 askStreaming 失效，并请 dsh 取消当前会话回合，随后复位聊天 UI。 */
+    const stopTurn = (): void => {
+        gen.n++; // 使进行中的流失效
+        void (async () => {
+            try {
+                const sid = await dsh.getSession();
+                await dsh.call('session.cancel', { sessionId: sid });
+            } catch {
+                // 取消失败忽略
+            }
+        })();
+        post({ type: 'chatDone' });
     };
 
     // 握手：等页面脚本就绪后再推一次 chatInfo（避免重建/切回视图时数据丢失）
@@ -476,16 +494,7 @@ function setupChatWebview(
                 }
             })();
         } else if (msg.type === 'cancel') {
-            gen.n++; // 使进行中的流失效
-            void (async () => {
-                try {
-                    const sid = await dsh.getSession();
-                    await dsh.call('session.cancel', { sessionId: sid });
-                } catch {
-                    // 取消失败忽略
-                }
-            })();
-            post({ type: 'chatDone' });
+            stopTurn();
         } else if (msg.type === 'pickFile') {
             void (async () => {
                 const picked = await vscode.window.showOpenDialog({ canSelectMany: true, openLabel: '添加到 dsh 对话' });
@@ -518,9 +527,17 @@ function setupChatWebview(
         } else if (msg.type === 'questionCancel') {
             void (async () => {
                 try {
+                    // dsh 接受"只取消该提问"：卡片移除，本轮 agent 继续，正常以 chatDone 结束
                     await dsh.cancelQuestion(msg.rpcId, msg.sessionId);
+                    post({ type: 'questionClosed', rpcId: msg.rpcId });
                 } catch (e) {
-                    vscode.window.showErrorMessage((e as Error).message);
+                    // 旧版 dsh 网关会把 ok:false + code:'cancelled' 拒成 bad-response，提问既无法单独
+                    // 取消、本轮又一直挂着（webview 的停止按钮卡在 ■）→ 回退为整轮停止，避免 UI 卡死。
+                    post({ type: 'questionClosed', rpcId: msg.rpcId });
+                    vscode.window.showWarningMessage(
+                        `未能单独取消提问（${(e as Error).message}），已改为停止本轮对话`
+                    );
+                    stopTurn();
                 }
             })();
         } else if (msg.type === 'chatSelectModel') {
@@ -616,13 +633,9 @@ function buildPrompt(ctx: SelectionContext, instruction: string, noWriteHint: bo
     return lines.join('\n');
 }
 
-interface ApplyItem extends vscode.QuickPickItem {
-    action: 'replace' | 'insert' | 'copy' | 'open';
-}
-
-/** 拿到 AI 回复后，让用户选择如何应用 */
+/** 拿到 AI 回复后，让用户选择如何应用（VS Code 原生 QuickPick） */
 async function showApplyOptions(reply: string, ctx: SelectionContext, allowReplace: boolean): Promise<void> {
-    const items: ApplyItem[] = [
+    const items: Array<{ label: string; description: string; action: 'replace' | 'insert' | 'copy' | 'open' }> = [
         ...(allowReplace
             ? [{ label: '$(symbol-event) 替换选中的代码', description: '用 AI 结果覆盖选中区域', action: 'replace' as const }]
             : []),
@@ -747,8 +760,12 @@ async function showWorkspacePicker(): Promise<void> {
                 action: 'info',
                 alwaysShow: true,
             },
-            { label: '工作区', kind: vscode.QuickPickItemKind.Separator },
         ];
+        // sideX 等宿主未必导出 QuickPickItemKind（缺省时取 .Separator 会抛 "reading 'Separator'"）：
+        // 仅当其可用时才插入分组分隔行。
+        if (vscode.QuickPickItemKind) {
+            rows.push({ label: '工作区', kind: vscode.QuickPickItemKind.Separator });
+        }
         for (const w of workspaces) {
             const isCurrent = w.workspaceId === curId;
             const open = expanded.has(w.workspaceId);
@@ -787,12 +804,18 @@ async function showWorkspacePicker(): Promise<void> {
         return rows;
     }
 
+    /** 仅在本 QuickPick 仍展示时才更新 items。先 show 再填、且已 dispose 不再改行，
+     *  可避免对“未挂到 DOM / 已关闭”的列表设行触发 VS Code 内部
+     *  “Measuring item node that is not in DOM … ListView”量高报错。 */
     const refresh = (): void => {
+        if (disposed) {
+            return;
+        }
         pick.items = buildRows();
     };
 
     const loadSessions = async (id: string): Promise<void> => {
-        if (sessionCache.has(id)) {
+        if (sessionCache.has(id) || disposed) {
             return;
         }
         pick.busy = true;
@@ -801,7 +824,9 @@ async function showWorkspacePicker(): Promise<void> {
         } catch {
             sessionCache.set(id, []);
         } finally {
-            pick.busy = false;
+            if (!disposed) {
+                pick.busy = false;
+            }
         }
     };
 
@@ -877,8 +902,9 @@ async function showWorkspacePicker(): Promise<void> {
         }
     });
 
-    refresh();
+    // 先 show 再填 items：对未挂到 DOM 的 QuickPick 先设行会触发 VS Code 内部量高异常
     pick.show();
+    refresh();
 }
 
 // ---------- 激活入口（薄装配） ----------
@@ -888,7 +914,7 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('dsh.open', async () => {
             if (await dsh.ensureRunning()) {
-                dsh.openPanel();
+                await panel.openPanel();
             }
         })
     );
@@ -974,17 +1000,17 @@ export function activate(context: vscode.ExtensionContext) {
 
     // 命令：在浏览器中打开 DSH
     context.subscriptions.push(
-        vscode.commands.registerCommand('dsh.openInBrowser', () => dsh.openInBrowser())
+        vscode.commands.registerCommand('dsh.openInBrowser', () => panel.openInBrowser())
     );
 
     // 命令：在本地打开 DSH
     context.subscriptions.push(
-        vscode.commands.registerCommand('dsh.openInEditor', () => dsh.openInEditor())
+        vscode.commands.registerCommand('dsh.openInEditor', () => panel.openInEditor())
     );
 
     // 命令：刷新所有 DSH 面板
     context.subscriptions.push(
-        vscode.commands.registerCommand('dsh.reload', () => dsh.reloadPanels())
+        vscode.commands.registerCommand('dsh.reload', () => panel.reloadPanels())
     );
 
     // 命令：关闭侧边栏（标题栏 👁）
@@ -1024,7 +1050,7 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     // 初始化上下文（视图标题栏按钮显隐依据）
-    vscode.commands.executeCommand('setContext', 'dshViewMode', dsh.viewMode);
+    vscode.commands.executeCommand('setContext', 'dshViewMode', panel.viewMode);
     vscode.commands.executeCommand('setContext', 'dshPanelOpen', false);
 
     // 命令：查看消费记录（弹窗报告面板）
@@ -1046,5 +1072,6 @@ export function activate(context: vscode.ExtensionContext) {
 export function deactivate() {
     chatPanel?.dispose();
     chatPanel = undefined;
+    panel.dispose();
     dsh.dispose();
 }

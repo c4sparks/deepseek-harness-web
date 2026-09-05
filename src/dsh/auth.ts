@@ -1,0 +1,148 @@
+// dsh 端点状态与浏览器鉴权 cookie。
+// DSH 协议层：端点/鉴权/RPC/commands/probe/端口/mux（高层会话与流式方法见同目录 session.ts/stream.ts）。
+// dsh v0.1.2-rc.1 唯一适配基线，升级协议时按本目录与 docs/design/04 核对。
+// DSH 本地服务的 JSON-RPC 客户端 —— 适配 dsh v0.1.2-rc.1。
+//
+// ── 适配的 dsh 版本与上游接口映射（dsh 升级时按此表核对；勿按 0.1.1 世代点号协议写）──
+//   “wire 协议”基线 = dsh v0.1.2-rc.1（typert gateway 世代）
+//
+//   1. RPC 信封：POST /api/<method>，body { type:'client-request', rpcId, method, payload }，
+//      应答 { type:'server-response', rpcId, result:{ ok, value|error } }（packages/client/connection）。
+//   2. 方法名：namespace/method（斜杠）。本文件内点号只是“别名”，经 wireMethodName() 换算；
+//      上游 @Remote 别名表见 packages/api/session-controller|workspace-controller/src/index.ts。
+//   3. 载荷：payload:{ args:{ <形参名>: 请求对象 } }；形参名默认 request，例外见 ARGS_KEY_BY_METHOD。
+//   4. 鉴权：/api 与 WS 都需浏览器鉴权 cookie（authUrl?token → dsh-auth-*），旧回环信任已取消。
+//   5. 流式 remote（session/follow、workspace/follow、session/control、$events）只能走 WebSocket
+//      /api/remote.mux（packages/api/gateway/src/stream-protocol.ts）：
+//        上行 { type:'open', streamId, endpoint, payload } / { type:'cancel', streamId }；
+//        下行 { type:'item', streamId, value? } / { type:'error', streamId, error } / { type:'end', streamId }。
+//   6. 会话历史/投影：该版本已无 session.history；读取 = session/follow 快照
+//      （snapshot: header/cursor/records/projections.values）+ 实时事件。见 readFollowSnapshot()/waitTurn()。
+//   7. 旧世代端点（/api/respond、session.history、workspace.list、点号+平铺）在该版本不存在。
+import * as http from 'node:http';
+/** DSH 服务默认端口（dsh web 启动默认按 3080 处理；实际端口以探测 / URL 行结果为准）。 */
+export const DEFAULT_DSH_PORT = 3080;
+/** 动态识别出的 DSH 服务端点。 */
+export interface DshEndpoint {
+    port: number;
+    /** `dsh web` 打印的 authenticatedUrl（含鉴权 token）；无则 undefined。 */
+    authUrl?: string;
+}
+let currentEndpoint: DshEndpoint = { port: DEFAULT_DSH_PORT };
+export function setEndpoint(ep: DshEndpoint): void {
+    currentEndpoint = { port: ep.port, authUrl: ep.authUrl };
+}
+export function getEndpoint(): DshEndpoint {
+    return { ...currentEndpoint };
+}
+export function endpointBaseUrl(ep: DshEndpoint = currentEndpoint): string {
+    return `http://127.0.0.1:${ep.port}`;
+}
+export function endpointAuthUrl(ep: DshEndpoint = currentEndpoint): string {
+    return ep.authUrl ?? endpointBaseUrl(ep);
+}
+// ---------- 鉴权 cookie（dsh v0.1.2-rc.1+ 的 /api 与 WS 都需要） ----------
+const authCookies = new Map<number, string>();
+const loginInFlight = new Map<number, Promise<boolean>>();
+const RPC_TIMEOUT_MS = 15000;
+/** 从带 token 的 authenticatedUrl 登录取回 cookie（多跳 303 → / 都收集 Set-Cookie）。 */
+function fetchAuthCookie(authUrl: string): Promise<string | null> {
+    return new Promise((resolve) => {
+        const collect = (url: string, cookies: string[], hops: number): void => {
+            if (hops > 3) {
+                resolve(cookies.filter(Boolean).join('; ') || null);
+                return;
+            }
+            const req = http.get(url, (res) => {
+                const sc = res.headers['set-cookie'];
+                if (sc) {
+                    for (const c of Array.isArray(sc) ? sc : [sc]) {
+                        cookies.push(c.split(';')[0].trim());
+                    }
+                }
+                const loc = res.headers.location;
+                if (loc) {
+                    res.resume();
+                    collect(new URL(loc, url).toString(), cookies, hops + 1);
+                    return;
+                }
+                res.resume();
+                resolve(cookies.filter(Boolean).join('; ') || null);
+            });
+            req.on('error', () => resolve(cookies.filter(Boolean).join('; ') || null));
+            req.setTimeout(RPC_TIMEOUT_MS, () => {
+                req.destroy();
+                resolve(cookies.filter(Boolean).join('; ') || null);
+            });
+        };
+        collect(authUrl, [], 0);
+    });
+}
+/** 用端点 authUrl 登录并缓存 cookie（幂等；返回是否拿到）。 */
+async function loginForEndpoint(ep: DshEndpoint): Promise<boolean> {
+    if (!ep.authUrl) {
+        return false;
+    }
+    let pending = loginInFlight.get(ep.port);
+    if (!pending) {
+        pending = (async () => {
+            const cookie = await fetchAuthCookie(ep.authUrl as string);
+            if (cookie) {
+                authCookies.set(ep.port, cookie);
+            }
+            console.warn(`[dsh-debug] login port=${ep.port} authUrl=${ep.authUrl} cookie=${cookie ? 'OK:' + cookie.split(';')[0] : 'NONE'}`);
+            return Boolean(cookie);
+        })();
+        loginInFlight.set(ep.port, pending);
+    }
+    const ok = await pending;
+    loginInFlight.delete(ep.port);
+    return ok;
+}
+/** 确保当前/指定端点已拿到鉴权 cookie（dsh v0.1.2-rc.1+）。无 authUrl 返回 false。 */
+export async function ensureEndpointAuth(ep: DshEndpoint = currentEndpoint): Promise<boolean> {
+    return loginForEndpoint(ep);
+}
+/** 读取端点已缓存的 cookie（未登录过则 undefined）。 */
+export function endpointAuthCookie(ep: DshEndpoint = currentEndpoint): string | undefined {
+    return authCookies.get(ep.port);
+}
+/** 方法别名 → wire 方法名：点号转斜杠（session.create → session/create；已含 '/' 的保持不变）。 */
+export function wireMethodName(method: string): string {
+    return method.includes('/') ? method : method.replace(/\./g, '/');
+}
+/** 请求对象 → payload：{ args:{ <形参名>: 请求对象 } }。形参名默认 request，
+ *  例外见 ARGS_KEY_BY_METHOD；无参方法（session/modelCatalog）用空 args。 */
+export function argsWrap(method: string, payload: unknown): unknown {
+    if (NO_ARGS_METHODS.has(method)) {
+        return { args: {} };
+    }
+    if (FLAT_ARGS_METHODS.has(method)) {
+        // $events/result 的形参本身就是多个命名参数（clientId/eventId/outcome），
+        // 不能再包一层 request。
+        return { args: payload ?? {} };
+    }
+    const key = ARGS_KEY_BY_METHOD[method] ?? 'request';
+    return { args: { [key]: payload ?? {} } };
+}
+/** 形参名与默认 request 不同的方法（键 = wire 方法名）。 */
+const ARGS_KEY_BY_METHOD: Record<string, string> = {
+    // session/list 的服务端签名形参名是 _request（SessionListRequest，空对象即可）
+    'session/list': '_request',
+};
+/** 无参 remote（payload 必须为 { args: {} }）。 */
+const NO_ARGS_METHODS = new Set<string>(['session/modelCatalog']);
+/** 平铺 args 的方法（payload 对象直接作为 args 的字段集）。 */
+const FLAT_ARGS_METHODS = new Set<string>(['$events/result']);
+
+export function hasAuthCookie(port: number): boolean {
+    return authCookies.has(port);
+}
+
+export function authCookieForPort(port: number): string | undefined {
+    return authCookies.get(port);
+}
+
+export async function loginEndpoint(ep: DshEndpoint): Promise<boolean> {
+    return loginForEndpoint(ep);
+}

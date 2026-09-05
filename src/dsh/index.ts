@@ -1,0 +1,7 @@
+// dsh 协议门面：上层（DshService / 扩展 UI）统一从这里 import，不直接依赖子模块实现。
+export * from './api';
+export * from './events';
+export * from './webProxy';
+export * from './session';
+export * from './stream';
+export * from './legacy';

@@ -1,0 +1,279 @@
+// dsh RPC 信封、commands、探测、能力与端口。
+import * as crypto from "node:crypto";
+import * as http from "node:http";
+import * as net from "node:net";
+import {
+    DEFAULT_DSH_PORT,
+    endpointBaseUrl,
+    getEndpoint,
+    authCookieForPort,
+    loginEndpoint,
+    wireMethodName,
+    argsWrap,
+    type DshEndpoint,
+} from "./auth";
+// ---------- RPC 传输 ----------
+const RPC_TIMEOUT_MS = 15_000;
+/** 等待 AI 回复的默认超时。 */
+const DEFAULT_REPLY_TIMEOUT_MS = 120_000;
+interface RpcRequest {
+    type: 'client-request';
+    rpcId: string;
+    method: string;
+    payload: unknown;
+}
+interface RpcResponse<T = unknown> {
+    type: 'server-response';
+    rpcId: string;
+    result:
+        | { ok: true; value: T }
+        | { ok: false; error: RpcError };
+}
+interface RpcError {
+    code?: string;
+    message?: string;
+    details?: unknown;
+}
+export class DshRpcError extends Error {
+    readonly code?: string;
+    readonly details?: unknown;
+    constructor(method: string, err: RpcError) {
+        super(`DSH 接口 ${method} 出错：${err.message ?? err.code ?? '未知错误'}`);
+        this.name = 'DshRpcError';
+        this.code = err.code;
+        this.details = err.details;
+    }
+}
+/** 通用 RPC：调当前端点的任意 DSH 方法并返回 result.value（别名点号自动换算 + args 包装）。 */
+export async function rpcCall<T = unknown>(method: string, payload: unknown = {}): Promise<T> {
+    return rpcCallAt<T>(getEndpoint().port, method, payload);
+}
+/** 向 $events 流回传一次应答（rc.1 Remote Event waterfall 的结果通道）。 */
+export async function sendRemoteEventResult(
+    clientId: string,
+    eventId: string,
+    outcome: { kind: 'next' } | { kind: 'result'; value?: unknown } | { kind: 'rejected'; error: unknown }
+): Promise<void> {
+    await rpcCall('$events.result', { clientId, eventId, outcome });
+}
+function sendClientRequest(
+    port: number,
+    wireMethod: string,
+    body: RpcRequest,
+    json: string,
+    cookie: string | undefined
+): Promise<RpcResponse> {
+    return new Promise<RpcResponse>((resolve, reject) => {
+        const headers: Record<string, string> = {
+            'content-type': 'application/json',
+            host: `127.0.0.1:${port}`,
+        };
+        if (cookie) {
+            headers.cookie = cookie;
+        }
+        const req = http.request(
+            {
+                host: '127.0.0.1',
+                port,
+                path: `/api/${wireMethod}`,
+                method: 'POST',
+                headers,
+                timeout: RPC_TIMEOUT_MS,
+            },
+            (res) => {
+                let data = '';
+                res.on('data', (chunk) => (data += chunk));
+                res.on('end', () => {
+                    if (res.statusCode !== 200) {
+                        reject(new Error(`DSH 接口 ${wireMethod} 失败：HTTP ${res.statusCode}`));
+                        return;
+                    }
+                    let parsed: RpcResponse;
+                    try {
+                        parsed = JSON.parse(data) as RpcResponse;
+                    } catch {
+                        reject(new Error(`DSH 接口 ${wireMethod} 返回了非 JSON 内容`));
+                        return;
+                    }
+                    resolve(parsed);
+                });
+            }
+        );
+        req.on('error', (err) =>
+            reject(new Error(`无法连接 DSH 服务（${endpointBaseUrl({ port })}）：${err.message}。请先打开「DeepSeek Harness」面板启动服务`))
+        );
+        req.on('timeout', () => {
+            req.destroy();
+            reject(new Error(`DSH 接口 ${wireMethod} 请求超时`));
+        });
+        req.end(json);
+    });
+}
+function resolveRpcResponse<T>(parsed: RpcResponse<T>, wireMethod: string): T {
+    if (parsed.result.ok) {
+        return parsed.result.value;
+    }
+    throw new DshRpcError(wireMethod, parsed.result.error);
+}
+async function rpcCallAt<T = unknown>(port: number, method: string, payload: unknown = {}): Promise<T> {
+    const wireMethod = wireMethodName(method);
+    const body: RpcRequest = { type: 'client-request', rpcId: crypto.randomUUID(), method: wireMethod, payload: argsWrap(wireMethod, payload) };
+    const json = JSON.stringify(body);
+    let parsed: RpcResponse;
+    try {
+        parsed = await sendClientRequest(port, wireMethod, body, json, authCookieForPort(port));
+    } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const needAuth = msg.includes('HTTP 401') || msg.includes('HTTP 403');
+        if (needAuth && getEndpoint().port === port && getEndpoint().authUrl) {
+            const loggedIn = await loginEndpoint(getEndpoint());
+            if (loggedIn) {
+                parsed = await sendClientRequest(port, wireMethod, body, json, authCookieForPort(port));
+            } else {
+                throw e;
+            }
+        } else {
+            throw e;
+        }
+    }
+    return resolveRpcResponse<T>(parsed as RpcResponse<T>, wireMethod);
+}
+// ---------- 斜杠命令（commands/execute） ----------
+export interface DshCommandExec {
+    commandId?: string;
+    result?: { kind?: 'success' | 'error'; text?: string };
+}
+/** 执行一条斜杠命令（适配 dsh v0.1.2-rc.1）。上游接口：`commands/execute`，
+ *  args 形参为 agentId / line / images（agent 作用域的命令远程；如 /permission <preset>）。 */
+export async function runSessionCommand(sessionId: string, line: string): Promise<DshCommandExec | undefined> {
+    const method = 'commands/execute';
+    const body: RpcRequest = {
+        type: 'client-request',
+        rpcId: crypto.randomUUID(),
+        method,
+        payload: { args: { agentId: sessionId, line, images: [] } },
+    };
+    const json = JSON.stringify(body);
+    return new Promise<DshCommandExec | undefined>((resolve, reject) => {
+        const req = http.request(
+            {
+                host: '127.0.0.1',
+                port: getEndpoint().port,
+                path: `/api/${method}`,
+                method: 'POST',
+                headers: Object.assign(
+                    { 'content-type': 'application/json', host: `127.0.0.1:${getEndpoint().port}` },
+                    authCookieForPort(getEndpoint().port) ? { cookie: authCookieForPort(getEndpoint().port) as string } : {}
+                ),
+                timeout: RPC_TIMEOUT_MS,
+            },
+            (res) => {
+                let data = '';
+                res.on('data', (chunk) => (data += chunk));
+                res.on('end', () => {
+                    if (res.statusCode !== 200) {
+                        reject(new Error(`DSH 接口 ${method} 失败：HTTP ${res.statusCode}`));
+                        return;
+                    }
+                    let parsed: RpcResponse<DshCommandExec | undefined>;
+                    try {
+                        parsed = JSON.parse(data) as RpcResponse<DshCommandExec | undefined>;
+                    } catch {
+                        reject(new Error(`DSH 接口 ${method} 返回了非 JSON 内容`));
+                        return;
+                    }
+                    if (parsed.result.ok) {
+                        resolve(parsed.result.value);
+                    } else {
+                        reject(new DshRpcError(method, parsed.result.error));
+                    }
+                });
+            }
+        );
+        req.on('error', (err) =>
+            reject(new Error(`无法连接 DSH 服务（${endpointBaseUrl()}）：${err.message}。请先打开「DeepSeek Harness」面板启动服务`))
+        );
+        req.on('timeout', () => {
+            req.destroy();
+            reject(new Error(`DSH 接口 ${method} 请求超时`));
+        });
+        req.end(json);
+    });
+}
+// ---------- 握手探测 ----------
+export interface DshProbeResult {
+    ok: boolean;
+    endpoint: DshEndpoint;
+    envelopeOk?: boolean;
+    authRequired?: boolean;
+    reason?: string;
+}
+/** 探测端口上是否运行 DSH（用只读 session.list 验证信封；rc1 401 时若能登录会自动补 cookie）。 */
+export async function probeDsh(port: number): Promise<DshProbeResult> {
+    const endpoint: DshEndpoint = { port };
+    console.warn(`[dsh-debug] probeDsh port=${port} endpointAuthUrl=${getEndpoint().authUrl ?? '(none)'} hasCookie=${!!authCookieForPort(port)}`);
+    try {
+        await rpcCallAt(port, 'session.list', {});
+        return { ok: true, endpoint, envelopeOk: true };
+    } catch (e) {
+        if (e instanceof DshRpcError) {
+            console.warn(`[dsh-debug] probeDsh ${port}: envelope ok(DshRpcError)`);
+            return { ok: true, endpoint, envelopeOk: true };
+        }
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes('HTTP 401') || msg.includes('HTTP 403')) {
+            console.warn(`[dsh-debug] probeDsh ${port}: authRequired -> ${msg}`);
+            return { ok: false, endpoint, authRequired: true, reason: `端口 ${port} 上的 DSH 需要鉴权，请在 dsh 网页面板中完成登录` };
+        }
+        if (msg.includes('HTTP ') || msg.includes('非 JSON')) {
+            console.warn(`[dsh-debug] probeDsh ${port}: not-DSH/protocol-mismatch -> ${msg}`);
+            return { ok: false, endpoint, reason: `端口 ${port} 上不是 DSH 或协议不兼容` };
+        }
+        console.warn(`[dsh-debug] probeDsh ${port}: unreachable -> ${msg}`);
+        return { ok: false, endpoint, reason: `端口 ${port} 不可连接` };
+    }
+}
+// ---------- 能力门控（保留接口；v0.1.2-rc.1 的流走 /api/remote.mux） ----------
+export interface DshCapabilities {
+    version?: string;
+    mux: boolean;
+    streaming: boolean;
+}
+let currentCapabilities: DshCapabilities = { mux: true, streaming: true };
+export function setCapabilities(c: Partial<DshCapabilities>): void {
+    currentCapabilities = { ...currentCapabilities, ...c };
+}
+export function getCapabilities(): DshCapabilities {
+    return { ...currentCapabilities };
+}
+export async function probeCapabilities(_port: number): Promise<DshCapabilities> {
+    return { mux: true, streaming: true };
+}
+// ---------- 端口探测 / 就绪 ----------
+export function checkPort(port: number = DEFAULT_DSH_PORT, host = '127.0.0.1', timeout = 1500): Promise<boolean> {
+    return new Promise((resolve) => {
+        const socket = new net.Socket();
+        const done = (ok: boolean) => {
+            socket.destroy();
+            resolve(ok);
+        };
+        socket.setTimeout(timeout);
+        socket.once('connect', () => done(true));
+        socket.once('timeout', () => done(false));
+        socket.once('error', () => done(false));
+        socket.connect(port, host);
+    });
+}
+export async function waitForPort(port: number, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (await checkPort(port, '127.0.0.1', 800)) {
+            return true;
+        }
+        await new Promise((r) => setTimeout(r, 500));
+    }
+    return false;
+}
+export function isRunning(): Promise<boolean> {
+    return checkPort(getEndpoint().port);
+}

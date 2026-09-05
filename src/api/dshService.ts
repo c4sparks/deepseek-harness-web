@@ -1,4 +1,4 @@
-// 服务层：面向 UI 的干净接口。UI 层只依赖本模块；API 传输层在 dshApi.ts。
+// 服务层：面向 UI 的干净接口。UI 层只依赖本模块；dsh 协议层在 src/dsh/（门面 src/dsh/index.ts）。
 // 职责：进程管理、共享会话、对话、DSH 面板、查看模式、全量 DSH API 通用通道。
 import * as vscode from 'vscode';
 import { spawn, execFile, type ChildProcess, type SpawnOptions, type StdioOptions } from 'child_process';
@@ -12,15 +12,10 @@ import {
     probeDsh,
     probeCapabilities,
     setCapabilities,
-    endpointAuthUrl,
-    endpointBaseUrl,
     createSession,
     renameSession,
     askInSession,
     askInSessionStreaming,
-    respondApproval,
-    respondQuestion,
-    cancelQuestion,
     getSessionProjections,
     getSessionMessages,
     type DshEndpoint,
@@ -31,7 +26,10 @@ import {
     type DshQuestionRequest,
     rpcCall,
     runSessionCommand,
-} from '../dshApi';
+    modelCatalog,
+    workspaceList,
+    dshEvents,
+} from '../dsh';
 
 const NODE_REQUIREMENT = '^22.19.0 || >=24.0.0';
 
@@ -57,6 +55,7 @@ function parseWebUrlLine(text: string): DshEndpoint | undefined {
     if (!m) {
         return undefined;
     }
+    console.warn(`[dsh-debug] stdout 命中行=${m[0].trim()}`);
     try {
         const u = new URL(m[1].trim());
         const port = Number(u.port || (u.protocol === 'https:' ? 443 : 80));
@@ -82,21 +81,10 @@ export class DshService {
     private dshStdout = '';
     private ready = false;
     private starting = false;
-    private openPanels = new Set<vscode.WebviewPanel>();
     // 共享会话（右键/对话/网页同一条线）
     private currentSessionId: string | undefined;
     // 当前工作区（缺省按 VS Code 文件夹自动解析，避免会话全部掉进"未分组"）
     private currentWorkspaceId: string | undefined;
-    // 查看模式
-    private _viewMode: 'internal' | 'browser' = 'internal';
-
-    get viewMode(): 'internal' | 'browser' {
-        return this._viewMode;
-    }
-
-    hasPanel(): boolean {
-        return this.openPanels.size > 0;
-    }
 
     /**
      * 通用通道：可调任意 DSH API（session / goal / subagent / workspace / llm / host ...）。
@@ -130,6 +118,24 @@ export class DshService {
     }
 
     /**
+     * 组装插件自启 dsh web 的启动参数。
+     * 固定部分始终包含 `web --no-open --port 0`（stdout 动态发现端口 + 不弹浏览器）；
+     * `dsh.webArgs` 只追加额外参数（如 --host / --trusted-host），不负责选择哪个 dsh。
+     */
+    private launchWebArgs(): string[] {
+        const base = ['web', '--no-open', '--port', '0'];
+        const configured = vscode.workspace.getConfiguration('dsh').get<unknown>('webArgs', []);
+        if (!Array.isArray(configured)) {
+            return base;
+        }
+        const extra = configured
+            .filter((v): v is string => typeof v === 'string')
+            .map((v) => v.trim())
+            .filter((v) => v.length > 0);
+        return [...base, ...extra];
+    }
+
+    /**
      * 解析 dsh 启动器（动态识别，四档回退）：
      *   ① dsh.cliPath 显式 CLI 路径
      *   ② dsh.repoPath 源码仓（开发环境在 .vscode/settings.json 配置）→ 仓库根 `pnpm dsh web`
@@ -139,7 +145,7 @@ export class DshService {
      */
     private async resolveDshLauncher(): Promise<{ cmd: string; args: string[]; cwd: string; versionCmd?: { cmd: string; args: string[]; cwd: string } }> {
         const isWin = process.platform === 'win32';
-        const webArgs = ['web', '--no-open', '--port', '0'];
+        const webArgs = this.launchWebArgs();
         // ① 显式 CLI 路径
         const cliPath = vscode.workspace.getConfiguration('dsh').get<string>('cliPath', '').trim();
         if (cliPath && fs.existsSync(cliPath)) {
@@ -286,6 +292,11 @@ export class DshService {
         this.dshStartedByUs = false;
     }
 
+    /** DshPanel 使用：官方网页面板全部关闭时回收插件自启的 dsh。 */
+    releaseOwnedDsh(): void {
+        this.killDshIfOwned();
+    }
+
     /**
      * 确保 DSH 服务在运行；未运行自动拉起并等待就绪。
      * 端点动态识别链路：① 探测既有实例（默认端口 3080）→ ② 启动器三档回退
@@ -351,8 +362,10 @@ export class DshService {
             if (discovered) {
                 setEndpoint(discovered);
             }
+            console.warn(`[dsh-debug] ensureRunning discovered=${JSON.stringify(discovered)}`);
             // ⑤ 握手探测：验证信封（P0-2）；失败给出明确原因而非难懂报错
             const probe = await probeDsh(discovered?.port ?? DEFAULT_DSH_PORT);
+            console.warn(`[dsh-debug] probe ok=${probe.ok} authRequired=${probe.authRequired} reason=${probe.reason}`);
             if (!probe.ok) {
                 const hint = (this.dshStderr.trim().split('\n').pop() || probe.reason || '未知错误').trim();
                 vscode.window.showErrorMessage(`DSH 启动失败：${hint}`);
@@ -372,13 +385,10 @@ export class DshService {
         }
     }
 
-    /** 扩展停用时收尾：先关掉本服务打开的所有 Webview 面板，再回收后台进程 */
+    /** 扩展停用时收尾：回收 dsh 协议流与后台进程（Webview 面板由 DshPanel 先关闭）。 */
     dispose(): void {
         this.ready = false;
-        for (const p of [...this.openPanels]) {
-            p.dispose();
-        }
-        this.openPanels.clear();
+        dshEvents.stop();
         this.killDshIfOwned();
     }
 
@@ -406,9 +416,13 @@ export class DshService {
 
     // ---------- 工作区 / 会话历史恢复 ----------
 
-    /** 列出全部工作区（含归档） */
+    /**
+     * 列出全部工作区（含归档）。
+     * 适配 dsh v0.1.2-rc.1：该版本没有 `workspace.list` 远程方法，工作区枚举由 api.workspaceList()
+     * 经 `workspace/follow`（/api/remote.mux 流）的 baseline 帧返回（详见 src/dsh/api.ts 中 workspaceList 的 JSDoc）。
+     */
     async listWorkspaces(): Promise<{ items: WorkspaceView[]; archivedSessionIds: string[] }> {
-        return this.call('workspace.list', {});
+        return workspaceList();
     }
 
     /** 新建工作区：采用一个目录 */
@@ -442,7 +456,7 @@ export class DshService {
             return undefined;
         }
         const target = normalizePath(folder.uri.fsPath);
-        const list = await this.call<{ items?: Array<{ workspaceId?: string; path?: string }> }>('workspace.list', {});
+        const list = await this.listWorkspaces();
         const existing = (list.items ?? []).find((w) => normalizePath(w.path) === target);
         if (existing?.workspaceId) {
             this.currentWorkspaceId = existing.workspaceId;
@@ -494,7 +508,7 @@ export class DshService {
      * 排除 subagent 内部会话与空白会话；运行中排前。
      */
     async listWorkspaceSessions(workspaceId: string): Promise<Array<{ sessionId: string; title: string; running: boolean }>> {
-        const wsList = await this.call<{ items?: Array<{ workspaceId?: string; sessionIds?: string[] }> }>('workspace.list', {});
+        const wsList = await this.listWorkspaces();
         const ws = (wsList.items ?? []).find((w) => w.workspaceId === workspaceId);
         const ids = new Set(ws?.sessionIds ?? []);
         if (ids.size === 0) {
@@ -535,13 +549,27 @@ export class DshService {
         return getSessionProjections(sid);
     }
 
-    /** 列出可用模型 + 当前选择 + 推理等级 */
+    /** 列出可用模型 + 当前选择 + 推理等级（rc1：目录=session/modelCatalog，当前=modelSelection 投影） */
     async listModels(): Promise<{
         current?: { provider?: string; model?: string; reasoningEffort?: string };
         groups?: Array<{ id: string; name: string; models: Array<{ id: string; name: string; reasoning?: { efforts?: Array<{ id: string; name: string }> } }> }>;
     }> {
         const sid = await this.getSession();
-        return this.call('session.models', { sessionId: sid });
+        const catalog = await modelCatalog();
+        let current: { provider?: string; model?: string; reasoningEffort?: string } | undefined;
+        try {
+            const proj = await getSessionProjections(sid);
+            const sel = proj['modelSelection'] as
+                | { next?: { provider?: string; model?: string; reasoningEffort?: string } | null; lastUsed?: { provider?: string; model?: string; reasoningEffort?: string } | null }
+                | undefined;
+            current = sel?.next ?? sel?.lastUsed ?? undefined;
+        } catch {
+            // 投影读不到不阻塞
+        }
+        return {
+            current: current ?? catalog.default,
+            groups: catalog.groups,
+        };
     }
 
     /** 选择模型 / 推理等级 */
@@ -576,10 +604,12 @@ export class DshService {
         return askInSession(sid, text, opts);
     }
 
-    /** 响应审批：允许一次 / 拒绝（应答需带 sessionId，且 rpcId 回显 mux 帧里的） */
+    /** 响应审批：允许一次 / 拒绝（rc.1 走 $events 流应答） */
     async approvalResponse(approvalId: string, allow: boolean): Promise<void> {
-        const sessionId = await this.getSession();
-        return respondApproval(sessionId, approvalId, allow ? 'allowed-once' : 'rejected');
+        const handled = await dshEvents.approve(approvalId, allow ? 'allowed-once' : 'rejected');
+        if (!handled) {
+            throw new Error('未找到对应的审批请求（可能已过期或已在网页端处理），请到 dsh 网页面板确认');
+        }
     }
 
     /** 流式对话：增量回调 onDelta / onReasoning / onActivity / onQuestion，返回完整文本 + 统计 */
@@ -598,107 +628,49 @@ export class DshService {
             throw new Error('DSH 服务不可用，无法对话');
         }
         const sid = await this.getSession();
-        return askInSessionStreaming(sid, content, onDelta, opts);
+        const unsubscribe = dshEvents.subscribe(sid, {
+            onApproval: (request) => {
+                opts.onApproval?.({
+                    approvalId: request.eventId,
+                    sessionId: request.agentId,
+                    description:
+                        request.reason ??
+                        `DSH 请求批准执行工具：${request.toolName}（请在网页端或下方确认）`,
+                });
+            },
+            onQuestion: (request) => {
+                opts.onQuestion?.({
+                    rpcId: request.eventId,
+                    sessionId: request.agentId,
+                    questions: request.questions,
+                });
+            },
+        });
+        try {
+            return await askInSessionStreaming(sid, content, onDelta, opts);
+        } finally {
+            unsubscribe();
+        }
     }
 
-    /** 回答 ask_user_question（回显 question/requested 帧的 rpcId） */
+    /** 回答 ask_user_question（rc.1 走 $events 流应答） */
     async answerQuestion(
         rpcId: string,
         sessionId: string,
         answers: Array<{ id: string; selected: string[]; custom?: string }>
     ): Promise<void> {
-        return respondQuestion(sessionId, rpcId, answers);
+        const handled = await dshEvents.answerQuestion(rpcId, answers);
+        if (!handled) {
+            throw new Error('未找到对应的提问（可能已过期或已在网页端处理），请到 dsh 网页面板确认');
+        }
     }
 
-    /** 取消 ask_user_question */
+    /** 取消 ask_user_question（rc.1 以 UserQuestionError/ASK_CANCELLED 拒绝该 waterfall） */
     async cancelQuestion(rpcId: string, sessionId: string): Promise<void> {
-        return cancelQuestion(rpcId, sessionId);
-    }
-
-    // ---------- DSH 网页面板 ----------
-
-    private getWebviewContent(): string {
-        const ep = getEndpoint();
-        return `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy"
-          content="default-src 'none'; frame-src http://127.0.0.1:${ep.port}; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
-</head>
-<body style="margin:0; padding:0; height:100vh; overflow:hidden;">
-    <iframe id="frame" src="${endpointAuthUrl()}" width="100%" height="100%" frameborder="0" style="border:none;"></iframe>
-    <script>
-        const vscode = acquireVsCodeApi();
-        window.addEventListener('message', (e) => {
-            const m = e.data;
-            if (m && m.type === 'reload') {
-                const f = document.getElementById('frame');
-                const src = f.src;
-                f.src = 'about:blank';
-                setTimeout(() => { f.src = src; }, 50);
-            }
-        });
-    </script>
-</body>
-</html>`;
-    }
-
-    /** 打开（并聚焦）DSH 网页面板；已打开则聚焦，避免重复 */
-    openPanel(): vscode.WebviewPanel {
-        for (const p of this.openPanels) {
-            p.reveal(vscode.ViewColumn.One, true);
-            return p;
-        }
-        const retain = vscode.workspace.getConfiguration('dsh').get<boolean>('retainContextWhenHidden', true);
-        const panel = vscode.window.createWebviewPanel(
-            'dshWebview',
-            'DeepSeek Harness',
-            vscode.ViewColumn.One,
-            { enableScripts: true, retainContextWhenHidden: retain }
-        );
-        panel.webview.html = this.getWebviewContent();
-        this.openPanels.add(panel);
-        vscode.commands.executeCommand('setContext', 'dshPanelOpen', true);
-        panel.onDidDispose(() => {
-            this.openPanels.delete(panel);
-            if (this.openPanels.size === 0) {
-                this.killDshIfOwned();
-                vscode.commands.executeCommand('setContext', 'dshPanelOpen', false);
-            }
-        });
-        return panel;
-    }
-
-    /** 刷新所有 DSH 面板 */
-    reloadPanels(): void {
-        for (const p of this.openPanels) {
-            p.webview.postMessage({ type: 'reload' });
+        const handled = await dshEvents.cancelQuestion(rpcId);
+        if (!handled) {
+            throw new Error('未找到对应的提问（可能已过期或已在网页端处理），请到 dsh 网页面板确认');
         }
     }
 
-    // ---------- 查看模式（内部面板 ↔ 外部浏览器） ----------
-
-    async openInBrowser(): Promise<void> {
-        if (!(await this.ensureRunning())) {
-            return;
-        }
-        // 面板没开时直接开编辑器，避免误跳浏览器
-        if (this.openPanels.size === 0) {
-            this.openPanel();
-            return;
-        }
-        this._viewMode = 'browser';
-        await vscode.commands.executeCommand('setContext', 'dshViewMode', 'browser');
-        vscode.env.openExternal(vscode.Uri.parse(endpointAuthUrl()));
-    }
-
-    async openInEditor(): Promise<void> {
-        if (!(await this.ensureRunning())) {
-            return;
-        }
-        this._viewMode = 'internal';
-        await vscode.commands.executeCommand('setContext', 'dshViewMode', 'internal');
-        this.openPanel();
-    }
 }

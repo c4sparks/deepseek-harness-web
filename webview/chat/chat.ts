@@ -36,6 +36,9 @@ let stepCount = 0
 let toolCount = 0
 let lastPrompt = ''
 
+/** 进行中的提问卡（key 为卡的 rpcId；等 host 发 questionClosed 确认后才移除） */
+const questionCards = new Map<string, HTMLElement>()
+
 /** 思维链：按 step 渲染的步骤块 */
 interface StepBox {
   step: number
@@ -334,6 +337,15 @@ function appendApproval(approvalId: string, description: string): void {
   messagesEl.scrollTop = messagesEl.scrollHeight
 }
 
+/** host 确认（或确认失败回退整轮停止）后移除提问卡；rpcId 缺省按匿名卡处理 */
+function closeQuestionCard(rpcId?: string): void {
+  const row = questionCards.get(rpcId ?? '')
+  if (row && row.isConnected) {
+    row.remove()
+  }
+  questionCards.delete(rpcId ?? '')
+}
+
 /** 提问行：显示 ask_user_question 的题目 + 选项，让用户回答/取消 */
 function appendQuestion(q: {
   rpcId?: string
@@ -441,13 +453,17 @@ function appendQuestion(q: {
   cancel.className = 'q-cancel'
   cancel.textContent = '取消'
   cancel.addEventListener('click', () => {
-    row.remove()
+    // 先不删卡：等 host 确认（questionClosed）再移除。取消失败时 host 会回退为整轮停止，
+    // 也通过 questionClosed 关闭本卡；若这里立即删卡，取消被拒后本轮会一直挂着、停止按钮卡在 ■。
+    cancel.disabled = true
+    submit.disabled = true
     vscode.postMessage({ type: 'questionCancel', rpcId: q.rpcId, sessionId: q.sessionId })
   })
   bar.appendChild(submit)
   bar.appendChild(cancel)
   row.appendChild(bar)
   messagesEl.appendChild(row)
+  questionCards.set(q.rpcId ?? '', row)
   messagesEl.scrollTop = messagesEl.scrollHeight
 }
 
@@ -623,6 +639,7 @@ function clearChat(): void {
   renderAttachments()
   input.value = ''
   setProcessing(false)
+  questionCards.clear()
 }
 
 // 建议按钮
@@ -1024,6 +1041,9 @@ window.addEventListener('message', (e) => {
     appendApproval(am.approvalId ?? '', am.description ?? '')
   } else if (m.type === 'chatQuestion') {
     appendQuestion(m as { rpcId?: string; sessionId?: string; questions?: Array<{ id: string; question: string; header?: string; detail?: string; options?: Array<{ label: string; description?: string }>; multiSelect?: boolean }> })
+  } else if (m.type === 'questionClosed') {
+    // host 已确认该提问关闭（单独取消被接受，或取消失败已回退整轮停止）
+    closeQuestionCard((m as { rpcId?: string }).rpcId)
   } else if (m.type === 'chatChunk') {
     appendChunk(m.text ?? '')
   } else if (m.type === 'chatDone') {
