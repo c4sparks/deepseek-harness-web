@@ -130,9 +130,9 @@ const ARGS_KEY_BY_METHOD: Record<string, string> = {
     'session/list': '_request',
 };
 /** 无参 remote（payload 必须为 { args: {} }）。 */
-const NO_ARGS_METHODS = new Set<string>(['session/modelCatalog']);
+const NO_ARGS_METHODS = new Set<string>(['session/modelCatalog', 'agentPresets/list']);
 /** 平铺 args 的方法（payload 对象直接作为 args 的字段集）。 */
-const FLAT_ARGS_METHODS = new Set<string>(['$events/result']);
+const FLAT_ARGS_METHODS = new Set<string>(['$events/result', 'agentPresets/select']);
 
 export function hasAuthCookie(port: number): boolean {
     return authCookies.has(port);

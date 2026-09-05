@@ -1,6 +1,6 @@
 # 04 · dsh 协议耦合与升级
 
-> 阶段：开发/耦合 · 维护者：插件维护者 · 版本基线：dsh `0.1.2-rc.1`（typert gateway）/ 插件 `0.1.3`
+> 阶段：开发/耦合 · 维护者：插件维护者
 > 代码事实源：`src/dsh/`（auth/rpc/mux/session/stream/legacy/events/webProxy；api.ts 与 index.ts 为门面）、`src/api/dshService.ts`；上层统一经 `src/dsh/` 门面引用。
 
 ## 三层耦合（升级影响）
@@ -30,6 +30,7 @@
 | session/page · session/follow | request | 分页冷读 / 热流订阅 | rc1 无 session.history |
 | workspace/create · workspace/follow | request | 建工作区 / 枚举 | follow 走 mux |
 | commands/execute | {agentId,line,images} | 斜杠命令(/permission) | 点号 404 |
+| agentPresets/list · agentPresets/select | {} / {agentId,agentPreset} | 列 agent 模式 / 空白会话切换模式【v0.1.4 · dsh 0.1.2-rc.1 新增】 | 已开始会话切换会被拒绝 |
 | $events（流） | 空 args | 审批/提问等 Remote Event 下发 | open 走 /api/remote.mux |
 | $events/result | {clientId,eventId,outcome} | 本地应答审批/提问 | outcome 形状见下节 |
 
@@ -49,11 +50,11 @@
 ## 事件 / usage / 错误码
 事件（`DSH_EVENT_TYPES`）：user/message、assistant/message(+usage)、assistant/chunk(text-delta/reasoning-delta/finish)、step/start·end、tool/call·result、turn/start·end、request/header·context。
 usage：uncachedInputTokens/outputTokens/cacheReadTokens/cacheWriteTokens/reasoningTokens[/totalTokens]（原样透传、缺失不补 0）。
-投影 fields：sessionStats/tokenUsage/permissions/modelSelection/title/goal/todos。
+投影 fields：sessionStats/tokenUsage/permissions/modelSelection/agentPreset（v0.1.4 新增）/title/goal/todos。
 错误码：arguments-invalid 查参数名；internal 重试/看日志；401/403 需鉴权；404 换斜杠；非 JSON=端口非 dsh。
 
 ## 插件功能 ↔ dsh 对接
-F1 聊天(session/prompt+follow+事件)、F2 模型(modelCatalog/selectModel)、F3 权限(permissions+commands/execute)、F4 工作区(workspace/follow+session)、F5 右键(共享会话)、F6 消费记录(usage)、F7 网页(内嵌=dsh/webProxy 同源地址；外部浏览器=authUrl)、F8 启动(dsh CLI/probe)、审批提问($events 流 + $events/result 聊天内应答)。升级时按此定位改 dsh/ 与投影。
+F1 聊天(session/prompt+follow+事件)、F2 模型(modelCatalog/selectModel)、F3 权限(permissions+commands/execute)、F4 工作区(workspace/follow+session)、F5 右键(共享会话)、F6 消费记录(usage)、F7 网页(内嵌=dsh/webProxy 同源地址；外部浏览器=authUrl)、F8 启动(dsh CLI/probe)、F9 会话模式(agentPresets/list+select，v0.1.4 · dsh 0.1.2-rc.1)、审批提问($events 流 + $events/result 聊天内应答)。升级时按此定位改 dsh/ 与投影。
 
 ## 升级 dsh / 插件
 1. 隔离 `DSH_HOME` + `dsh web --no-open --port 0` + `?token=` 登录。
@@ -104,3 +105,7 @@ F1 聊天(session/prompt+follow+事件)、F2 模型(modelCatalog/selectModel)、
 ### 0.1.3（2026-09-05）
 - 修改：
   - 无 dsh 协议契约变化；本轮只涉及 UI 会话投递与命名策略（协议层沿用 0.1.2-rc.1）
+
+### 0.1.4（2026-09-05）
+- 新增：
+  - 对接 `agentPresets/list`、`agentPresets/select`；投影字段补 `agentPreset`

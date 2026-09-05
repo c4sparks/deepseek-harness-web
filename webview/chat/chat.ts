@@ -19,6 +19,9 @@ const modelBtn = document.getElementById('modelBtn') as HTMLButtonElement
 const modelLabel = document.getElementById('modelLabel') as HTMLElement
 const permPopup = document.getElementById('permPopup') as HTMLElement
 const modelPopup = document.getElementById('modelPopup') as HTMLElement
+const modeBtn = document.getElementById('modeBtn') as HTMLButtonElement
+const modeLabel = document.getElementById('modeLabel') as HTMLElement
+const modePopup = document.getElementById('modePopup') as HTMLElement
 const statsBar = document.getElementById('statsbar') as HTMLDivElement
 
 let processing = false
@@ -726,7 +729,7 @@ function renderHistory(messages: Array<{ role: string; text: string }>, sessionI
   }
 }
 
-// ---------- 权限 / 模型 / 推理等级（图标 + 向上弹出面板） ----------
+// ---------- 权限 / 模型 / 推理等级 / 模式（图标 + 向上弹出面板） ----------
 
 let modelGroups: Array<{ id: string; name: string; models: Array<{ id: string; name: string; reasoning?: { efforts?: Array<{ id: string; name: string }> } }> }> = []
 let curProvider = ''
@@ -734,6 +737,15 @@ let curModel = ''
 let curEffort = ''
 let permOptions: Array<{ value: string; name: string; description?: string }> = []
 let currentPerm = ''
+let modeOptions: Array<{ id: string; name?: string; description?: string }> = []
+let currentMode = ''
+let modeLocked = false
+const MODE_NAMES: Record<string, string> = {
+  standard: '标准模式',
+  minimal: '极简模式',
+  cordis: '创造模式',
+  ptc: 'PTC 模式',
+}
 /** 危险权限预设：切换需先经自绘确认弹窗（与 src/extension.ts 保持一致来源） */
 const DANGEROUS_PERMS = new Set<string>(['danger-full-access'])
 
@@ -741,8 +753,10 @@ const DANGEROUS_PERMS = new Set<string>(['danger-full-access'])
 function closePopups(): void {
   permPopup.classList.add('hidden')
   modelPopup.classList.add('hidden')
+  modePopup.classList.add('hidden')
   permBtn.classList.remove('active')
   modelBtn.classList.remove('active')
+  modeBtn.classList.remove('active')
 }
 
 /** 把弹出面板锚定到对应图标上方（水平对齐图标，底部贴图标顶部上方一点） */
@@ -756,8 +770,13 @@ function anchorPopup(popup: HTMLElement, btn: HTMLElement): void {
 }
 
 /** 切换某个图标对应的弹出面板 */
-function togglePopup(which: 'perm' | 'model'): void {
-  const isOpen = which === 'perm' ? !permPopup.classList.contains('hidden') : !modelPopup.classList.contains('hidden')
+function togglePopup(which: 'perm' | 'model' | 'mode'): void {
+  const isOpen =
+    which === 'perm'
+      ? !permPopup.classList.contains('hidden')
+      : which === 'model'
+        ? !modelPopup.classList.contains('hidden')
+        : !modePopup.classList.contains('hidden')
   closePopups()
   if (isOpen) {
     return
@@ -767,20 +786,47 @@ function togglePopup(which: 'perm' | 'model'): void {
     renderPermPopup()
     permPopup.classList.remove('hidden')
     permBtn.classList.add('active')
-  } else {
+  } else if (which === 'model') {
     anchorPopup(modelPopup, modelBtn)
     renderModelPopup()
     modelPopup.classList.remove('hidden')
     modelBtn.classList.add('active')
+  } else {
+    // 模式弹窗固定到整个聊天窗口坐标，避免在宽/高编辑区里被内容层遮挡
+    renderModePopup()
+    const b = modeBtn.getBoundingClientRect()
+    const vw = window.innerWidth || document.documentElement.clientWidth
+    const vh = window.innerHeight || document.documentElement.clientHeight
+    const width = Math.min(360, vw - 16)
+    modePopup.style.position = 'fixed'
+    modePopup.style.left = Math.max(8, Math.min(b.left, vw - width - 8)) + 'px'
+    modePopup.style.top = 'auto'
+    modePopup.style.bottom = Math.max(8, vh - b.top + 8) + 'px'
+    modePopup.style.width = width + 'px'
+    modePopup.style.maxHeight = Math.max(120, Math.min(vh * 0.46, b.top - 8)) + 'px'
+    modePopup.classList.remove('hidden')
+    modeBtn.classList.add('active')
   }
 }
 
 permBtn.addEventListener('click', () => togglePopup('perm'))
 modelBtn.addEventListener('click', () => togglePopup('model'))
+modeBtn.addEventListener('click', () => {
+  if (!modeLocked) {
+    togglePopup('mode')
+  }
+})
 // 点击面板外任意处关闭（用 contains 判断：按钮内是 SVG，e.target 是 svg/path 而非按钮本身）
 document.addEventListener('click', (e) => {
   const t = e.target as Node
-  if (permPopup.contains(t) || modelPopup.contains(t) || permBtn.contains(t) || modelBtn.contains(t)) {
+  if (
+    permPopup.contains(t) ||
+    modelPopup.contains(t) ||
+    modePopup.contains(t) ||
+    permBtn.contains(t) ||
+    modelBtn.contains(t) ||
+    modeBtn.contains(t)
+  ) {
     return
   }
   closePopups()
@@ -901,6 +947,78 @@ function currentModelInfo(): { id: string; name: string; reasoning?: { efforts?:
     }
   }
   return undefined
+}
+
+/** 渲染 dsh agent 模式：选项列表 + 当前会话模式；已开始会话只读 */
+function renderAgentPresets(
+  info:
+    | { rows?: Array<{ id: string; name?: string; description?: string; broken?: string }>; current?: string; locked?: boolean }
+    | undefined
+): void {
+  if (!info?.rows) {
+    return
+  }
+  modeOptions = info.rows.filter((r) => !r.broken).map((r) => ({ id: r.id, name: r.name, description: r.description }))
+  modeLocked = info.locked === true
+  modeBtn.classList.toggle('readonly', modeLocked)
+  currentMode =
+    (info.current && modeOptions.some((m) => m.id === info.current) ? info.current : '') ||
+    modeOptions[0]?.id ||
+    ''
+  if (modeLocked) {
+    closePopups()
+  }
+  updateModeLabel()
+  if (!modePopup.classList.contains('hidden')) {
+    renderModePopup()
+  }
+}
+
+function updateModeLabel(): void {
+  const found = modeOptions.find((m) => m.id === currentMode)
+  const name = found?.name || MODE_NAMES[currentMode] || currentMode
+  modeLabel.textContent = name
+  modeBtn.title = modeLocked ? `${name}（已固定）` : name
+}
+
+function renderModePopup(): void {
+  modePopup.innerHTML = ''
+  if (modeOptions.length === 0) {
+    const empty = document.createElement('div')
+    empty.className = 'opt'
+    empty.textContent = '暂无可用模式'
+    empty.style.opacity = '0.6'
+    modePopup.appendChild(empty)
+    return
+  }
+  const title = document.createElement('div')
+  title.className = 'popup-title'
+  title.textContent = '会话模式'
+  modePopup.appendChild(title)
+  for (const m of modeOptions) {
+    const el = document.createElement('div')
+    el.className = 'opt' + (m.id === currentMode ? ' selected' : '')
+    const title = document.createElement('span')
+    title.textContent = m.name || MODE_NAMES[m.id] || m.id
+    el.appendChild(title)
+    if (m.description) {
+      const desc = document.createElement('span')
+      desc.className = 'opt-desc'
+      desc.textContent = m.description
+      el.appendChild(desc)
+    }
+    el.addEventListener('click', () => {
+      if (m.id === currentMode) {
+        closePopups()
+        return
+      }
+      currentMode = m.id
+      vscode.postMessage({ type: 'chatSelectMode', agentPreset: m.id })
+      updateModeLabel()
+      closePopups()
+    })
+    modePopup.appendChild(el)
+  }
 }
 
 function renderModelPopup(): void {
@@ -1057,7 +1175,13 @@ window.addEventListener('message', (e) => {
       addAttachment(m.path)
     }
   } else if (m.type === 'chatInfo') {
-    const info = m as { projections?: Record<string, unknown>; models?: { current?: { provider?: string; model?: string; reasoningEffort?: string }; groups?: unknown[] } }
+    const info = m as {
+      projections?: Record<string, unknown>
+      models?: { current?: { provider?: string; model?: string; reasoningEffort?: string }; groups?: unknown[] }
+      agentPresets?: { presets?: Array<{ id: string; name?: string; description?: string; broken?: string }> }
+      agentPreset?: string
+      agentPresetLocked?: boolean
+    }
     if (info.projections) {
       const perms = info.projections['permissions'] as { options?: Array<{ value: string; name: string; description?: string }>; currentValue?: string } | undefined
       renderPermission(perms?.options, perms?.currentValue)
@@ -1066,6 +1190,11 @@ window.addEventListener('message', (e) => {
     if (info.models) {
       renderModels(info.models as { current?: { provider?: string; model?: string; reasoningEffort?: string }; groups?: Array<{ id: string; name: string; models: Array<{ id: string; name: string; reasoning?: { efforts?: Array<{ id: string; name: string }> } }> }> })
     }
+    renderAgentPresets({
+      rows: info.agentPresets?.presets,
+      current: info.agentPreset,
+      locked: info.agentPresetLocked,
+    })
   } else if (m.type === 'draft') {
     input.value = input.value ? input.value + '\n' + (m.text ?? '') : (m.text ?? '')
     input.focus()

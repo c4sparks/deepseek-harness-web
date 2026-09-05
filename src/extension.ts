@@ -391,7 +391,29 @@ async function postChatInfo(webview: vscode.Webview): Promise<void> {
             // 模型列表失败不阻塞投影
         }
         const projections = await dsh.getProjections();
-        void webview.postMessage({ type: 'chatInfo', projections, models });
+        let agentPresets:
+            | { presets: Array<{ id: string; name?: string; description?: string; isDefault: boolean; broken?: string }> }
+            | undefined;
+        try {
+            agentPresets = await dsh.listAgentPresets();
+        } catch {
+            // 模式列表失败只隐藏模式选择，不影响聊天
+        }
+        const projectionAgentPreset = projections?.['agentPreset'];
+        const agentPreset =
+            typeof projectionAgentPreset === 'string'
+                ? projectionAgentPreset
+                : agentPresets?.presets.find((p) => p.isDefault)?.id;
+        const sessionMeta = projections?.['sessionListMetadata'] as { blank?: boolean } | undefined;
+        const agentPresetLocked = sessionMeta?.blank === false;
+        void webview.postMessage({
+            type: 'chatInfo',
+            projections,
+            models,
+            agentPresets,
+            agentPreset,
+            agentPresetLocked,
+        });
     } catch {
         // 服务未就绪时静默
     }
@@ -589,6 +611,16 @@ function setupChatWebview(
                     await dsh.selectModel(msg.provider, msg.model, msg.reasoningEffort || undefined);
                     await postChatInfo(webview);
                     vscode.window.showInformationMessage('已切换模型');
+                } catch (e) {
+                    vscode.window.showErrorMessage((e as Error).message);
+                }
+            })();
+        } else if (msg.type === 'chatSelectMode') {
+            void (async () => {
+                try {
+                    const applied = await dsh.switchAgentPreset(msg.agentPreset);
+                    await postChatInfo(webview);
+                    vscode.window.showInformationMessage(`已切换到模式：${applied}`);
                 } catch (e) {
                     vscode.window.showErrorMessage((e as Error).message);
                 }

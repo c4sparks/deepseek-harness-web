@@ -74,6 +74,7 @@
   /* 输入区 */
   #composer {
     position: relative;
+    z-index: 20;
     padding: 8px 12px;
     background: var(--vscode-editor-background, #1e1e1e);
   }
@@ -93,19 +94,21 @@
     display: flex; align-items: center; gap: 4px;
     padding: 2px 10px 6px 2px;
   }
-  #attach, #permBtn, #modelBtn {
+  #attach, #permBtn, #modelBtn, #modeBtn {
     width: 22px; height: 22px; border: none; background: none;
     color: var(--vscode-foreground, #ddd); cursor: pointer; border-radius: 4px;
     display: inline-flex; align-items: center; justify-content: center; padding: 0;
     flex: none; line-height: 0;
   }
-  #attach svg, #permBtn svg, #modelBtn svg { display: block; }
-  #permBtn, #modelBtn { font-size: 15px; line-height: 1; }
-  #attach, #permBtn, #modelBtn { border-radius: 6px; transition: background 0.12s ease; }
-  #attach:hover, #permBtn:hover, #modelBtn:hover {
+  #attach svg, #permBtn svg, #modelBtn svg, #modeBtn svg { display: block; }
+  #permBtn, #modelBtn, #modeBtn { font-size: 15px; line-height: 1; }
+  #attach, #permBtn, #modelBtn, #modeBtn { border-radius: 6px; transition: background 0.12s ease; }
+  #attach:hover, #permBtn:hover, #modelBtn:hover, #modeBtn:hover {
     background: rgba(128,128,128,0.28);
   }
-  #permBtn.active, #modelBtn.active { background: rgba(128,128,128,0.35); }
+  #permBtn.active, #modelBtn.active, #modeBtn.active { background: rgba(128,128,128,0.35); }
+  #modeBtn.readonly { opacity: 0.55; cursor: default; }
+  #modeBtn.readonly:hover { background: none; }
   /* 图标 + 选择文字作为一个紧凑单元；窄面板可收缩/换行，避免把右侧按钮挤出可视区 */
   #composer, #inputbox, #inputbar { min-width: 0; }
   .sel-group { display: inline-flex; align-items: center; gap: 3px; flex: 0 1 auto; min-width: 0; }
@@ -115,6 +118,26 @@
   }
   /* 模型标签：宽裕时完整显示，随面板变窄单行收缩并出省略号（不竖排、不横向溢出） */
   #modelLabel { max-width: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #modeLabel { max-width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #modePopup {
+    z-index: 1000;
+    width: min(360px, 92vw);
+    max-width: none;
+  }
+  #modePopup .opt {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+    white-space: normal;
+    line-height: 1.4;
+  }
+  #modePopup .opt-desc {
+    font-size: 11px;
+    opacity: 0.72;
+  }
+  #modePopup .opt:hover {
+    background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.25));
+  }
 
   /* 图标点击后向上展开的选择面板 */
   .popup {
@@ -407,6 +430,12 @@
           </button>
           <span id="modelLabel" class="sel-label"></span>
         </div>
+        <div class="sel-group">
+          <button id="modeBtn" title="会话模式（仅空白会话可切换）">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 10 5-10 5L2 7z"/><path d="m2 12 10 5 10-5"/><path d="m2 17 10 5 10-5"/></svg>
+          </button>
+          <span id="modeLabel" class="sel-label"></span>
+        </div>
         <button id="send" title="发送">
           <svg class="send-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor"
                stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -419,6 +448,7 @@
         </button>
       </div>
     </div>
+    <div id="modePopup" class="popup hidden"></div>
   </div>
 
   <div id="statsbar"></div>

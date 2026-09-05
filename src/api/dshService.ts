@@ -28,6 +28,9 @@ import {
     modelCatalog,
     workspaceList,
     dshEvents,
+    listAgentPresets as listAgentPresetsRpc,
+    selectAgentPreset as selectAgentPresetRpc,
+    type DshAgentPresetRoster,
 } from '../dsh';
 
 const NODE_REQUIREMENT = '^22.19.0 || >=24.0.0';
@@ -608,6 +611,20 @@ export class DshService {
             model,
             ...(reasoningEffort ? { reasoningEffort } : {}),
         });
+    }
+
+    /** 列出 dsh 支持的 agent 模式（当前会话仍按投影 agentPreset 单独读） */
+    async listAgentPresets(): Promise<DshAgentPresetRoster> {
+        return listAgentPresetsRpc();
+    }
+
+    /** 切换当前会话的 agent 模式（仅空白会话可切，后端会拒绝已开始的会话） */
+    async switchAgentPreset(agentPreset: string): Promise<string> {
+        if (!(await this.ensureRunning())) {
+            throw new Error('DSH 服务不可用，无法切换模式');
+        }
+        const sid = await this.getSession();
+        return selectAgentPresetRpc(sid, agentPreset);
     }
 
     /** 切换权限预设：执行 /permission 斜杠命令（走 commands/execute 斜杠端点，勿用 session.prompt 文本） */
