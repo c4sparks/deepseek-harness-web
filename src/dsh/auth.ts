@@ -1,10 +1,9 @@
 // dsh 端点状态与浏览器鉴权 cookie。
 // DSH 协议层：端点/鉴权/RPC/commands/probe/端口/mux（高层会话与流式方法见同目录 session.ts/stream.ts）。
-// dsh v0.1.2-rc.1 唯一适配基线，升级协议时按本目录与 docs/design/04 核对。
 // DSH 本地服务的 JSON-RPC 客户端 —— 适配 dsh v0.1.2-rc.1。
 //
-// ── 适配的 dsh 版本与上游接口映射（dsh 升级时按此表核对；勿按 0.1.1 世代点号协议写）──
-//   “wire 协议”基线 = dsh v0.1.2-rc.1（typert gateway 世代）
+// ── 适配的 dsh 版本与上游接口映射（dsh 升级时按此表核对；勿按 0.1.1点号协议写）──
+//   “wire 协议”基线 = dsh v0.1.2-rc.1（typert gateway）
 //
 //   1. RPC 信封：POST /api/<method>，body { type:'client-request', rpcId, method, payload }，
 //      应答 { type:'server-response', rpcId, result:{ ok, value|error } }（packages/client/connection）。
@@ -18,7 +17,7 @@
 //        下行 { type:'item', streamId, value? } / { type:'error', streamId, error } / { type:'end', streamId }。
 //   6. 会话历史/投影：该版本已无 session.history；读取 = session/follow 快照
 //      （snapshot: header/cursor/records/projections.values）+ 实时事件。见 readFollowSnapshot()/waitTurn()。
-//   7. 旧世代端点（/api/respond、session.history、workspace.list、点号+平铺）在该版本不存在。
+//   7. 旧端点（/api/respond、session.history、workspace.list、点号+平铺）在该版本不存在。
 import * as http from 'node:http';
 /** DSH 服务默认端口（dsh web 启动默认按 3080 处理；实际端口以探测 / URL 行结果为准）。 */
 export const DEFAULT_DSH_PORT = 3080;

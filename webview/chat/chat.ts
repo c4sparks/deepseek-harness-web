@@ -65,7 +65,6 @@ function setProcessing(p: boolean): void {
   processing = p
   if (p) {
     sendBtn.classList.add('stop')
-    sendBtn.textContent = '■'
     sendBtn.title = '终止'
     sendBtn.disabled = false
     // 立即显示"思考中…"，避免无反馈误以为卡住
@@ -79,7 +78,6 @@ function setProcessing(p: boolean): void {
     }
   } else {
     sendBtn.classList.remove('stop')
-    sendBtn.textContent = '↑'
     sendBtn.title = '发送'
     updateSendState()
   }
@@ -576,9 +574,14 @@ function renderAttachments(): void {
   for (const p of attachments) {
     const chip = document.createElement('span')
     chip.className = 'file-chip'
+    const icon = document.createElement('span')
+    icon.className = 'ficon'
+    const iconCodicon = document.createElement('span')
+    iconCodicon.className = 'codicon codicon-file'
+    icon.appendChild(iconCodicon)
     const fname = document.createElement('span')
     fname.className = 'fname'
-    fname.textContent = '📄 ' + (p.split(/[\\/]/).pop() || p)
+    fname.textContent = p.split(/[\\/]/).pop() || p
     fname.title = p
     const x = document.createElement('span')
     x.className = 'x'
@@ -587,6 +590,7 @@ function renderAttachments(): void {
       attachments = attachments.filter((a) => a !== p)
       renderAttachments()
     })
+    chip.appendChild(icon)
     chip.appendChild(fname)
     chip.appendChild(x)
     attachmentsEl.appendChild(chip)

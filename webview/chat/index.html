@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>DSH Chat</title>
+<link rel="stylesheet" href="./codicon.css" />
 <style>
   * { box-sizing: border-box; }
   html, body {
@@ -143,12 +144,14 @@
     background: var(--vscode-button-background, #0e639c); color: var(--vscode-button-foreground, #fff);
     cursor: pointer; flex: none; padding: 0;
     display: inline-flex; align-items: center; justify-content: center;
-    font-size: 14px; line-height: 1;
   }
+  #send svg { width: 13px; height: 13px; display: block; }
+  #send .stop-icon { display: none; }
+  #send.stop .send-icon { display: none; }
+  #send.stop .stop-icon { display: block; }
   #send:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
   #send:disabled { opacity: 0.4; cursor: default; }
   #send.stop { background: var(--vscode-errorForeground, #f14c4c); }
-  #send.stop { font-size: 10px; }
 
   /* 统计脚注 */
   .stats {
@@ -261,27 +264,36 @@
   #statsbar:empty { padding: 0; }
 
   /* 附件（文件引用，输入框区域内） */
-  #attachments { padding: 0 0 6px; display: flex; flex-wrap: wrap; gap: 6px; }
+  #attachments {
+    padding: 4px 0 8px; display: flex; align-items: center; gap: 6px;
+    flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+  #attachments::-webkit-scrollbar { height: 4px; }
+  #attachments::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.35); border-radius: 2px; }
   #attachments.hidden { display: none; }
   .file-chip {
-    display: inline-flex; align-items: center; gap: 6px;
+    display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
     background: var(--vscode-button-secondaryBackground, rgba(255,255,255,0.08));
     color: var(--vscode-button-secondaryForeground, #ccc);
     border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.25));
-    border-radius: 6px; padding: 3px 8px; font-size: 12px; max-width: 220px;
+    border-radius: 6px; padding: 0 7px; font-size: 12px; height: 30px;
+    max-width: 200px; min-width: 0;
   }
+  .file-chip .ficon { display: inline-flex; align-items: center; color: var(--vscode-descriptionForeground, #aaa); }
+  .file-chip .ficon .codicon { font-size: 14px; }
   .file-chip .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .file-chip .x { cursor: pointer; opacity: 0.7; flex-shrink: 0; }
   .file-chip .x:hover { opacity: 1; }
 
   /* 图片附件缩略图 */
   .img-chip {
-    display: inline-flex; align-items: flex-start; gap: 2px; position: relative;
+    display: inline-flex; align-items: center; position: relative; flex: 0 0 auto;
     border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.25));
-    border-radius: 6px; padding: 2px;
+    border-radius: 6px; padding: 2px; height: 48px;
   }
   .img-chip .img-thumb {
-    width: 56px; height: 56px; object-fit: cover; border-radius: 4px; display: block;
+    width: 44px; height: 44px; object-fit: cover; border-radius: 4px; display: block;
   }
   .img-chip .x {
     position: absolute; top: -6px; right: -6px;
@@ -395,7 +407,16 @@
           </button>
           <span id="modelLabel" class="sel-label"></span>
         </div>
-        <button id="send" title="发送">↑</button>
+        <button id="send" title="发送">
+          <svg class="send-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+               stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M8 14V3"/>
+            <path d="M3.5 6.5 8 2l4.5 4.5"/>
+          </svg>
+          <svg class="stop-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <rect x="3" y="3" width="10" height="10" rx="1"/>
+          </svg>
+        </button>
       </div>
     </div>
   </div>

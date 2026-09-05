@@ -26,4 +26,5 @@ await build({
 })
 
 cpSync(path.join(chatDir, 'index.html'), path.join(outDir, 'index.html'))
+cpSync(path.join(chatDir, 'codicon.css'), path.join(outDir, 'codicon.css'))
 console.log('[chat] built → dist/chat')

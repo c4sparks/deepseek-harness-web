@@ -13,7 +13,6 @@ import {
     probeCapabilities,
     setCapabilities,
     createSession,
-    renameSession,
     askInSession,
     askInSessionStreaming,
     getSessionProjections,
@@ -421,7 +420,6 @@ export class DshService {
             this.currentWorkspaceId = wsId;
         }
         const sid = await createSession(wsId ? { workspaceId: wsId } : {});
-        await renameSession(sid, 'VS Code 会话');
         this.currentSessionId = sid;
         return sid;
     }
@@ -517,27 +515,44 @@ export class DshService {
 
     /**
      * 列出某工作区下的已有会话（workspace.list 的 sessionIds + session.list 汇总映射标题）。
-     * 排除 subagent 内部会话与空白会话；运行中排前。
+     * 排除 subagent 内部会话；空白会话展示为「新会话」；运行中排前。
+     * 注意：新建会话不做强制改名，问答后沿用 dsh 自动生成的会话标题。
      */
-    async listWorkspaceSessions(workspaceId: string): Promise<Array<{ sessionId: string; title: string; running: boolean }>> {
+    async listWorkspaceSessions(
+        workspaceId: string
+    ): Promise<Array<{ sessionId: string; title: string; running: boolean; blank: boolean }>> {
         const wsList = await this.listWorkspaces();
         const ws = (wsList.items ?? []).find((w) => w.workspaceId === workspaceId);
         const ids = new Set(ws?.sessionIds ?? []);
-        if (ids.size === 0) {
+        const wsPath = ws?.path ? normalizePath(ws.path) : undefined;
+        if (ids.size === 0 && wsPath === undefined) {
             return [];
         }
         const sessionList = await this.call<{
-            items?: Array<{ sessionId?: string; running?: boolean; blank?: boolean; origin?: string; projections?: { values?: Record<string, unknown> } }>;
+            items?: Array<{ sessionId?: string; running?: boolean; blank?: boolean; origin?: string; cwd?: string; projections?: { values?: Record<string, unknown> } }>;
         }>('session.list', {});
-        const out: Array<{ sessionId: string; title: string; running: boolean }> = [];
+        const out: Array<{ sessionId: string; title: string; running: boolean; blank: boolean }> = [];
         for (const s of sessionList.items ?? []) {
-            if (!s.sessionId || !ids.has(s.sessionId) || s.origin === 'subagent' || s.blank) {
+            if (!s.sessionId || s.origin === 'subagent') {
+                continue;
+            }
+            const inWorkspace =
+                ids.has(s.sessionId) ||
+                (wsPath !== undefined && typeof s.cwd === 'string' && normalizePath(s.cwd) === wsPath);
+            if (!inWorkspace) {
                 continue;
             }
             out.push({
                 sessionId: s.sessionId,
-                title: String((s.projections?.values as Record<string, unknown> | undefined)?.['title'] ?? s.sessionId.slice(0, 8)),
+                title: String(
+                    s.blank
+                        ? '新会话'
+                        : ((s.projections?.values as Record<string, unknown> | undefined)?.['title'] as
+                                | string
+                                | undefined) ?? s.sessionId.slice(0, 8)
+                ),
                 running: !!s.running,
+                blank: !!s.blank,
             });
         }
         out.sort((a, b) => Number(b.running) - Number(a.running));

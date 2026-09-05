@@ -310,6 +310,49 @@ ${sections}
 let chatTarget: vscode.Webview | undefined;
 /** 编辑器区的聊天面板（移动到编辑器后创建），供"回到侧边栏"关闭 */
 let chatPanel: vscode.WebviewPanel | undefined;
+/** 已收到 webview `ready` 的聊天视图（保证 postMessage 到达已挂好监听的页面） */
+const readyChats = new WeakSet<vscode.Webview>();
+
+/** 向当前所有存活聊天 webview（侧栏视图 + 编辑器面板）投递消息，避免目标被重建后内容丢失 */
+function postToChats(message: unknown): void {
+    const targets = new Set<vscode.Webview>([chatTarget, chatPanel?.webview].filter((w): w is vscode.Webview => !!w));
+    for (const w of targets) {
+        try {
+            void w.postMessage(message);
+        } catch {
+            // 视图重建期间的旧引用：忽略，下次 resolve 会换新目标
+        }
+    }
+}
+
+/** 确保至少有一个聊天 webview 可用；没有则唤起侧栏并等待 resolve */
+async function ensureChatWebview(): Promise<vscode.Webview | undefined> {
+    if (chatTarget || chatPanel) {
+        return chatTarget ?? chatPanel?.webview;
+    }
+    try {
+        await vscode.commands.executeCommand('workbench.view.extension.dsh');
+    } catch {
+        return undefined;
+    }
+    const deadline = Date.now() + 2500;
+    while (!chatTarget && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+    }
+    return chatTarget;
+}
+
+/** 等待指定聊天 webview 发过 `ready`，避免消息发到尚未挂好监听的页面 */
+async function waitChatReady(webview: vscode.Webview): Promise<boolean> {
+    if (readyChats.has(webview)) {
+        return true;
+    }
+    const deadline = Date.now() + 3000;
+    while (!readyChats.has(webview) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return readyChats.has(webview);
+}
 
 /** 加载聊天 HTML 到 webview（重写资源 + CSP；缺失回退自绘） */
 async function loadChatHtml(webview: vscode.Webview, extensionUri: vscode.Uri): Promise<void> {
@@ -408,6 +451,7 @@ function setupChatWebview(
     webview.onDidReceiveMessage((msg) => {
         if (msg.type === 'ready' && !chatInfoPushed) {
             chatInfoPushed = true;
+            readyChats.add(webview);
             void (async () => {
                 try {
                     await dsh.ensureRunning();
@@ -701,6 +745,7 @@ type WsPick = vscode.QuickPickItem & {
     action?: 'info' | 'ws' | 'wsnew' | 'session' | 'new';
     workspaceId?: string;
     sessionId?: string;
+    blank?: boolean;
 };
 
 /**
@@ -729,7 +774,7 @@ async function showWorkspacePicker(): Promise<void> {
     }
 
     const expanded = new Set<string>();
-    const sessionCache = new Map<string, Array<{ sessionId: string; title: string; running: boolean }>>();
+    const sessionCache = new Map<string, Array<{ sessionId: string; title: string; running: boolean; blank: boolean }>>();
     const pick = vscode.window.createQuickPick<WsPick>();
     pick.placeholder = '展开工作区查看会话；点会话恢复历史';
     pick.matchOnDescription = true;
@@ -794,6 +839,7 @@ async function showWorkspacePicker(): Promise<void> {
                         action: 'session',
                         workspaceId: w.workspaceId,
                         sessionId: s.sessionId,
+                        blank: s.blank,
                         alwaysShow: true,
                     });
                 }
@@ -819,8 +865,11 @@ async function showWorkspacePicker(): Promise<void> {
         }
         pick.busy = true;
         try {
-            sessionCache.set(id, await dsh.listWorkspaceSessions(id));
-        } catch {
+            const sessions = await dsh.listWorkspaceSessions(id);
+            console.warn(`[dsh-ws] load workspace=${id} sessions=${sessions.length}`);
+            sessionCache.set(id, sessions);
+        } catch (e) {
+            console.warn(`[dsh-ws] load failed workspace=${id} error=${e instanceof Error ? e.message : String(e)}`);
             sessionCache.set(id, []);
         } finally {
             if (!disposed) {
@@ -830,22 +879,36 @@ async function showWorkspacePicker(): Promise<void> {
     };
 
     const switchWsNew = async (id: string): Promise<void> => {
+        if (!(await ensureChatWebview())) {
+            throw new Error('聊天视图未就绪，请先打开侧边栏 DSH 面板');
+        }
         dsh.setCurrentWorkspace(id);
         await dsh.newSession(id);
-        chatTarget?.postMessage({ type: 'clear' });
-        if (chatTarget) {
-            void postChatInfo(chatTarget);
+        postToChats({ type: 'clear' });
+        for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
+            void postChatInfo(w);
         }
         vscode.window.showInformationMessage('已切换工作区');
     };
 
-    const restoreInto = async (wsId: string, sessionId: string): Promise<void> => {
+    const restoreInto = async (wsId: string, sessionId: string, blank: boolean): Promise<void> => {
+        const target = await ensureChatWebview();
+        if (!target) {
+            throw new Error('聊天视图未就绪，请先打开侧边栏 DSH 面板');
+        }
+        if (!(await waitChatReady(target))) {
+            throw new Error('聊天页面尚未就绪，请稍后重试');
+        }
         dsh.setCurrentWorkspace(wsId);
         const messages = await dsh.restoreSession(sessionId);
-        chatTarget?.postMessage({ type: 'clear' });
-        chatTarget?.postMessage({ type: 'chatHistory', messages, sessionId });
-        if (chatTarget) {
-            void postChatInfo(chatTarget);
+        console.warn(`[dsh-restore] session=${sessionId} messages=${messages.length}`);
+        if (messages.length === 0 && !blank) {
+            vscode.window.showInformationMessage('已恢复会话，但 dsh 快照中没有返回可显示的历史消息');
+        }
+        postToChats({ type: 'clear' });
+        postToChats({ type: 'chatHistory', messages, sessionId });
+        for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
+            void postChatInfo(w);
         }
     };
 
@@ -861,9 +924,9 @@ async function showWorkspacePicker(): Promise<void> {
         const created = await dsh.createWorkspace(dir);
         dsh.setCurrentWorkspace(created.workspace.workspaceId);
         await dsh.newSession(created.workspace.workspaceId);
-        chatTarget?.postMessage({ type: 'clear' });
-        if (chatTarget) {
-            void postChatInfo(chatTarget);
+        postToChats({ type: 'clear' });
+        for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
+            void postChatInfo(w);
         }
         vscode.window.showInformationMessage(`已新建并切换到工作区：${created.workspace.title || path.basename(dir)}`);
         return true;
@@ -889,7 +952,7 @@ async function showWorkspacePicker(): Promise<void> {
                 await switchWsNew(row.workspaceId);
                 close();
             } else if (row.action === 'session' && row.workspaceId && row.sessionId) {
-                await restoreInto(row.workspaceId, row.sessionId);
+                await restoreInto(row.workspaceId, row.sessionId, row.blank === true);
                 close();
             } else if (row.action === 'new') {
                 if (await createNew()) {
