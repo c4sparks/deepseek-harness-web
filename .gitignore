@@ -20,8 +20,7 @@ coverage
 Thumbs.db
 
 # 工具配置
-.claude/settings.local.json
-.codegraph/
+.*/
 
 tmp/
 .codex-tmp/
