@@ -2,6 +2,11 @@
 
 All notable changes to the "deepseek-harness-web" extension will be documented in this file.
 
+## [0.1.5] - 2026-09-06
+
+- UI优化
+- VS Code兼容版本修改，支持Trae
+
 ## [0.1.4] - 2026-09-05
 
 - 新增会话模式选择支持（标准/极简/PTC/创造及自定义模式；空白会话可选，已有会话只读）

@@ -14,6 +14,8 @@ import {
 /** DshPanel 需要的宿主能力（由 DshService 提供）。 */
 export interface DshPanelHost {
     ensureRunning(): Promise<boolean>;
+    /** 面板开关 / 查看模式变化回调（供宿主同步标题栏显隐等状态） */
+    onPanelStateChange?: (state: { panelOpen: boolean; viewMode: 'internal' | 'browser' }) => void;
 }
 
 /** 管理“在本地打开/在浏览器打开”的 DSH 网页面板。 */
@@ -32,6 +34,14 @@ export class DshPanel {
 
     hasPanel(): boolean {
         return this.openPanels.size > 0;
+    }
+
+    /** 面板开关 / 查看模式变化时通知宿主（用于同步 webview 标题栏按钮显隐） */
+    private notifyState(): void {
+        this.host.onPanelStateChange?.({
+            panelOpen: this.hasPanel(),
+            viewMode: this._viewMode,
+        });
     }
 
     /** 停用插件时关闭全部面板并回收本地代理端口。 */
@@ -161,8 +171,10 @@ export class DshPanel {
             if (this.openPanels.size === 0) {
                 void this.closeWebProxy();
                 vscode.commands.executeCommand('setContext', 'dshPanelOpen', false);
+                this.notifyState();
             }
         });
+        this.notifyState();
         return panel;
     }
 
@@ -186,6 +198,7 @@ export class DshPanel {
         }
         this._viewMode = 'browser';
         await vscode.commands.executeCommand('setContext', 'dshViewMode', 'browser');
+        this.notifyState();
         vscode.env.openExternal(vscode.Uri.parse(endpointAuthUrl()));
     }
 
@@ -195,6 +208,7 @@ export class DshPanel {
         }
         this._viewMode = 'internal';
         await vscode.commands.executeCommand('setContext', 'dshViewMode', 'internal');
+        this.notifyState();
         await this.openPanel();
     }
 }

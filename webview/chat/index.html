@@ -15,6 +15,111 @@
   }
   body { display: flex; flex-direction: column; }
 
+  /* 页内自绘标题栏：背景与 VS Code 原生 view/title 标题栏同源（侧边栏背景），观感一致 */
+  #titlebar {
+    flex: none; display: flex; align-items: center; gap: 2px;
+    padding: 2px 8px 2px 6px; min-width: 0;
+    background: var(--vscode-sideBar-background, var(--vscode-editor-background, #1e1e1e));
+    border-bottom: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
+    font-size: 11px;
+  }
+  /* 观感对齐原生 view/title 动作按钮：~24px 命中区 + 16px codicon */
+  #titleWs {
+    display: inline-flex; align-items: center; gap: 5px; min-width: 0; height: 24px;
+    border: none; background: none; color: var(--vscode-foreground, #ddd);
+    cursor: pointer; font-size: 12px; font-family: inherit;
+    padding: 0 6px; border-radius: 4px; max-width: 64%;
+  }
+  #titleWs .codicon { font-size: 16px; flex-shrink: 0; line-height: 1; }
+  #titleWsName {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+  }
+  #titleWs:hover { background: rgba(128,128,128,0.22); }
+  .title-spacer { flex: 1 1 auto; min-width: 6px; }
+  .title-btn {
+    width: 24px; height: 24px; border: none; background: none;
+    color: var(--vscode-foreground, #ddd); cursor: pointer; border-radius: 4px;
+    display: inline-flex; align-items: center; justify-content: center; padding: 0;
+    flex: none; line-height: 0;
+  }
+  .title-btn .codicon { font-size: 16px; line-height: 1; }
+  .title-btn:hover { background: rgba(128,128,128,0.22); }
+  .title-btn.hidden { display: none; }
+  /* 「移到编辑器」图标：本仓库内嵌 codicon 字体(2024-12)的 open-preview 与 VS Code 宿主新版
+     同一 codepoint 渲染方向相反（放大镜一左一右）→ 水平镜像对齐原生 view/title。 */
+  .title-btn[data-cmd='moveToEditor'] .codicon { transform: scaleX(-1); }
+  /* 📁 与 ⋯ 的父容器：必须 flex:none，否则窄栏时被压缩到比内部 24px 图标还窄，
+     内部图标溢出盖到相邻按钮（表现为 ＋ 与 📁 重叠）。与 .title-btn 同规则。 */
+  #titleMoreWrap { position: relative; display: inline-flex; flex: none; }
+  #titleWorkWrap { position: relative; display: inline-flex; flex: none; }
+  #titleMorePopup {
+    position: absolute; top: calc(100% + 2px); right: 0; z-index: 80;
+    min-width: 150px; max-width: 220px;
+    background: var(--vscode-editor-background, #252526);
+    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.15));
+    border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+    padding: 4px;
+  }
+  #titleMorePopup.hidden { display: none; }
+  .title-more-item {
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    border: none; background: none; color: var(--vscode-foreground, #ddd);
+    font-size: 12px; font-family: inherit; padding: 5px 8px; border-radius: 4px; cursor: pointer;
+    text-align: left;
+  }
+  .title-more-item:hover { background: rgba(255,255,255,0.08); }
+  .title-more-item .codicon { font-size: 16px; flex-shrink: 0; }
+  .title-ws-caret { font-size: 12px; opacity: 0.6; flex-shrink: 0; }
+  /* 工作区下拉（复刻原生 QuickPick）：fixed 铺满 webview(侧栏/编辑器)宽度，避免窄侧栏裁掉。
+     居中于整个面板、从标题栏下方开始，内容纵向滚动，长名省略+悬停全称 */
+  #titleWsDropdown {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    top: 40px; z-index: 120;
+    width: min(560px, calc(100vw - 16px));
+    max-height: calc(100vh - 56px);
+    display: flex; flex-direction: column;
+    background: var(--vscode-editor-background, #252526);
+    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.15));
+    border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+    padding: 4px; gap: 2px;
+    overflow: hidden;
+  }
+  #titleWsDropdown.hidden { display: none; }
+  #wsSearch {
+    flex: none; width: 100%; box-sizing: border-box;
+    border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.45));
+    border-radius: 5px; background: var(--vscode-input-background, #1e1e1e);
+    color: var(--vscode-input-foreground, #ddd); padding: 4px 8px;
+    font-size: 12px; font-family: inherit; outline: none;
+  }
+  #wsSearch:focus { border-color: var(--vscode-focusBorder, #4daafc); }
+  #wsRows { flex: 1; min-height: 0; max-height: none; overflow-y: auto; overflow-x: hidden; }
+  #wsRows:empty::after {
+    content: '无匹配的工作区或会话';
+    display: block; padding: 8px; font-size: 12px;
+    color: var(--vscode-descriptionForeground, #888); text-align: center;
+  }
+  .wsrow {
+    display: flex; align-items: center; gap: 5px; width: 100%;
+    border: none; background: none; color: var(--vscode-foreground, #ddd);
+    font-size: 12px; font-family: inherit; padding: 5px 8px; border-radius: 4px;
+    cursor: pointer; text-align: left; min-width: 0;
+  }
+  .wsrow .ws-caret { font-size: 11px; opacity: 0.6; flex-shrink: 0; }
+  .wsrow .ws-check { color: var(--vscode-button-background, #0e639c); flex-shrink: 0; }
+  .wsrow .ws-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .wsrow .ws-desc { margin-left: auto; font-size: 11px; opacity: 0.6; flex-shrink: 0; }
+  .wsrow:hover { background: rgba(128,128,128,0.22); }
+  .wsrow[data-depth='1'] { padding-left: 18px; }
+  .wsrow[data-depth='2'] { padding-left: 30px; }
+  .wsrow .ws-session-icon { font-size: 12px; opacity: 0.7; flex-shrink: 0; }
+  .ws-new-row { border-top: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.1)); margin-top: 3px; padding-top: 3px; }
+  .ws-current-row { cursor: default; }
+  .ws-current-row:hover { background: none; }
+  /* 原生/自绘 切换：extension 注入 <body data-titlebar-mode>；原生标题栏模式(nativeTitle)时藏起页内自绘标题栏，
+     避免与原生 view/title 双标题。DOM 保留不删——chat.ts 顶层按存在元素查找，删了会断绑定 */
+  body[data-titlebar-mode='nativeTitle'] #titlebar { display: none; }
+
   /* 欢迎页（空状态） */
   #welcome {
     flex: 1; display: flex; flex-direction: column; align-items: center;
@@ -109,16 +214,18 @@
   #permBtn.active, #modelBtn.active, #modeBtn.active { background: rgba(128,128,128,0.35); }
   #modeBtn.readonly { opacity: 0.55; cursor: default; }
   #modeBtn.readonly:hover { background: none; }
-  /* 图标 + 选择文字作为一个紧凑单元；窄面板可收缩/换行，避免把右侧按钮挤出可视区 */
+  /* 图标 + 选择文字作为一个紧凑单元；窄面板可收缩，避免把右侧按钮挤出可视区 */
   #composer, #inputbox, #inputbar { min-width: 0; }
-  .sel-group { display: inline-flex; align-items: center; gap: 3px; flex: 0 1 auto; min-width: 0; }
+  /* 文字宽时可全显；空间不足时才收缩。min-width 保 22px 图标不被压小：组最窄只缩文字到 0(省略号→消失)，
+     图标固定等距、不溢出叠邻居 */
+  .sel-group { display: inline-flex; align-items: center; gap: 3px; flex: 0 1 auto; min-width: 22px; }
   .sel-label {
     font-size: 11px; color: var(--vscode-descriptionForeground, #888);
-    min-width: 0; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    flex: 0 1 auto; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  /* 模型标签：宽裕时完整显示，随面板变窄单行收缩并出省略号（不竖排、不横向溢出） */
-  #modelLabel { max-width: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #modeLabel { max-width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* 模型/模式标签：宽裕时完整显示；空间不足时随 flex 收缩出省略号（不设死上限，避免挡全显） */
+  #modelLabel, #modeLabel { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #modePopup {
     z-index: 1000;
     width: min(360px, 92vw);
@@ -134,9 +241,6 @@
   #modePopup .opt-desc {
     font-size: 11px;
     opacity: 0.72;
-  }
-  #modePopup .opt:hover {
-    background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.25));
   }
 
   /* 图标点击后向上展开的选择面板 */
@@ -155,10 +259,13 @@
     display: flex; align-items: center; font-size: 12px;
     padding: 5px 8px; border-radius: 5px; cursor: pointer;
   }
-  .popup .opt:hover { background: rgba(255,255,255,0.08); }
+  /* 悬停 / 选中统一用主题列表背景（深浅色均清晰；不用按钮蓝，浅色模式看不清） */
+  .popup .opt:hover {
+    background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.25));
+  }
   .popup .opt.selected {
-    background: var(--vscode-button-background, #0e639c);
-    color: var(--vscode-button-foreground, #fff);
+    background: var(--vscode-list-activeSelectionBackground, rgba(128, 128, 128, 0.35));
+    color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground, #ddd));
   }
   .popup .opt.reason { padding-left: 18px; font-size: 11px; }
   #send {
@@ -398,6 +505,38 @@
 </style>
 </head>
 <body>
+  <!-- 自绘标题栏：sideX 等宿主不渲染 webview 视图原生 view/title，页内自绘以保证两端通用 -->
+  <div id="titlebar">
+    <button id="titleWs" title="工作区">
+      <span class="codicon codicon-chevron-right title-ws-caret"></span>
+      <span id="titleWsName"></span>
+    </button>
+    <div class="title-spacer"></div>
+    <div id="titleWorkWrap">
+      <button class="title-btn" id="titleWorkBtn" title="工作区"><span class="codicon codicon-folder"></span></button>
+      <div id="titleWsDropdown" class="hidden">
+        <input id="wsSearch" type="text" placeholder="搜索工作区/会话" autocomplete="off" spellcheck="false" />
+        <div id="wsRows"></div>
+      </div>
+    </div>
+    <button class="title-btn" data-cmd="newSession" title="开启新会话"><span class="codicon codicon-add"></span></button>
+    <!-- 🌐/⟳ 默认隐藏：只在「在本地打开」面板打开后才由 applyPanelState 显示 -->
+    <button class="title-btn hidden" data-cmd="openInBrowser" title="在浏览器中打开"><span class="codicon codicon-globe"></span></button>
+    <button class="title-btn" data-cmd="openInEditor" title="在本地打开"><span class="codicon codicon-desktop-download"></span></button>
+    <button class="title-btn hidden" data-cmd="reload" title="刷新 dsh 页面"><span class="codicon codicon-refresh"></span></button>
+    <!-- 👁 关闭侧边栏：暂不使用，隐藏且不占位（class="hidden" display:none）。要恢复时去掉 hidden 即可 -->
+    <button class="title-btn hidden" data-cmd="closeSidebar" title="关闭侧边栏"><span class="codicon codicon-eye"></span></button>
+    <button class="title-btn" data-cmd="moveToEditor" title="移动到编辑器"><span class="codicon codicon-open-preview"></span></button>
+    <div id="titleMoreWrap">
+      <button class="title-btn" id="titleMoreBtn" title="更多"><span class="codicon codicon-ellipsis"></span></button>
+      <div id="titleMorePopup" class="hidden">
+        <button class="title-more-item" data-cmd="usage">
+          <span class="codicon codicon-graph-line"></span>查看消费记录
+        </button>
+      </div>
+    </div>
+  </div>
+
   <div id="welcome">
     <div class="welcome-title">AI 助手</div>
     <div class="welcome-desc">通过本地 DeepSeek Harness 对话。选中代码右键可 @ 到输入框。</div>

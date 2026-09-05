@@ -416,11 +416,55 @@ export class DshService {
         return this.newSession();
     }
 
-    /** 开启新会话并设为当前。指定 workspaceId 时归入该工作区，缺省用当前文件夹对应的工作区（无文件夹才回未分组）。 */
+    /** 该工作区内可复用的现存空会话（blank 且未归档、属于该工作区），无则 undefined —— 对齐官方 connectWorkspace 的“复用现成新会话” */
+    private async findReusableBlank(workspaceId: string): Promise<string | undefined> {
+        try {
+            const { items: wsItems, archivedSessionIds } = await this.listWorkspaces();
+            const ws = wsItems.find((w) => w.workspaceId === workspaceId);
+            if (!ws) {
+                return undefined;
+            }
+            const wsPath = ws.path ? normalizePath(ws.path) : undefined;
+            const archived = new Set(archivedSessionIds ?? []);
+            const memberIds = new Set(ws.sessionIds ?? []);
+            const sessionList = await this.call<{
+                items?: Array<{ sessionId?: string; blank?: boolean; origin?: string; cwd?: string }>;
+            }>('session.list', {});
+            const rows = (sessionList.items ?? []).filter(
+                (s) => !!s.sessionId && s.blank && s.origin !== 'subagent' && !archived.has(s.sessionId!)
+            );
+            // 优先复用当前正在用的那个（若仍属该工作区且未归档），避免反复点“新建”跳去更旧的空会话
+            const currentFirst = rows.find((s) => s.sessionId === this.currentSessionId);
+            if (currentFirst) {
+                return currentFirst.sessionId;
+            }
+            for (const s of rows) {
+                const belongs =
+                    memberIds.has(s.sessionId!) ||
+                    (wsPath !== undefined && typeof s.cwd === 'string' && normalizePath(s.cwd) === wsPath);
+                if (belongs) {
+                    return s.sessionId;
+                }
+            }
+        } catch {
+            // 列表拉取失败不阻塞：照常新建
+        }
+        return undefined;
+    }
+
+    /**
+     * 开启新会话并设为当前。指定 workspaceId 时归入该工作区，缺省用当前文件夹对应的工作区（无文件夹才回未分组）。
+     * 对齐 dsh 官方：同一工作区已存在空白“新会话”时先复用它，不重复创建 → 反复点“新建会话”不会越积越多。
+     */
     async newSession(workspaceId?: string): Promise<string> {
         const wsId = workspaceId ?? this.currentWorkspaceId;
         if (wsId) {
             this.currentWorkspaceId = wsId;
+            const reusable = await this.findReusableBlank(wsId);
+            if (reusable) {
+                this.currentSessionId = reusable;
+                return reusable;
+            }
         }
         const sid = await createSession(wsId ? { workspaceId: wsId } : {});
         this.currentSessionId = sid;
@@ -523,7 +567,7 @@ export class DshService {
      */
     async listWorkspaceSessions(
         workspaceId: string
-    ): Promise<Array<{ sessionId: string; title: string; running: boolean; blank: boolean }>> {
+    ): Promise<Array<{ sessionId: string; title: string; running: boolean; blank: boolean; current: boolean }>> {
         const wsList = await this.listWorkspaces();
         const ws = (wsList.items ?? []).find((w) => w.workspaceId === workspaceId);
         const ids = new Set(ws?.sessionIds ?? []);
@@ -534,7 +578,7 @@ export class DshService {
         const sessionList = await this.call<{
             items?: Array<{ sessionId?: string; running?: boolean; blank?: boolean; origin?: string; cwd?: string; projections?: { values?: Record<string, unknown> } }>;
         }>('session.list', {});
-        const out: Array<{ sessionId: string; title: string; running: boolean; blank: boolean }> = [];
+        const out: Array<{ sessionId: string; title: string; running: boolean; blank: boolean; current: boolean }> = [];
         for (const s of sessionList.items ?? []) {
             if (!s.sessionId || s.origin === 'subagent') {
                 continue;
@@ -543,6 +587,12 @@ export class DshService {
                 ids.has(s.sessionId) ||
                 (wsPath !== undefined && typeof s.cwd === 'string' && normalizePath(s.cwd) === wsPath);
             if (!inWorkspace) {
+                continue;
+            }
+            const isCurrent = s.sessionId === this.currentSessionId;
+            // 纯空「新会话」：除非它就是当前正在用的会话(显示为选中)，否则不列出
+            //（与 dsh 网页一致：无内容的旧会话不占列表，避免越积越多）。运行中的保留。
+            if (s.blank && !s.running && !isCurrent) {
                 continue;
             }
             out.push({
@@ -556,9 +606,10 @@ export class DshService {
                 ),
                 running: !!s.running,
                 blank: !!s.blank,
+                current: isCurrent,
             });
         }
-        out.sort((a, b) => Number(b.running) - Number(a.running));
+        out.sort((a, b) => Number(b.current) - Number(a.current) || Number(b.running) - Number(a.running));
         return out;
     }
 

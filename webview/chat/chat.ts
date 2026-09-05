@@ -3,6 +3,9 @@
 import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
 import { showDialog } from './modal'
+// 标题栏 webview 装配入口：chat.ts 只认识 ./titlebar，具体实现（自绘标题栏）细节收在其模块内。
+// 删自绘标题栏(只留原生) 时删除本行与末尾的 initChatTitlebar(vscode) 一行即可。
+import { initChatTitlebar } from './titlebar'
 
 const vscode = acquireVsCodeApi()
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
@@ -714,11 +717,13 @@ function renderHistory(messages: Array<{ role: string; text: string }>, sessionI
     } else if (item.role === 'assistant') {
       startAssistantMessage()
       assistantText = item.text
-      ;(assistantEl as HTMLElement).innerHTML = DOMPurify.sanitize(md.render(item.text))
-      if (lastUser) {
-        const row = assistantEl.closest('.msg') as HTMLElement | null
-        if (row) {
-          row.dataset.prompt = lastUser
+      if (assistantEl) {
+        assistantEl.innerHTML = DOMPurify.sanitize(md.render(item.text))
+        if (lastUser) {
+          const row = assistantEl.closest('.msg') as HTMLElement | null
+          if (row) {
+            row.dataset.prompt = lastUser
+          }
         }
       }
       finishAssistant()
@@ -1133,13 +1138,15 @@ function renderStats(projections: Record<string, unknown>): void {
 composer.addEventListener('dragover', (e) => e.preventDefault())
 composer.addEventListener('drop', (e) => {
   e.preventDefault()
-  const files = Array.from(e.dataTransfer.files ?? [])
+  const dt = e.dataTransfer
+  if (!dt) return
+  const files = Array.from(dt.files ?? [])
   for (const f of files) {
     if (f.type && f.type.startsWith('image/')) {
       readImageFile(f)
     }
   }
-  const uri = e.dataTransfer.getData('text/uri-list')
+  const uri = dt.getData('text/uri-list')
   if (uri) {
     const first = uri.trim().split('\n')[0].trim()
     if (first.startsWith('file:')) {
@@ -1205,6 +1212,10 @@ window.addEventListener('message', (e) => {
     clearChat()
   }
 })
+
+// 装配标题栏：先挂好消息监听再通知扩展，避免竞态；非 selfDrawn 模式内部直接 return。
+// 删自绘标题栏(只留原生) 时删除本行 + 顶部 import 一行即可。
+initChatTitlebar(vscode)
 
 // 页面脚本就绪（消息监听已挂上）→ 通知扩展推送 chatInfo，避免视图重建时早推丢失
 vscode.postMessage({ type: 'ready' })

@@ -7,10 +7,22 @@ import * as path from 'path';
 import { DshService } from './api/dshService';
 import { type DshContentPart, type DshReplyStats } from './dsh';
 import { DshPanel } from './dshPanel';
+import {
+    TITLEBAR_MODE,
+    TITLEBAR_NATIVE_CTX,
+    TITLEBAR_MODE_ATTR,
+    installChatTitlebar,
+    makeTitlebarPanelBroadcaster,
+    type TitlebarChatHost,
+    type TitlebarMode,
+} from './titlebar';
 
 const dsh = new DshService();
 const panel = new DshPanel({
     ensureRunning: () => dsh.ensureRunning(),
+    // DSH 网页面板开关/查看模式变化 → 广播 panelState（自绘标题栏 webview 消费）。
+    // 原生标题栏模式下本函数返回 undefined（走 setContext 喂 package.json when）→ 自动 no-op。
+    onPanelStateChange: makeTitlebarPanelBroadcaster((msg) => postToChats(msg)),
 });
 
 // 侧边栏对话视图引用（右键 @ 代码进输入框用）
@@ -313,10 +325,24 @@ let chatPanel: vscode.WebviewPanel | undefined;
 /** 已收到 webview `ready` 的聊天视图（保证 postMessage 到达已挂好监听的页面） */
 const readyChats = new WeakSet<vscode.Webview>();
 
+/** 全部存活聊天 webview：侧栏视图 launcherView + 当前 chatTarget + 编辑器面板 chatPanel（去重） */
+function allChatWebviews(): vscode.Webview[] {
+    const set = new Set<vscode.Webview>();
+    if (launcherView?.webview) {
+        set.add(launcherView.webview);
+    }
+    if (chatTarget) {
+        set.add(chatTarget);
+    }
+    if (chatPanel?.webview) {
+        set.add(chatPanel.webview);
+    }
+    return [...set];
+}
+
 /** 向当前所有存活聊天 webview（侧栏视图 + 编辑器面板）投递消息，避免目标被重建后内容丢失 */
 function postToChats(message: unknown): void {
-    const targets = new Set<vscode.Webview>([chatTarget, chatPanel?.webview].filter((w): w is vscode.Webview => !!w));
-    for (const w of targets) {
+    for (const w of allChatWebviews()) {
         try {
             void w.postMessage(message);
         } catch {
@@ -354,8 +380,16 @@ async function waitChatReady(webview: vscode.Webview): Promise<boolean> {
     return readyChats.has(webview);
 }
 
-/** 加载聊天 HTML 到 webview（重写资源 + CSP；缺失回退自绘） */
-async function loadChatHtml(webview: vscode.Webview, extensionUri: vscode.Uri): Promise<void> {
+/**
+ * 加载聊天 HTML 到 webview（重写资源 + CSP；缺失回退自绘）。
+ * titlebarMode：本页标题栏实现（A 原生 / B 页内自绘），静态注入 <body data-titlebar-mode>
+ * 供 chat.ts 首帧同步读取（避免 ready 后消息导致“先画自绘再隐藏”的闪烁/竞态）。
+ */
+async function loadChatHtml(
+    webview: vscode.Webview,
+    extensionUri: vscode.Uri,
+    titlebarMode: TitlebarMode
+): Promise<void> {
     const chatRoot = vscode.Uri.joinPath(extensionUri, 'dist', 'chat');
     try {
         const content = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(chatRoot, 'index.html'));
@@ -365,6 +399,8 @@ async function loadChatHtml(webview: vscode.Webview, extensionUri: vscode.Uri): 
             const asset = vscode.Uri.joinPath(chatRoot, p);
             return `${attr}="${webview.asWebviewUri(asset)}"`;
         });
+        // 原生/自绘 标题栏通道：原生标题栏模式时 index.html 的 CSS 让 #titlebar 首帧即 display:none
+        html = html.replace('<body>', `<body ${TITLEBAR_MODE_ATTR}="${titlebarMode}">`);
         const csp =
             `default-src 'none'; ` +
             `script-src ${webview.cspSource} 'wasm-unsafe-eval'; ` +
@@ -419,18 +455,23 @@ async function postChatInfo(webview: vscode.Webview): Promise<void> {
     }
 }
 
-/** 聊天 webview 统一接线：加载 UI + 处理消息（聊天/停止/文件/复制/工作区）。侧边栏和编辑器面板共用。 */
+/**
+ * 聊天 webview 统一接线：加载 UI + 处理消息（聊天/停止/文件/复制/工作区）。侧边栏和编辑器面板共用。
+ * titlebarMode：模式字符串（侧边栏恒 = TITLEBAR_MODE；编辑器面板恒 'nativeTitle' 作"纯聊天无标题栏"标记）。
+ */
 function setupChatWebview(
     webview: vscode.Webview,
     extensionUri: vscode.Uri,
-    globalState: vscode.Memento
+    globalState: vscode.Memento,
+    titlebarMode: TitlebarMode,
+    isSidebar: boolean
 ): void {
     webview.options = {
         enableScripts: true,
         localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'dist', 'chat')],
     };
     chatTarget = webview;
-    void loadChatHtml(webview, extensionUri);
+    void loadChatHtml(webview, extensionUri, titlebarMode);
     // 打开视图即确保 DSH 运行 + 当前工作区；chatInfo（权限/模型/统计）推送
     // 改由 webview 的 ready 触发，避免页面 JS 未就绪时 postMessage 丢失
     void (async () => {
@@ -442,10 +483,19 @@ function setupChatWebview(
             // 服务不可用：后续命令会再触发
         }
     })();
-    // 右键 @代码 草稿补投
-    if (pendingDraft) {
-        void webview.postMessage({ type: 'draft', text: pendingDraft });
+    // 右键 @代码 草稿补投：只在侧栏实例创建时补（draft 只投侧栏对话），且等 ready 再发
+    if (pendingDraft && isSidebar) {
+        const draft = pendingDraft;
         pendingDraft = undefined;
+        void (async () => {
+            try {
+                if (await waitChatReady(webview)) {
+                    void webview.postMessage({ type: 'draft', text: draft });
+                }
+            } catch {
+                // 实例销毁：忽略
+            }
+        })();
     }
 
     const gen = { n: 0 };
@@ -469,6 +519,25 @@ function setupChatWebview(
 
     // 握手：等页面脚本就绪后再推一次 chatInfo（避免重建/切回视图时数据丢失）
     let chatInfoPushed = false;
+
+    // 标题栏装配：按本 webview 的模式(mode)挂对应实现的消息处理（自绘标题栏 才有 webview→扩展 消息）。
+    // 原生标题栏模式由宿主渲染按钮，webview 侧不需要扩展消息处理。删自绘标题栏时本行保持不变。
+    const chatTitlebarHost: TitlebarChatHost = {
+        post,
+        listWorkspaces: () => listAllWorkspaces(),
+        displayName: (w) => wsDisplayName(w),
+        listWorkspaceSessions: (id) => listWorkspaceSessionsOf(id),
+        wsSwitchNew: (id) => wsSwitchNew(id),
+        wsRestore: (id, sid, blank) => wsRestore(id, sid, blank),
+        wsCreateNew: () => wsCreateNew(),
+        getPanelState: () => ({ panelOpen: panel.hasPanel(), viewMode: panel.viewMode }),
+        ensureReadyForList: async () => {
+            await dsh.ensureRunning();
+            await dsh.ensureCurrentWorkspace();
+        },
+        getCurrentWorkspaceId: () => dsh.getCurrentWorkspaceId(),
+    };
+    installChatTitlebar(webview, titlebarMode, chatTitlebarHost);
 
     webview.onDidReceiveMessage((msg) => {
         if (msg.type === 'ready' && !chatInfoPushed) {
@@ -659,7 +728,8 @@ class DshLauncherProvider implements vscode.WebviewViewProvider {
 
     resolveWebviewView(view: vscode.WebviewView): void {
         launcherView = view;
-        setupChatWebview(view.webview, this.extensionUri, this.globalState);
+        // 侧边栏/面板是「视图」，原生 view/title 能渲染到 → 直接按 TITLEBAR_MODE 走；isSidebar=true
+        setupChatWebview(view.webview, this.extensionUri, this.globalState, TITLEBAR_MODE, true);
         view.onDidDispose(() => {
             if (launcherView === view) {
                 launcherView = undefined;
@@ -708,7 +778,7 @@ function buildPrompt(ctx: SelectionContext, instruction: string, noWriteHint: bo
     return lines.join('\n');
 }
 
-/** 拿到 AI 回复后，让用户选择如何应用（VS Code 原生 QuickPick） */
+/** 拿到 AI 回复后，让用户选择如何应用（原生 QuickPick） */
 async function showApplyOptions(reply: string, ctx: SelectionContext, allowReplace: boolean): Promise<void> {
     const items: Array<{ label: string; description: string; action: 'replace' | 'insert' | 'copy' | 'open' }> = [
         ...(allowReplace
@@ -718,32 +788,53 @@ async function showApplyOptions(reply: string, ctx: SelectionContext, allowRepla
         { label: '$(copy) 复制到剪贴板', description: '复制 AI 回复全文', action: 'copy' as const },
         { label: '$(new-file) 在新编辑器标签打开', description: '不修改当前文件', action: 'open' as const },
     ];
-    const pick = await vscode.window.showQuickPick(items, {
-        placeHolder: allowReplace ? 'AI 处理完成，选择如何应用结果' : 'AI 回答完成，选择如何处理',
-    });
-    if (!pick) {
-        return;
-    }
-    switch (pick.action) {
-        case 'replace':
-            await ctx.editor.edit((b) => b.replace(ctx.selection, reply));
-            break;
-        case 'insert':
-            await ctx.editor.edit((b) => b.insert(ctx.selection.active, reply));
-            break;
-        case 'copy':
-            await vscode.env.clipboard.writeText(reply);
-            vscode.window.showInformationMessage('已复制到剪贴板');
-            break;
-        case 'open': {
-            const doc = await vscode.workspace.openTextDocument({
-                content: reply,
-                language: ctx.editor.document.languageId,
-            });
-            await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside });
-            break;
+    // items 先填再 show：sideX 等宿主对「show() 之后再写 items」的 QuickPick 可能不重绘列表
+    //（现象：只剩搜索框、下面无选项），导致无法选择替换/插入。故用 createQuickPick 手动装配。
+    const pick = vscode.window.createQuickPick<{ label: string; description: string; action: 'replace' | 'insert' | 'copy' | 'open' }>();
+    pick.placeholder = allowReplace ? 'AI 处理完成，选择如何应用结果' : 'AI 回答完成，选择如何处理';
+    pick.items = items;
+    pick.show();
+
+    let closed = false;
+    const close = (): void => {
+        if (!closed) {
+            closed = true;
+            pick.dispose();
         }
-    }
+    };
+    const runAction = (chosen: { action: 'replace' | 'insert' | 'copy' | 'open' }): void => {
+        void (async () => {
+            switch (chosen.action) {
+                case 'replace':
+                    await ctx.editor.edit((b) => b.replace(ctx.selection, reply));
+                    break;
+                case 'insert':
+                    await ctx.editor.edit((b) => b.insert(ctx.selection.active, reply));
+                    break;
+                case 'copy':
+                    await vscode.env.clipboard.writeText(reply);
+                    vscode.window.showInformationMessage('已复制到剪贴板');
+                    break;
+                case 'open': {
+                    const doc = await vscode.workspace.openTextDocument({
+                        content: reply,
+                        language: ctx.editor.document.languageId,
+                    });
+                    await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside });
+                    break;
+                }
+            }
+        })();
+    };
+    pick.onDidChangeSelection((selection) => {
+        const chosen = selection[0];
+        if (!chosen || closed) {
+            return;
+        }
+        close();
+        runAction(chosen);
+    });
+    pick.onDidHide(close);
 }
 
 /** 把提示词发给本地 DSH，拿到 AI 回复后提供应用选项 */
@@ -780,6 +871,93 @@ type WsPick = vscode.QuickPickItem & {
     blank?: boolean;
 };
 
+/** 会话行（webview dropdown 展开用） */
+interface WsSessionRow {
+    sessionId: string;
+    title: string;
+    running: boolean;
+    blank: boolean;
+    /** 是否为当前正在使用的会话（用于 QuickPick / dropdown 标“当前”） */
+    current?: boolean;
+}
+
+/** UI 展示用工作区名：title 优先，缺省用路径末级 */
+function wsDisplayName(w: { path: string; title: string }): string {
+    return w.title || path.basename(w.path);
+}
+
+/** 列出全部工作区（供 QuickPick / webview dropdown 共用） */
+async function listAllWorkspaces(): Promise<Array<{ workspaceId: string; path: string; title: string; sessionIds: string[] }>> {
+    return ((await dsh.listWorkspaces()).items ?? []) as Array<{
+        workspaceId: string;
+        path: string;
+        title: string;
+        sessionIds: string[];
+    }>;
+}
+
+/** 拉取某工作区的会话（供 QuickPick / webview dropdown 共用） */
+async function listWorkspaceSessionsOf(wsId: string): Promise<WsSessionRow[]> {
+    return dsh.listWorkspaceSessions(wsId) as Promise<WsSessionRow[]>;
+}
+
+/** 切到工作区并开新会话（供 QuickPick / webview dropdown 共用；调用方负责关 UI） */
+async function wsSwitchNew(wsId: string): Promise<void> {
+    if (!(await ensureChatWebview())) {
+        throw new Error('聊天视图未就绪，请先打开侧边栏 DSH 面板');
+    }
+    dsh.setCurrentWorkspace(wsId);
+    await dsh.newSession(wsId);
+    postToChats({ type: 'clear' });
+    for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
+        void postChatInfo(w);
+    }
+    vscode.window.showInformationMessage('已切换工作区');
+}
+
+/** 把会话恢复到当前聊天（供 QuickPick / webview dropdown 共用；调用方负责关 UI） */
+async function wsRestore(wsId: string, sessionId: string, blank: boolean): Promise<void> {
+    const target = await ensureChatWebview();
+    if (!target) {
+        throw new Error('聊天视图未就绪，请先打开侧边栏 DSH 面板');
+    }
+    if (!(await waitChatReady(target))) {
+        throw new Error('聊天页面尚未就绪，请稍后重试');
+    }
+    dsh.setCurrentWorkspace(wsId);
+    const messages = await dsh.restoreSession(sessionId);
+    console.warn(`[dsh-restore] session=${sessionId} messages=${messages.length}`);
+    if (messages.length === 0 && !blank) {
+        vscode.window.showInformationMessage('已恢复会话，但 dsh 快照中没有返回可显示的历史消息');
+    }
+    postToChats({ type: 'clear' });
+    postToChats({ type: 'chatHistory', messages, sessionId });
+    for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
+        void postChatInfo(w);
+    }
+}
+
+/** 新建工作区（弹目录选择；供 QuickPick / webview dropdown 共用） */
+async function wsCreateNew(): Promise<boolean> {
+    const picked = await vscode.window.showOpenDialog({
+        canSelectFolders: true,
+        openLabel: '作为 dsh 工作区',
+    });
+    if (!picked || picked.length === 0) {
+        return false;
+    }
+    const dir = picked[0].fsPath;
+    const created = await dsh.createWorkspace(dir);
+    dsh.setCurrentWorkspace(created.workspace.workspaceId);
+    await dsh.newSession(created.workspace.workspaceId);
+    postToChats({ type: 'clear' });
+    for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
+        void postChatInfo(w);
+    }
+    vscode.window.showInformationMessage(`已新建并切换到工作区：${created.workspace.title || path.basename(dir)}`);
+    return true;
+}
+
 /**
  * 标题栏"工作区"面板：可展开/折叠的树。
  * 每个工作区一行，前面带折叠图标（▶ 折叠 / ▼ 展开）；展开后在其下方列出
@@ -799,14 +977,14 @@ async function showWorkspacePicker(): Promise<void> {
 
     let workspaces: Array<{ workspaceId: string; path: string; title: string; sessionIds: string[] }> = [];
     try {
-        workspaces = (await dsh.listWorkspaces()).items ?? [];
+        workspaces = await listAllWorkspaces();
     } catch (e) {
         vscode.window.showErrorMessage((e as Error).message);
         return;
     }
 
     const expanded = new Set<string>();
-    const sessionCache = new Map<string, Array<{ sessionId: string; title: string; running: boolean; blank: boolean }>>();
+    const sessionCache = new Map<string, WsSessionRow[]>();
     const pick = vscode.window.createQuickPick<WsPick>();
     pick.placeholder = '展开工作区查看会话；点会话恢复历史';
     pick.matchOnDescription = true;
@@ -823,15 +1001,12 @@ async function showWorkspacePicker(): Promise<void> {
 
     const currentId = (): string | undefined => dsh.getCurrentWorkspaceId();
 
-    /** UI 展示用名称：只显示最后一级路径名（title 缺省即 basename）；全路径不进 UI */
-    const displayName = (w: { path: string; title: string }): string => w.title || path.basename(w.path);
-
     function buildRows(): WsPick[] {
         const curId = currentId();
         const curWs = workspaces.find((w) => w.workspaceId === curId);
         const rows: WsPick[] = [
             {
-                label: `$(folder-opened) 工作区：${curWs ? displayName(curWs) : '未分组'}`,
+                label: `$(folder-opened) 工作区：${curWs ? wsDisplayName(curWs) : '未分组'}`,
                 description: curId ? '当前' : '未选择',
                 action: 'info',
                 alwaysShow: true,
@@ -846,7 +1021,7 @@ async function showWorkspacePicker(): Promise<void> {
             const isCurrent = w.workspaceId === curId;
             const open = expanded.has(w.workspaceId);
             rows.push({
-                label: `${open ? '$(chevron-down)' : '$(chevron-right)'} ${isCurrent ? '$(check) ' : ''}${displayName(w)}`,
+                label: `${open ? '$(chevron-down)' : '$(chevron-right)'} ${isCurrent ? '$(check) ' : ''}${wsDisplayName(w)}`,
                 description: isCurrent ? '当前' : undefined,
                 action: 'ws',
                 workspaceId: w.workspaceId,
@@ -866,8 +1041,9 @@ async function showWorkspacePicker(): Promise<void> {
             if (sessions) {
                 for (const s of sessions) {
                     rows.push({
-                        label: `        ${s.running ? '$(sync~spin) ' : '$(history) '}${s.title}`,
-                        description: s.running ? '运行中' : '恢复',
+                        // 当前会话标选中 + 描述「当前」，与自绘 dropdown 一致
+                        label: `        ${s.current ? '$(check) ' : s.running ? '$(sync~spin) ' : '$(history) '}${s.title}`,
+                        description: s.current ? '当前' : s.running ? '运行中' : '恢复',
                         action: 'session',
                         workspaceId: w.workspaceId,
                         sessionId: s.sessionId,
@@ -897,7 +1073,7 @@ async function showWorkspacePicker(): Promise<void> {
         }
         pick.busy = true;
         try {
-            const sessions = await dsh.listWorkspaceSessions(id);
+            const sessions = await listWorkspaceSessionsOf(id);
             console.warn(`[dsh-ws] load workspace=${id} sessions=${sessions.length}`);
             sessionCache.set(id, sessions);
         } catch (e) {
@@ -908,60 +1084,6 @@ async function showWorkspacePicker(): Promise<void> {
                 pick.busy = false;
             }
         }
-    };
-
-    const switchWsNew = async (id: string): Promise<void> => {
-        if (!(await ensureChatWebview())) {
-            throw new Error('聊天视图未就绪，请先打开侧边栏 DSH 面板');
-        }
-        dsh.setCurrentWorkspace(id);
-        await dsh.newSession(id);
-        postToChats({ type: 'clear' });
-        for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
-            void postChatInfo(w);
-        }
-        vscode.window.showInformationMessage('已切换工作区');
-    };
-
-    const restoreInto = async (wsId: string, sessionId: string, blank: boolean): Promise<void> => {
-        const target = await ensureChatWebview();
-        if (!target) {
-            throw new Error('聊天视图未就绪，请先打开侧边栏 DSH 面板');
-        }
-        if (!(await waitChatReady(target))) {
-            throw new Error('聊天页面尚未就绪，请稍后重试');
-        }
-        dsh.setCurrentWorkspace(wsId);
-        const messages = await dsh.restoreSession(sessionId);
-        console.warn(`[dsh-restore] session=${sessionId} messages=${messages.length}`);
-        if (messages.length === 0 && !blank) {
-            vscode.window.showInformationMessage('已恢复会话，但 dsh 快照中没有返回可显示的历史消息');
-        }
-        postToChats({ type: 'clear' });
-        postToChats({ type: 'chatHistory', messages, sessionId });
-        for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
-            void postChatInfo(w);
-        }
-    };
-
-    const createNew = async (): Promise<boolean> => {
-        const picked = await vscode.window.showOpenDialog({
-            canSelectFolders: true,
-            openLabel: '作为 dsh 工作区',
-        });
-        if (!picked || picked.length === 0) {
-            return false;
-        }
-        const dir = picked[0].fsPath;
-        const created = await dsh.createWorkspace(dir);
-        dsh.setCurrentWorkspace(created.workspace.workspaceId);
-        await dsh.newSession(created.workspace.workspaceId);
-        postToChats({ type: 'clear' });
-        for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
-            void postChatInfo(w);
-        }
-        vscode.window.showInformationMessage(`已新建并切换到工作区：${created.workspace.title || path.basename(dir)}`);
-        return true;
     };
 
     pick.onDidChangeSelection(async (selection) => {
@@ -981,13 +1103,13 @@ async function showWorkspacePicker(): Promise<void> {
                 }
                 refresh();
             } else if (row.action === 'wsnew' && row.workspaceId) {
-                await switchWsNew(row.workspaceId);
+                await wsSwitchNew(row.workspaceId);
                 close();
             } else if (row.action === 'session' && row.workspaceId && row.sessionId) {
-                await restoreInto(row.workspaceId, row.sessionId, row.blank === true);
+                await wsRestore(row.workspaceId, row.sessionId, row.blank === true);
                 close();
             } else if (row.action === 'new') {
-                if (await createNew()) {
+                if (await wsCreateNew()) {
                     close();
                 }
             }
@@ -996,9 +1118,11 @@ async function showWorkspacePicker(): Promise<void> {
         }
     });
 
-    // 先 show 再填 items：对未挂到 DOM 的 QuickPick 先设行会触发 VS Code 内部量高异常
+    // items 先填再 show：sideX 等宿主对「show() 之后再写 items」的 QuickPick 可能不重绘列表
+    //（现象：只剩搜索框、下面无行）。官方 createQuickPick 用法即“先 items 后 show”。
+    // show() 之后的动态填行只发生在展开/懒加载路径（refresh），那时列表已挂到 DOM，安全。
+    pick.items = buildRows();
     pick.show();
-    refresh();
 }
 
 // ---------- 激活入口（薄装配） ----------
@@ -1050,7 +1174,7 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // 命令：把选中代码 @ 进侧边栏对话输入框
+    // 命令：把选中代码 @ 进左侧栏聊天输入框（只投侧栏 dsh.launcher；不投编辑器面板）
     context.subscriptions.push(
         vscode.commands.registerCommand('dsh.sendToDsh', async () => {
             const ctx = await requireSelection();
@@ -1059,11 +1183,22 @@ export function activate(context: vscode.ExtensionContext) {
             }
             const code = '```' + ctx.editor.document.languageId + '\n' + ctx.text + '\n```';
             await vscode.commands.executeCommand('workbench.view.extension.dsh');
-            if (chatTarget) {
-                chatTarget.postMessage({ type: 'draft', text: code });
-            } else {
+            // 确保侧栏视图已 resolve（launcherView 就绪）；没就绪记 pendingDraft 由侧栏创建时补投
+            if (!launcherView?.webview) {
                 pendingDraft = code;
+                return;
             }
+            const w = launcherView.webview;
+            // 等该侧栏实例 ready 再投，避免 webview 未挂好 draft 监听就 postMessage 丢内容
+            void (async () => {
+                try {
+                    if (await waitChatReady(w)) {
+                        w.postMessage({ type: 'draft', text: code });
+                    }
+                } catch {
+                    // 实例已销毁：忽略
+                }
+            })();
         })
     );
 
@@ -1084,9 +1219,10 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
             await dsh.newSession();
-            chatTarget?.postMessage({ type: 'clear' });
-            if (chatTarget) {
-                void postChatInfo(chatTarget);
+            // 广播到全部存活聊天实例（侧栏 + 编辑器面板），确保点按钮的那个一定被清成新会话
+            postToChats({ type: 'clear' });
+            for (const w of allChatWebviews()) {
+                void postChatInfo(w);
             }
             vscode.window.showInformationMessage('已开启新会话');
         })
@@ -1114,14 +1250,16 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // 命令：把聊天对话移动到编辑器区（大面板，可全屏）
+    // 命令：把聊天对话移动到编辑器区（大面板，可全屏；纯聊天，不自绘标题栏）
     context.subscriptions.push(
-        vscode.commands.registerCommand('dsh.moveToEditor', () => {
+        vscode.commands.registerCommand('dsh.moveToEditor', async () => {
+            // 与侧栏/DSH 网页面板一致：后台保活上下文，避免切走再切回内容变空白
+            const retainPanel = vscode.workspace.getConfiguration('dsh').get<boolean>('retainContextWhenHidden', true);
             const panel = vscode.window.createWebviewPanel(
                 'dshChatPanel',
                 'DeepSeek Harness',
                 vscode.ViewColumn.One,
-                { enableScripts: true }
+                { enableScripts: true, retainContextWhenHidden: retainPanel }
             );
             chatPanel = panel;
             panel.onDidDispose(() => {
@@ -1129,10 +1267,32 @@ export function activate(context: vscode.ExtensionContext) {
                     chatPanel = undefined;
                 }
             });
-            setupChatWebview(panel.webview, context.extensionUri, context.globalState);
+            // 编辑器区 = createWebviewPanel：既渲染不到原生 view/title，也不需要页内自绘标题栏
+            //（保持纯聊天）→ 注入 data-titlebar-mode="nativeTitle"，index.html 用 CSS 隐藏 #titlebar、
+            // 自绘模块读到非 selfDrawn 直接 return。
+            setupChatWebview(panel.webview, context.extensionUri, context.globalState, 'nativeTitle', false);
             panel.reveal(vscode.ViewColumn.One, true);
             // 隐藏侧边栏，看起来"挪过去"了
             vscode.commands.executeCommand('workbench.action.toggleSidebarVisibility');
+            // 把侧边栏正在看的当前会话搬到编辑器：等新面板 ready 后重新 restore 并广播历史
+            void (async () => {
+                const sessionId = dsh.getSessionId();
+                const target = panel.webview;
+                if (!sessionId || !(await waitChatReady(target))) {
+                    return;
+                }
+                try {
+                    const messages = await dsh.restoreSession(sessionId);
+                    console.warn(`[dsh-move] session=${sessionId} messages=${messages.length}`);
+                    postToChats({ type: 'clear' });
+                    postToChats({ type: 'chatHistory', messages, sessionId });
+                    for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
+                        void postChatInfo(w);
+                    }
+                } catch (e) {
+                    vscode.window.showErrorMessage((e as Error).message);
+                }
+            })();
         })
     );
 
@@ -1146,6 +1306,9 @@ export function activate(context: vscode.ExtensionContext) {
     // 初始化上下文（视图标题栏按钮显隐依据）
     vscode.commands.executeCommand('setContext', 'dshViewMode', panel.viewMode);
     vscode.commands.executeCommand('setContext', 'dshPanelOpen', false);
+    // 原生/自绘 标题栏开关（不猜宿主）：selfDrawn(默认) → false 屏蔽 package.json 全部 view/title
+    // 原生按钮；nativeTitle → true，原生按钮出现并受上面两个上下文继续控制显隐。
+    vscode.commands.executeCommand('setContext', TITLEBAR_NATIVE_CTX, TITLEBAR_MODE === 'nativeTitle');
 
     // 命令：查看消费记录（弹窗报告面板）
     context.subscriptions.push(

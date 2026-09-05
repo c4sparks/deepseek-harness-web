@@ -2,11 +2,11 @@
   "name": "deepseek-harness-web",
   "displayName": "DeepSeek Harness Web",
   "description": "DeepSeek Harness 插件",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "sparks-dev",
   "icon": "assets/icon.png",
   "engines": {
-    "vscode": "^1.110.0",
+    "vscode": "^1.107.1",
     "node": "^22.19.0 || >=24.0.0"
   },
   "categories": [
@@ -76,12 +76,6 @@
         "category": "DSH"
       },
       {
-        "command": "dsh.closeSidebar",
-        "title": "关闭侧边栏",
-        "icon": "$(eye)",
-        "category": "DSH"
-      },
-      {
         "command": "dsh.moveToEditor",
         "title": "移动到编辑器",
         "icon": "$(open-preview)",
@@ -128,42 +122,37 @@
       "view/title": [
         {
           "command": "dsh.workspace",
-          "when": "(view == 'dsh.launcher' || webviewId == 'dsh.launcher')",
+          "when": "dsh.titlebarNative == true && (view == 'dsh.launcher' || webviewId == 'dsh.launcher')",
           "group": "navigation@1"
         },
         {
           "command": "dsh.openInBrowser",
-          "when": "(view == 'dsh.launcher' || webviewId == 'dsh.launcher') && dshPanelOpen == true && dshViewMode == 'internal'",
+          "when": "dsh.titlebarNative == true && (view == 'dsh.launcher' || webviewId == 'dsh.launcher') && dshPanelOpen == true && dshViewMode == 'internal'",
           "group": "navigation@1"
         },
         {
           "command": "dsh.openInEditor",
-          "when": "(view == 'dsh.launcher' || webviewId == 'dsh.launcher') && (dshPanelOpen == false || dshViewMode == 'browser')",
+          "when": "dsh.titlebarNative == true && (view == 'dsh.launcher' || webviewId == 'dsh.launcher') && (dshPanelOpen == false || dshViewMode == 'browser')",
           "group": "navigation@1"
         },
         {
           "command": "dsh.reload",
-          "when": "(view == 'dsh.launcher' || webviewId == 'dsh.launcher') && dshPanelOpen == true",
+          "when": "dsh.titlebarNative == true && (view == 'dsh.launcher' || webviewId == 'dsh.launcher') && dshPanelOpen == true",
           "group": "navigation@2"
         },
         {
           "command": "dsh.newSession",
-          "when": "view == 'dsh.launcher' || webviewId == 'dsh.launcher'",
+          "when": "dsh.titlebarNative == true && (view == 'dsh.launcher' || webviewId == 'dsh.launcher')",
           "group": "navigation@3"
         },
         {
-          "command": "dsh.closeSidebar",
-          "when": "view == 'dsh.launcher' || webviewId == 'dsh.launcher'",
-          "group": "navigation@4"
-        },
-        {
           "command": "dsh.moveToEditor",
-          "when": "view == 'dsh.launcher' || webviewId == 'dsh.launcher'",
+          "when": "dsh.titlebarNative == true && (view == 'dsh.launcher' || webviewId == 'dsh.launcher')",
           "group": "navigation@5"
         },
         {
           "command": "dsh.usage",
-          "when": "view == 'dsh.launcher' || webviewId == 'dsh.launcher'",
+          "when": "dsh.titlebarNative == true && (view == 'dsh.launcher' || webviewId == 'dsh.launcher')",
           "group": "1_dsh@6"
         }
       ]
@@ -219,7 +208,7 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "1.110.0",
+    "@types/vscode": "1.107.1",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
     "typescript-eslint": "^8.61.1",
