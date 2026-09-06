@@ -2,7 +2,7 @@
   "name": "deepseek-harness-web",
   "displayName": "DeepSeek Harness Web",
   "description": "DeepSeek Harness 插件",
-  "version": "0.1.5",
+  "version": "0.1.6-rc.1",
   "publisher": "sparks-dev",
   "icon": "assets/icon.png",
   "engines": {
@@ -11,7 +11,8 @@
   },
   "categories": [
     "AI",
-    "Chat"
+    "Chat",
+    "Other"
   ],
   "activationEvents": [
     "onStartupFinished",
@@ -199,16 +200,17 @@
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "watch:tsc:chat": "tsc --noEmit --watch -p webview/chat",
     "package": "pnpm run check-types && pnpm run lint && pnpm run build:chat && node esbuild.js --production",
     "compile-tests": "tsc -p . --outDir out",
     "watch-tests": "tsc -p . -w --outDir out",
     "pretest": "pnpm run compile-tests && pnpm run compile && pnpm run lint",
-    "check-types": "tsc --noEmit",
+    "check-types": "tsc --noEmit && tsc --noEmit -p webview/chat",
     "lint": "eslint src",
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "1.107.1",
+    "@types/vscode": "1.107.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
     "typescript-eslint": "^8.61.1",

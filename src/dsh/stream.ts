@@ -1,7 +1,9 @@
 // dsh 0.1.2-rc.1 流式对话：session/follow 驱动的 waitTurn 与 ask 系列。
 import { openMuxStream } from "./api";
+import { deriveTurnTokenUsage, deriveTurnFacts, type TurnLikeEvent } from "./official/turn-stats";
 import {
     createSession,
+    eventText,
     readFollowSnapshot,
     sendPrompt,
     toRawEvent,
@@ -19,6 +21,13 @@ export interface DshReplyStats {
     reasoningTokens?: number;
     totalTokens?: number;
     steps?: number;
+    /** 该回答所用模型（assistant/message.source），UI 用量弹窗展示 */
+    provider?: string;
+    model?: string;
+    /** 服务端事件时间算出的指标：本轮总用时(秒) / 输出速度(tok/s) / 首 token 用时(秒) */
+    wallSec?: number;
+    tps?: number;
+    ttftSec?: number;
 }
 export interface DshActivity {
     type: 'step' | 'tool';
@@ -30,6 +39,8 @@ export interface DshApproval {
     description?: string;
     rpcId?: string;
     sessionId?: string;
+    /** 待批准的真实工具名（上游 request.toolName），UI 直显 */
+    toolName?: string;
 }
 export interface DshQuestionOption {
     label: string;
@@ -61,12 +72,49 @@ interface StreamingOpts {
 interface TurnResult {
     text: string;
     stats: DshReplyStats;
-}
-function numberOr(v: unknown): number | undefined {
-    return typeof v === 'number' ? v : undefined;
+    /** 该轮回答在 dsh 侧生成的原始时间戳（epoch 秒/毫秒，取 assistant/message 事件自带 time） */
+    time?: number;
+    /** turn/end 的非正常终止原因（error/aborted/interrupted/max-tokens/blocked…）；正常完成则无 */
+    end?: { kind: string; message?: string };
 }
 function stringOf(v: unknown): string | null {
     return typeof v === 'string' && v.length > 0 ? v : null;
+}
+/** 保留一位小数的数值（0.1 精度）；非有限数返回 undefined。 */
+function round1(n: number | undefined): number | undefined {
+    if (typeof n !== 'number' || !Number.isFinite(n)) {
+        return undefined;
+    }
+    return Math.round(n * 10) / 10;
+}
+
+/** 上游原始帧日志（验证 0.1.2-rc.1 事件 schema 用）。启用：扩展进程 env DSH_RAWLOG=1（紧凑）或 =full（完整 JSON）。 */
+function rawLog(src: string, value: unknown): void {
+    const mode = process.env['DSH_RAWLOG'];
+    if (!mode) {
+        return;
+    }
+    const v = value as { type?: string; seq?: unknown; data?: Record<string, unknown>; records?: unknown[]; projections?: { values?: Record<string, unknown> } } | undefined;
+    try {
+        if (v && v.type === 'snapshot') {
+            const proj = v.projections?.values ?? {};
+            const n = Array.isArray(v.records) ? v.records.length : 0;
+            if (mode === 'full') {
+                console.log(`[dsh-raw] ${src} snapshot ` + JSON.stringify(value).slice(0, 200_000));
+            } else {
+                console.log(`[dsh-raw] ${src} snapshot projKeys=${Object.keys(proj).join(',') || '(none)'} records=${n}`);
+            }
+            return;
+        }
+        if (mode === 'full') {
+            console.log(`[dsh-raw] ${src} ` + JSON.stringify(value).slice(0, 200_000));
+        } else {
+            const keys = v && v.data ? Object.keys(v.data).join(',') : '';
+            console.log(`[dsh-raw] ${src} ${String(v?.type ?? 'frame')}${typeof v?.seq === 'number' ? ' seq=' + v.seq : ''}${keys ? ' data=[' + keys + ']' : ''}`);
+        }
+    } catch {
+        console.log(`[dsh-raw] ${src} <log-error>`);
+    }
 }
 /**
  * 会话回合等待（适配 dsh v0.1.2-rc.1）。
@@ -87,6 +135,10 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
     let sawAssistantMessage = false;
     let lastStats: DshReplyStats = {};
     let errorAtEnd: { message: string } | undefined;
+    let messageTime: number | undefined;
+    let endMarker: { kind: string; message?: string } | undefined;
+    // 核心 per-turn（模块）入参：只收集本回合关键事件，结束时交 official/turn-stats.ts 计算，不再自行统计
+    const officialEvents: TurnLikeEvent[] = [];
     await new Promise<void>((resolve, reject) => {
         let settled = false;
         let idleTimer: ReturnType<typeof setInterval> | undefined;
@@ -114,25 +166,15 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
         const timer = setTimeout(() => finish(new Error(`DSH 处理超时（${Math.round(timeoutMs / 1000)}s）`)), timeoutMs + 5000);
         idleTimer = setInterval(() => {
             if (opts.isCancelled?.()) {
-                finish(new Error('已取消'));
+                // 客户端停止：保留已收到的 partial usage 正常返回（end=cancelled），不再抛错丢弃
+                if (!endMarker) {
+                    endMarker = { kind: 'cancelled' };
+                }
+                finish();
             }
         }, 400);
-        const emitProjections = (values: Record<string, unknown>): void => {
-            const tokenUsage = values['tokenUsage'] as Record<string, number> | undefined;
-            const stats = values['sessionStats'] as Record<string, number> | undefined;
-            if (tokenUsage) {
-                lastStats = {
-                    ...lastStats,
-                    inputTokens: numberOr(tokenUsage['uncachedInputTokens']),
-                    outputTokens: numberOr(tokenUsage['outputTokens']),
-                    cacheReadTokens: numberOr(tokenUsage['cacheReadTokens']),
-                    cacheWriteTokens: numberOr(tokenUsage['cacheWriteTokens']),
-                };
-            }
-            if (stats && typeof stats['steps'] === 'number') {
-                lastStats.steps = stats['steps'];
-            }
-        };
+        // 本轮统计口径：只取本轮 assistant/message 事件自带的 usage，不并入会话级投影，
+        // 也不自行累计步数（steps 只展示，不回填到本轮数字里）。
         const handle = (raw: RawEvent): void => {
             if (raw.seq <= baselineSeq) {
                 return;
@@ -140,13 +182,15 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
             const d = raw.data ?? {};
             switch (raw.type) {
                 case 'assistant/chunk': {
-                    const chunk = d['chunk'] as { type?: string; text?: string } | undefined;
+                    const chunk = d['chunk'] as { type?: string; text?: string; block?: { type?: string; text?: string } } | undefined;
                     if (!chunk) {
                         return;
                     }
+                    officialEvents.push({ type: 'assistant/chunk', time: raw.time, data: { chunk } });
                     if (chunk.type === CHUNK_TEXT && typeof chunk.text === 'string') {
                         text += chunk.text;
                         sawDeltas = true;
+                        messageTime ??= raw.time; // 无 assistant/message 时的兜底时刻
                         onDelta(chunk.text);
                     } else if (chunk.type === CHUNK_REASONING && typeof chunk.text === 'string') {
                         const step = typeof d['step'] === 'number' ? d['step'] : undefined;
@@ -156,21 +200,31 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
                 }
                 case 'assistant/message': {
                     sawAssistantMessage = true;
-                    const usage = usageOf(d);
-                    if (usage) {
-                        lastStats = {
-                            ...lastStats,
-                            inputTokens: numberOr(usage['inputTokens'] ?? usage['uncachedInputTokens']),
-                            outputTokens: numberOr(usage['outputTokens']),
-                            cacheReadTokens: numberOr(usage['cacheReadTokens']),
-                            cacheWriteTokens: numberOr(usage['cacheWriteTokens']),
-                            reasoningTokens: numberOr(usage['reasoningTokens']),
-                            totalTokens: numberOr(usage['totalTokens']),
-                        };
+                    messageTime = raw.time; // 回答消息在服务端生成的原始时刻
+                    const full = eventText(raw); // assistant/message 自带整条消息内容
+                    if (full) {
+                        text = full; // 以 API 整条消息为准，覆盖 text-delta 的本地拼接
                     }
+                    const msgObj = d['message'] as { source?: { provider?: string; model?: string } } | undefined;
+                    const usage = usageOf(d);
+                    // 核心 per-turn 模块入参（usage 归一化/optional 规则交给模块）
+                    officialEvents.push({
+                        type: 'assistant/message',
+                        time: raw.time,
+                        data: {
+                            turn: d['turn'] as number | undefined,
+                            step: d['step'] as number | undefined,
+                            message: msgObj?.source ? { source: msgObj.source } : undefined,
+                            usage,
+                        },
+                    });
                     break;
                 }
+                case 'turn/start':
+                    officialEvents.push({ type: 'turn/start', time: raw.time, data: { turn: d['turn'] as number | undefined } });
+                    break;
                 case 'step/start':
+                    officialEvents.push({ type: 'step/start', time: raw.time, data: { step: d['step'] as number | undefined } });
                     opts.onActivity?.({ type: 'step', step: typeof d['step'] === 'number' ? d['step'] : undefined });
                     break;
                 case 'tool/call':
@@ -180,13 +234,17 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
                         tool: stringOf(d['name']) ?? stringOf(d['toolName']) ?? undefined,
                     });
                     break;
-                case 'step/end':
-                    lastStats.steps = (lastStats.steps ?? 0) + 1;
-                    break;
                 case 'turn/end': {
+                    officialEvents.push({ type: 'turn/end', time: raw.time, data: { turn: d['turn'] as number | undefined, reason: d['reason'] as { kind?: string } | undefined } });
                     const reason = d['reason'] as { kind?: string; message?: string; error?: { message?: string } } | undefined;
-                    if (reason && reason.kind === 'error') {
-                        errorAtEnd = { message: reason.error?.message ?? reason.message ?? '会话回合出错' };
+                    const kind = reason?.kind;
+                    const message = reason?.error?.message ?? reason?.message;
+                    if (kind === 'error') {
+                        errorAtEnd = { message: message ?? '会话回合出错' };
+                        endMarker = { kind, message }; // 有部分文本的出错回合也标记，UI 不再当正常完成
+                    } else if (kind && kind !== 'completed') {
+                        // aborted / interrupted / max-tokens / blocked 等：保留原文但标记终止原因
+                        endMarker = { kind, message };
                     }
                     finish();
                     break;
@@ -201,15 +259,13 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
             { args: { request: { address: { kind: 'session', sessionId }, maxMessages: 5000 } } },
             {
                 onItem: (value) => {
+                    rawLog('follow', value); // 实验抓帧：env DSH_RAWLOG=1/full
                     const v = value as Record<string, unknown> | undefined;
                     if (!v) {
                         return;
                     }
                     if (v['type'] === 'snapshot') {
-                        const proj = (v['projections'] as { values?: Record<string, unknown> } | undefined)?.values;
-                        if (proj) {
-                            emitProjections(proj);
-                        }
+                        // 会话级投影(tokenUsage/sessionStats)仅供 UI 底部累计条,不经此口径混入本轮
                         const records = Array.isArray(v['records']) ? v['records'] : [];
                         for (const r of records) {
                             const e = toRawEvent(r);
@@ -251,7 +307,39 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
     if (errorAtEnd && !sawDeltas && !sawAssistantMessage && !text) {
         throw new Error(errorAtEnd.message);
     }
-    return { text, stats: lastStats };
+    // 核心 per-turn（模块）：与历史同口径，替换旧的自行统计/投影差分
+    const officialUsage = deriveTurnTokenUsage(officialEvents);
+    const officialFacts = deriveTurnFacts(officialEvents);
+    for (const [turnKey, u] of officialUsage) {
+        lastStats = { ...lastStats, inputTokens: u.uncachedInputTokens, outputTokens: u.outputTokens };
+        if (u.cacheReadTokens !== undefined) {
+            lastStats.cacheReadTokens = u.cacheReadTokens;
+        }
+        if (u.cacheWriteTokens !== undefined) {
+            lastStats.cacheWriteTokens = u.cacheWriteTokens;
+        }
+        if (u.reasoningTokens !== undefined) {
+            lastStats.reasoningTokens = u.reasoningTokens;
+        }
+        if (u.routes !== undefined && u.routes.length === 1) {
+            lastStats = { ...lastStats, provider: u.routes[0].provider, model: u.routes[0].model };
+        }
+        const m = officialFacts.metrics.get(turnKey);
+        if (m) {
+            if (m.ttftMs !== undefined) {
+                lastStats.ttftSec = round1(m.ttftMs / 1000);
+            }
+            if (m.tokensPerSecond !== undefined) {
+                lastStats.tps = Math.round(m.tokensPerSecond);
+            }
+        }
+        const rm = officialFacts.runMs.get(turnKey);
+        if (rm !== undefined) {
+            lastStats.wallSec = rm / 1000; // 不预舍入：展示端按官方整秒向下取整
+        }
+        break; // 一次回合
+    }
+    return { text, stats: lastStats, time: messageTime, end: endMarker };
 }
 /** 读取会话当前事件水位（发消息前的 baseline seq）。 */
 async function currentSeq(sessionId: string): Promise<number> {
@@ -282,7 +370,7 @@ export async function askInSessionStreaming(
     content: DshContentPart[],
     onDelta: (delta: string) => void,
     opts: StreamingOpts = {}
-): Promise<{ text: string; stats: DshReplyStats }> {
+): Promise<{ text: string; stats: DshReplyStats; time?: number; end?: { kind: string; message?: string } }> {
     const baselineSeq = await currentSeq(sessionId);
     await sendPrompt(sessionId, content);
     return waitTurn(sessionId, baselineSeq, onDelta, opts);

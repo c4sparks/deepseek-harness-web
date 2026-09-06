@@ -1,0 +1,20 @@
+{
+  // webview/chat 独立类型工程:浏览器上下文(preact+htm+dompurify+markdown-it),不进根 tsconfig(根为 NodeNext+node)。
+  // 供 `pnpm check-types`(= tsc --noEmit -p webview/chat)与编辑器使用;esbuild(build-chat.mjs)只转译不查型。
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "useDefineForClassFields": true,
+    "types": []
+  },
+  "include": ["./**/*.ts", "vscode-webview.d.ts"],
+  "exclude": ["node_modules", "dist"]
+}

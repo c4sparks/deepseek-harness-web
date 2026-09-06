@@ -8,14 +8,14 @@ import { DshService } from './api/dshService';
 import { type DshContentPart, type DshReplyStats } from './dsh';
 import { DshPanel } from './dshPanel';
 import {
+    applyNativeTitlebarContext,
     TITLEBAR_MODE,
-    TITLEBAR_NATIVE_CTX,
     TITLEBAR_MODE_ATTR,
     installChatTitlebar,
     makeTitlebarPanelBroadcaster,
     type TitlebarChatHost,
     type TitlebarMode,
-} from './titlebar';
+} from './titlebar/index';
 
 const dsh = new DshService();
 const panel = new DshPanel({
@@ -138,14 +138,19 @@ interface UsageRecord {
     totalTokens?: number;
 }
 
-/** 记录一次对话的消费到持久化存储 */
-async function recordUsage(state: vscode.Memento, stats: DshReplyStats | undefined): Promise<void> {
+/** 记录一次对话的消费到持久化存储（time 取 dsh 对该回答的自带时间戳，缺省才用本地时刻） */
+async function recordUsage(state: vscode.Memento, stats: DshReplyStats | undefined, apiTime?: number): Promise<void> {
     if (!stats) {
         return;
     }
     const key = 'dsh.usage';
+    // epoch 秒/毫秒自适应，统一存毫秒；无 API 时刻才回退本地 Date.now()
+    const ts =
+        typeof apiTime === 'number' && Number.isFinite(apiTime) && apiTime > 0
+            ? (apiTime > 1e12 ? apiTime : apiTime * 1000)
+            : Date.now();
     const record: UsageRecord = {
-        time: Date.now(),
+        time: ts,
         inputTokens: stats.inputTokens,
         outputTokens: stats.outputTokens,
         cacheReadTokens: stats.cacheReadTokens,
@@ -153,6 +158,16 @@ async function recordUsage(state: vscode.Memento, stats: DshReplyStats | undefin
         reasoningTokens: stats.reasoningTokens,
         totalTokens: stats.totalTokens,
     };
+    if (
+        record.inputTokens === undefined &&
+        record.outputTokens === undefined &&
+        record.cacheReadTokens === undefined &&
+        record.cacheWriteTokens === undefined &&
+        record.reasoningTokens === undefined &&
+        record.totalTokens === undefined
+    ) {
+        return; // 无任何已消耗用量（如停在首个 token 前），不写空行
+    }
     const existing = state.get<UsageRecord[]>(key) ?? [];
     const next = [...existing, record].slice(-500);
     await state.update(key, next);
@@ -514,7 +529,7 @@ function setupChatWebview(
                 // 取消失败忽略
             }
         })();
-        post({ type: 'chatDone' });
+        post({ type: 'chatDone', end: { kind: 'cancelled' } }); // 停止 → UI 显示“已停止 · Stopped”
     };
 
     // 握手：等页面脚本就绪后再推一次 chatInfo（避免重建/切回视图时数据丢失）
@@ -598,6 +613,7 @@ function setupChatWebview(
                                         type: 'chatApproval',
                                         approvalId: a.approvalId,
                                         description: a.description,
+                                        toolName: a.toolName,
                                     });
                                 }
                             },
@@ -614,17 +630,21 @@ function setupChatWebview(
                         }
                     );
                     if (g !== gen.n) {
-                        return; // 已取消
+                        // 该回合已被停止/取代(stopTurn 已发 chatDone)：只补记已消耗的 usage，不重复发完成帧
+                        await recordUsage(globalState, result.stats, result.time);
+                        return;
                     }
-                    post({ type: 'chatDone', text: result.text, stats: result.stats });
-                    await recordUsage(globalState, result.stats);
+                    // 本轮 usage/计时已在 stream.ts 用官方模块(official/turn-stats.ts)算好，直接下发
+                    post({ type: 'chatDone', text: result.text, stats: result.stats, time: result.time, end: result.end });
+                    await recordUsage(globalState, result.stats, result.time);
                     void postChatInfo(webview); // 刷新官方统计/权限
                 } catch (e) {
                     if (g !== gen.n) {
                         return;
                     }
-                    post({ type: 'chatChunk', text: '⚠ ' + (e as Error).message });
-                    post({ type: 'chatDone' });
+                    // 错误以“回合终止原因”呈现(end-note)，不把 '⚠ …' 塞进正文当内容
+                    const message = e instanceof Error ? e.message : String(e);
+                    post({ type: 'chatDone', end: { kind: 'error', message } });
                 }
             })();
         } else if (msg.type === 'cancel') {
@@ -927,6 +947,19 @@ async function wsRestore(wsId: string, sessionId: string, blank: boolean): Promi
     dsh.setCurrentWorkspace(wsId);
     const messages = await dsh.restoreSession(sessionId);
     console.warn(`[dsh-restore] session=${sessionId} messages=${messages.length}`);
+    if (process.env['DSH_RAWLOG']) {
+        // 历史用量/计时一致性诊断：打印每条 assistant 消息当前拿到的官方字段
+        for (const m of messages) {
+            if (m.role !== 'assistant') {
+                continue;
+            }
+            console.log(
+                `[dsh-raw] history-assistant len=${m.text.length} provider=${m.provider ?? '-'} model=${m.model ?? '-'} ` +
+                    `in=${m.inputTokens ?? '-'} out=${m.outputTokens ?? '-'} cache=${m.cacheReadTokens ?? '-'} ` +
+                    `wall=${m.wallSec ?? '-'} ttft=${m.ttftSec ?? '-'} tps=${m.tps ?? '-'}`
+            );
+        }
+    }
     if (messages.length === 0 && !blank) {
         vscode.window.showInformationMessage('已恢复会话，但 dsh 快照中没有返回可显示的历史消息');
     }
@@ -1306,9 +1339,10 @@ export function activate(context: vscode.ExtensionContext) {
     // 初始化上下文（视图标题栏按钮显隐依据）
     vscode.commands.executeCommand('setContext', 'dshViewMode', panel.viewMode);
     vscode.commands.executeCommand('setContext', 'dshPanelOpen', false);
-    // 原生/自绘 标题栏开关（不猜宿主）：selfDrawn(默认) → false 屏蔽 package.json 全部 view/title
+    // 原生/自绘 标题栏开关（不猜宿主）：selfDrawn → false 屏蔽 package.json 全部 view/title
     // 原生按钮；nativeTitle → true，原生按钮出现并受上面两个上下文继续控制显隐。
-    vscode.commands.executeCommand('setContext', TITLEBAR_NATIVE_CTX, TITLEBAR_MODE === 'nativeTitle');
+    // 实现收在 src/titlebar/native/（删原生标题栏时删本调用即可）。
+    applyNativeTitlebarContext(TITLEBAR_MODE === 'nativeTitle');
 
     // 命令：查看消费记录（弹窗报告面板）
     context.subscriptions.push(
