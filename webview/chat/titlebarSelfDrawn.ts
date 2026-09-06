@@ -17,6 +17,8 @@
 
 export interface SelfDrawnTitlebarApi {
   postMessage(msg: unknown): void
+  /** 订阅宿主消息（注册到页面唯一 message 通道，不自加 window 监听） */
+  onMessage(cb: (msg: unknown) => void): () => void
 }
 
 export function initSelfDrawnTitlebar(api: SelfDrawnTitlebarApi): void {
@@ -336,10 +338,10 @@ export function initSelfDrawnTitlebar(api: SelfDrawnTitlebarApi): void {
     }
   })
 
-  // ---- 自绘标题栏自己的 window message 监听（与 chat.ts 通用监听器并存）----
-  // 只处理 B 关心的消息；其它 type 忽略。多个 window 监听器共存合法、互不吞消息。
-  window.addEventListener('message', (e) => {
-    const m = e.data as Record<string, unknown>
+  // ---- 自绘标题栏消息：注册到页面唯一 message 通道（chat.ts 的 host 扇出）----
+  // 只处理自绘关心的消息；其它 type 忽略（与 chat.ts 通用处理并存、互不吞消息）。
+  api.onMessage((mRaw) => {
+    const m = mRaw as Record<string, unknown>
     const type = typeof m?.type === 'string' ? m.type : ''
     if (!type) return
 

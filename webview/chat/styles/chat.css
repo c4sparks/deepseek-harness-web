@@ -1,0 +1,562 @@
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
+    font-family: var(--vscode-font-family, system-ui, sans-serif);
+    font-size: 13px; color: var(--vscode-foreground, #ddd);
+    background: var(--vscode-editor-background, #1e1e1e);
+  }
+  body { display: flex; flex-direction: column; }
+  /* Preact 根:承接原 body 直接子区域的纵向 flex 布局(标题栏/欢迎或消息流/composer/statsbar) */
+  #app { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+
+  /* 页内自绘标题栏：背景与 VS Code 原生 view/title 标题栏同源（侧边栏背景），观感一致 */
+  #titlebar {
+    flex: none; display: flex; align-items: center; gap: 2px;
+    padding: 2px 8px 2px 6px; min-width: 0;
+    background: var(--vscode-sideBar-background, var(--vscode-editor-background, #1e1e1e));
+    border-bottom: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
+    font-size: 11px;
+  }
+  /* 观感对齐原生 view/title 动作按钮：~24px 命中区 + 16px codicon */
+  #titleWs {
+    display: inline-flex; align-items: center; gap: 5px; min-width: 0; height: 24px;
+    border: none; background: none; color: var(--vscode-foreground, #ddd);
+    cursor: pointer; font-size: 12px; font-family: inherit;
+    padding: 0 6px; border-radius: 4px; max-width: 64%;
+  }
+  #titleWs .codicon { font-size: 16px; flex-shrink: 0; line-height: 1; }
+  #titleWsName {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+  }
+  #titleWs:hover { background: rgba(128,128,128,0.22); }
+  .title-spacer { flex: 1 1 auto; min-width: 6px; }
+  .title-btn {
+    width: 24px; height: 24px; border: none; background: none;
+    color: var(--vscode-foreground, #ddd); cursor: pointer; border-radius: 4px;
+    display: inline-flex; align-items: center; justify-content: center; padding: 0;
+    flex: none; line-height: 0;
+  }
+  .title-btn .codicon { font-size: 16px; line-height: 1; }
+  .title-btn:hover { background: rgba(128,128,128,0.22); }
+  .title-btn.hidden { display: none; }
+  /* 「移到编辑器」图标：本仓库内嵌 codicon 字体(2024-12)的 open-preview 与 VS Code 宿主新版
+     同一 codepoint 渲染方向相反（放大镜一左一右）→ 水平镜像对齐原生 view/title。 */
+  .title-btn[data-cmd='moveToEditor'] .codicon { transform: scaleX(-1); }
+  /* 📁 与 ⋯ 的父容器：必须 flex:none，否则窄栏时被压缩到比内部 24px 图标还窄，
+     内部图标溢出盖到相邻按钮（表现为 ＋ 与 📁 重叠）。与 .title-btn 同规则。 */
+  #titleMoreWrap { position: relative; display: inline-flex; flex: none; }
+  #titleWorkWrap { position: relative; display: inline-flex; flex: none; }
+  #titleMorePopup {
+    position: absolute; top: calc(100% + 2px); right: 0; z-index: 80;
+    min-width: 150px; max-width: 220px;
+    background: var(--vscode-editor-background, #252526);
+    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.15));
+    border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+    padding: 4px;
+  }
+  #titleMorePopup.hidden { display: none; }
+  .title-more-item {
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    border: none; background: none; color: var(--vscode-foreground, #ddd);
+    font-size: 12px; font-family: inherit; padding: 5px 8px; border-radius: 4px; cursor: pointer;
+    text-align: left;
+  }
+  .title-more-item:hover { background: rgba(255,255,255,0.08); }
+  .title-more-item .codicon { font-size: 16px; flex-shrink: 0; }
+  .title-ws-caret { font-size: 12px; opacity: 0.6; flex-shrink: 0; }
+  /* 工作区下拉（复刻原生 QuickPick）：fixed 铺满 webview(侧栏/编辑器)宽度，避免窄侧栏裁掉。
+     居中于整个面板、从标题栏下方开始，内容纵向滚动，长名省略+悬停全称 */
+  #titleWsDropdown {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    top: 40px; z-index: 120;
+    width: min(560px, calc(100vw - 16px));
+    max-height: calc(100vh - 56px);
+    display: flex; flex-direction: column;
+    background: var(--vscode-editor-background, #252526);
+    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.15));
+    border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+    padding: 4px; gap: 2px;
+    overflow: hidden;
+  }
+  #titleWsDropdown.hidden { display: none; }
+  #wsSearch {
+    flex: none; width: 100%; box-sizing: border-box;
+    border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.45));
+    border-radius: 5px; background: var(--vscode-input-background, #1e1e1e);
+    color: var(--vscode-input-foreground, #ddd); padding: 4px 8px;
+    font-size: 12px; font-family: inherit; outline: none;
+  }
+  #wsSearch:focus { border-color: var(--vscode-focusBorder, #4daafc); }
+  #wsRows { flex: 1; min-height: 0; max-height: none; overflow-y: auto; overflow-x: hidden; }
+  #wsRows:empty::after {
+    content: '无匹配的工作区或会话';
+    display: block; padding: 8px; font-size: 12px;
+    color: var(--vscode-descriptionForeground, #888); text-align: center;
+  }
+  .wsrow {
+    display: flex; align-items: center; gap: 5px; width: 100%;
+    border: none; background: none; color: var(--vscode-foreground, #ddd);
+    font-size: 12px; font-family: inherit; padding: 5px 8px; border-radius: 4px;
+    cursor: pointer; text-align: left; min-width: 0;
+  }
+  .wsrow .ws-caret { font-size: 11px; opacity: 0.6; flex-shrink: 0; }
+  .wsrow .ws-check { color: var(--vscode-button-background, #0e639c); flex-shrink: 0; }
+  .wsrow .ws-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .wsrow .ws-desc { margin-left: auto; font-size: 11px; opacity: 0.6; flex-shrink: 0; }
+  .wsrow:hover { background: rgba(128,128,128,0.22); }
+  .wsrow[data-depth='1'] { padding-left: 18px; }
+  .wsrow[data-depth='2'] { padding-left: 30px; }
+  .wsrow .ws-session-icon { font-size: 12px; opacity: 0.7; flex-shrink: 0; }
+  .ws-new-row { border-top: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.1)); margin-top: 3px; padding-top: 3px; }
+  .ws-current-row { cursor: default; }
+  .ws-current-row:hover { background: none; }
+  /* 原生/自绘 切换：extension 注入 <body data-titlebar-mode>；原生标题栏模式(nativeTitle)时藏起页内自绘标题栏，
+     避免与原生 view/title 双标题。DOM 保留不删——chat.ts 顶层按存在元素查找，删了会断绑定 */
+  body[data-titlebar-mode='nativeTitle'] #titlebar { display: none; }
+
+  /* 欢迎页（空状态） */
+  #welcome {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 14px; padding: 24px; text-align: center;
+  }
+  #welcome.hidden { display: none; }
+  .welcome-title { font-size: 20px; font-weight: 600; }
+  .welcome-desc { font-size: 13px; color: var(--vscode-descriptionForeground, #888); max-width: 90%; }
+  .suggestions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; max-width: 100%; }
+  .suggestion {
+    border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.2));
+    background: var(--vscode-button-secondaryBackground, rgba(255,255,255,0.06));
+    color: var(--vscode-button-secondaryForeground, #ccc);
+    border-radius: 16px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+  }
+  .suggestion:hover { background: var(--vscode-button-secondaryHoverBackground, rgba(255,255,255,0.1)); }
+
+  /* 消息列表 */
+  #messages { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 16px; }
+  #messages.hidden { display: none; }
+  .msg { display: flex; gap: 10px; align-items: flex-start; }
+  .msg .avatar {
+    width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 600;
+  }
+  .msg.user { flex-direction: row-reverse; }
+  .msg.user .avatar { background: var(--vscode-badge-background, #3a3a3a); color: var(--vscode-foreground, #ccc); }
+  .msg.assistant .avatar { background: var(--vscode-badge-background, #3a3a3a); color: var(--vscode-foreground, #ddd); }
+  .msg .col { display: flex; flex-direction: column; gap: 4px; max-width: 86%; }
+  .msg .name { display: none; } /* 默认隐藏 "你"/"dsh" 角色文字 */
+  .msg.user .body {
+    background: var(--vscode-input-background, #252526); border-radius: 10px;
+    padding: 8px 10px; white-space: pre-wrap; word-break: break-word;
+  }
+  .msg.assistant .body { white-space: normal; word-break: break-word; }
+  .msg.user .body .user-text { white-space: pre-wrap; }
+  .msg.user .body .user-img { margin-top: 6px; }
+  .msg.user .body .user-img img {
+    max-width: 100%; max-height: 240px; border-radius: 8px; display: block;
+    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
+  }
+
+  /* markdown 内容 */
+  .msg .body p { margin: 0 0 8px; }
+  .msg .body p:last-child { margin-bottom: 0; }
+  .msg .body pre {
+    background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.3));
+    padding: 8px 10px; border-radius: 6px; overflow-x: auto; font-size: 12px;
+    font-family: var(--vscode-editor-font-family, monospace);
+  }
+  .msg .body code { font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; }
+  .msg .body ul, .msg .body ol { margin: 0 0 8px; padding-left: 20px; }
+  .msg .body a { color: var(--vscode-textLink-foreground, #4daafc); }
+  .msg .body blockquote { margin: 0 0 8px; padding-left: 10px; border-left: 3px solid rgba(255,255,255,0.2); color: var(--vscode-descriptionForeground, #888); }
+
+  /* 输入区 */
+  #composer {
+    position: relative;
+    z-index: 20;
+    padding: 8px 12px;
+    background: var(--vscode-editor-background, #1e1e1e);
+  }
+  #inputbox {
+    display: flex; flex-direction: column;
+    border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.45));
+    border-radius: 10px; background: var(--vscode-input-background, #252526);
+  }
+  #inputbox:focus-within { border-color: var(--vscode-focusBorder, #4daafc); }
+  #input {
+    width: 100%; box-sizing: border-box; resize: none; border: none; outline: none;
+    min-height: 56px; max-height: 150px; background: transparent;
+    color: var(--vscode-input-foreground, #ddd); padding: 10px 14px 4px;
+    font-family: inherit; font-size: 13px;
+  }
+  #inputbar {
+    display: flex; align-items: center; gap: 4px;
+    padding: 2px 10px 6px 2px;
+  }
+  #attach, #permBtn, #modelBtn, #modeBtn {
+    width: 22px; height: 22px; border: none; background: none;
+    color: var(--vscode-foreground, #ddd); cursor: pointer; border-radius: 4px;
+    display: inline-flex; align-items: center; justify-content: center; padding: 0;
+    flex: none; line-height: 0;
+  }
+  #attach svg, #permBtn svg, #modelBtn svg, #modeBtn svg { display: block; }
+  #permBtn, #modelBtn, #modeBtn { font-size: 15px; line-height: 1; }
+  #attach, #permBtn, #modelBtn, #modeBtn { border-radius: 6px; transition: background 0.12s ease; }
+  #attach:hover, #permBtn:hover, #modelBtn:hover, #modeBtn:hover {
+    background: rgba(128,128,128,0.28);
+  }
+  #permBtn.active, #modelBtn.active, #modeBtn.active { background: rgba(128,128,128,0.35); }
+  #modeBtn.readonly { opacity: 0.55; cursor: default; }
+  #modeBtn.readonly:hover { background: none; }
+  /* 图标 + 选择文字作为一个紧凑单元；窄面板可收缩，避免把右侧按钮挤出可视区 */
+  #composer, #inputbox, #inputbar { min-width: 0; }
+  /* 文字宽时可全显；空间不足时才收缩。min-width 保 22px 图标不被压小：组最窄只缩文字到 0(省略号→消失)，
+     图标固定等距、不溢出叠邻居 */
+  .sel-group { display: inline-flex; align-items: center; gap: 3px; flex: 0 1 auto; min-width: 22px; }
+  .sel-label {
+    font-size: 11px; color: var(--vscode-descriptionForeground, #888);
+    flex: 0 1 auto; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* 模型/模式标签：宽裕时完整显示；空间不足时随 flex 收缩出省略号（不设死上限，避免挡全显） */
+  #modelLabel, #modeLabel { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #modePopup {
+    z-index: 1000;
+    width: min(360px, 92vw);
+    max-width: none;
+  }
+  #modePopup .opt {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+    white-space: normal;
+    line-height: 1.4;
+  }
+  #modePopup .opt-desc {
+    font-size: 11px;
+    opacity: 0.72;
+  }
+
+  /* 图标点击后向上展开的选择面板 */
+  .popup {
+    position: absolute; bottom: 100%; left: 8px; z-index: 50;
+    min-width: 180px; max-width: 300px; max-height: 46vh; overflow-y: auto;
+    background: var(--vscode-editor-background, #1e1e1e);
+    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.15));
+    border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+    padding: 6px; display: flex; flex-direction: column; gap: 1px;
+  }
+  .popup.hidden { display: none; }
+  .popup .popup-title { font-size: 11px; opacity: 0.7; padding: 2px 6px 4px; }
+  .popup .optgroup-label { font-size: 11px; opacity: 0.6; padding: 4px 6px 2px; }
+  .popup .popup-fail {
+    font-size: 11px; color: var(--vscode-errorForeground, #f14c4c);
+    padding: 2px 6px 4px; word-break: break-word;
+  }
+  .popup .opt {
+    display: flex; align-items: center; font-size: 12px;
+    padding: 5px 8px; border-radius: 5px; cursor: pointer;
+  }
+  /* 悬停 / 选中统一用主题列表背景（深浅色均清晰；不用按钮蓝，浅色模式看不清） */
+  .popup .opt:hover {
+    background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.25));
+  }
+  .popup .opt.selected {
+    background: var(--vscode-list-activeSelectionBackground, rgba(128, 128, 128, 0.35));
+    color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground, #ddd));
+  }
+  .popup .opt.reason { padding-left: 18px; font-size: 11px; }
+  #send {
+    margin-left: auto;
+    width: 24px; height: 24px; border-radius: 50%; border: none;
+    background: var(--vscode-button-background, #0e639c); color: var(--vscode-button-foreground, #fff);
+    cursor: pointer; flex: none; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  #send svg { width: 13px; height: 13px; display: block; }
+  #send .stop-icon { display: none; }
+  #send.stop .send-icon { display: none; }
+  #send.stop .stop-icon { display: block; }
+  #send:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
+  #send:disabled { opacity: 0.4; cursor: default; }
+  #send.stop { background: var(--vscode-errorForeground, #f14c4c); }
+
+  /* 统计脚注 */
+  .stats {
+    font-size: 11px; color: var(--vscode-descriptionForeground, #888);
+    opacity: 0.8; margin-top: 2px;
+  }
+  /* 回合非正常终止提示（turn/end 原因） */
+  .end-note {
+    font-size: 11px; color: var(--vscode-errorForeground, #f14c4c);
+    margin-top: 2px; word-break: break-word;
+  }
+  /* 用量 / 用时 图标+弹窗 */
+  .turn-meta { position: relative; display: flex; gap: 6px; margin-top: 3px; }
+  .tm-btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 2px;
+    min-width: 20px; height: 20px;
+    border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.18));
+    background: none; color: var(--vscode-descriptionForeground, #999);
+    padding: 0 6px; border-radius: 4px; cursor: pointer; line-height: 0;
+  }
+  .tm-btn .codicon { font-size: 13px; line-height: 1; }
+  .tm-btn .tm-txt { font-size: 10px; line-height: 1; font-variant-numeric: tabular-nums; }
+  .tm-btn:hover { background: rgba(255,255,255,0.08); }
+  .tm-btn.active { color: var(--vscode-foreground, #ddd); background: rgba(128,128,128,0.25); }
+  .tt-pop {
+    position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 40;
+    min-width: 230px; max-width: 320px;
+    /* 用 editorWidget 变量让弹窗与消息背景区分开（深色主题也清晰） */
+    background: var(--vscode-editorWidget-background, #181818);
+    color: var(--vscode-editorWidget-foreground, var(--vscode-foreground, #ddd));
+    border: 1px solid var(--vscode-widget-border, rgba(255,255,255,0.35));
+    border-radius: 8px; box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+    padding: 6px 10px; display: flex; flex-direction: column; gap: 2px;
+  }
+  .tt-row { display: flex; justify-content: space-between; gap: 14px; font-size: 11px; line-height: 1.5; }
+  .tt-k { opacity: 0.7; white-space: nowrap; }
+  .tt-v { text-align: right; word-break: break-word; font-variant-numeric: tabular-nums; }
+
+  /* 审批行 */
+  .approval {
+    display: flex; align-items: center; gap: 8px;
+    background: rgba(255, 193, 7, 0.1); border: 1px solid rgba(255, 193, 7, 0.3);
+    border-radius: 8px; padding: 8px 10px; font-size: 12px; margin: 6px 0;
+  }
+  .approval .appr-info {
+    flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
+  }
+  .approval .appr-title { font-weight: 600; word-break: break-word; }
+  .approval .appr-reason { font-size: 11px; opacity: 0.85; word-break: break-word; line-height: 1.4; }
+  .approval button {
+    border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.15));
+    background: none; color: var(--vscode-foreground, #ddd);
+    font-size: 12px; padding: 3px 14px; border-radius: 4px; cursor: pointer;
+  }
+  .approval button:hover { background: rgba(255,255,255,0.1); }
+  .approval button.allow { color: #4daafc; border-color: rgba(77,170,252,0.4); }
+  .approval button.reject { color: #ff5c5c; border-color: rgba(255,92,92,0.4); }
+
+  /* 提问卡（ask_user_question） */
+  .question {
+    background: rgba(77, 170, 252, 0.08); border: 1px solid rgba(77, 170, 252, 0.3);
+    border-radius: 8px; padding: 10px 12px; font-size: 12px; margin: 6px 0;
+  }
+  .question .q-title { font-weight: 600; margin-bottom: 6px; }
+  .question .q-block { margin: 6px 0; }
+  .question .q-header { font-size: 11px; opacity: 0.7; }
+  .question .q-text { font-weight: 500; margin: 2px 0; }
+  .question .q-detail { font-size: 11px; opacity: 0.7; margin-bottom: 4px; }
+  .question .q-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .question .q-option {
+    display: inline-flex; flex-direction: column; align-items: flex-start; gap: 1px;
+    border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.2));
+    background: none; color: var(--vscode-foreground, #ddd);
+    font-size: 12px; padding: 4px 10px; border-radius: 8px; cursor: pointer;
+    line-height: 1.3; text-align: left; max-width: 100%;
+  }
+  .question .q-option .q-opt-label { font-weight: 500; }
+  .question .q-option .q-opt-desc {
+    font-size: 11px; opacity: 0.75; line-height: 1.3; font-weight: normal;
+    white-space: normal; word-break: break-word;
+  }
+  .question .q-option:hover { background: rgba(255,255,255,0.1); }
+  .question .q-option.selected {
+    background: var(--vscode-button-background, #0e639c);
+    color: var(--vscode-button-foreground, #fff); border-color: transparent;
+  }
+  .question .q-option.selected .q-opt-desc { opacity: 0.8; }
+  .question .q-input {
+    width: 100%; box-sizing: border-box; margin-top: 4px;
+    border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.2));
+    border-radius: 6px; padding: 5px 8px; background: var(--vscode-input-background, #252526);
+    color: var(--vscode-input-foreground, #ddd); font-size: 12px;
+  }
+  .question .q-bar { display: flex; gap: 8px; margin-top: 8px; }
+  .question button.q-submit {
+    background: var(--vscode-button-background, #0e639c); color: var(--vscode-button-foreground, #fff);
+    border: none; border-radius: 4px; padding: 4px 16px; font-size: 12px; cursor: pointer;
+  }
+  .question button.q-submit:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
+  .question button.q-cancel {
+    border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.2)); background: none;
+    color: var(--vscode-foreground, #ddd); border-radius: 4px; padding: 4px 16px; font-size: 12px; cursor: pointer;
+  }
+  .question button.q-cancel:hover { background: rgba(255,255,255,0.1); }
+
+  /* 思考 / 活动（实时，思维链） */
+  .thinking { font-size: 11px; color: var(--vscode-descriptionForeground, #888); }
+  .thinking.hidden { display: none; }
+  .thinking .act { margin: 1px 0; }
+  .thinking .thinking-dots { animation: dsh-pulse 1.2s ease-in-out infinite; }
+  @keyframes dsh-pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+  .thinking .summary { font-style: italic; }
+
+  /* 思维链：每个 step 一个块（思考文本 + 工具 chips） */
+  .thinking .step-box {
+    margin: 4px 0; padding: 5px 8px;
+    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
+    border-left: 3px solid var(--vscode-charts-blue, #4daafc);
+    border-radius: 6px;
+    background: rgba(255,255,255,0.03);
+  }
+  .thinking .step-head { font-weight: 600; opacity: 0.9; margin-bottom: 2px; }
+  .thinking .step-reasoning { white-space: pre-wrap; opacity: 0.75; margin: 2px 0; }
+  .thinking .step-tools { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+  .thinking .tool-chip {
+    font-size: 10px; padding: 1px 7px; border-radius: 8px;
+    background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.18);
+  }
+
+  /* 消息时间 + 操作：最新一条回答常显；历史(非最新)默认隐藏、悬停显示 */
+  .msg-meta {
+    display: flex; align-items: center; gap: 6px; font-size: 11px;
+    color: var(--vscode-descriptionForeground, #888); opacity: 0; transition: opacity 0.15s;
+  }
+  .msg:hover .msg-meta { opacity: 1; }
+  .msg.latest .msg-meta { opacity: 1; }
+  /* 用量/用时弹窗打开时保持动作区常显（TurnStats 打开会给所在 .msg 加 meta-open，防闪烁/消失） */
+  .msg.meta-open .msg-meta { opacity: 1; }
+  .msg-meta .time { font-variant-numeric: tabular-nums; }
+
+  /* 消息操作按钮 */
+  .msg-actions { position: relative; display: flex; align-items: center; gap: 2px; }
+  .msg-actions button {
+    border: none; background: none; color: var(--vscode-descriptionForeground, #888);
+    font-size: 12px; cursor: pointer; padding: 2px 5px; border-radius: 4px; line-height: 1;
+  }
+  /* hover 高亮背景(工具类按钮的悬停选中感) */
+  .msg-actions button:hover {
+    color: var(--vscode-foreground, #ddd);
+    background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground, rgba(128,128,128,0.22)));
+  }
+  /* 用量/用时图标并入动作区(在重新生成按钮后)，覆盖 msg-actions button 默认外观 */
+  .msg-actions .turn-meta { margin: 0; }
+  .msg-actions .tm-btn {
+    border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.18));
+    background: none; color: var(--vscode-descriptionForeground, #999);
+    min-width: 18px; height: 18px; padding: 0 5px; border-radius: 4px;
+  }
+  .msg-actions .tm-btn:hover { background: rgba(255,255,255,0.08); color: var(--vscode-foreground, #ddd); }
+  .msg-actions .tm-btn.active { color: var(--vscode-foreground, #ddd); background: rgba(128,128,128,0.25); }
+
+  /* 底部官方统计（左对齐，超长省略，悬停显示全文） */
+  #statsbar {
+    padding: 2px 12px 0; font-size: 11px;
+    color: var(--vscode-descriptionForeground, #888);
+    text-align: left; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; cursor: default;
+  }
+  #statsbar:empty { padding: 0; }
+
+  /* 附件（文件引用，输入框区域内） */
+  #attachments {
+    padding: 4px 0 8px; display: flex; align-items: center; gap: 6px;
+    flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+  #attachments::-webkit-scrollbar { height: 4px; }
+  #attachments::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.35); border-radius: 2px; }
+  #attachments.hidden { display: none; }
+  .file-chip {
+    display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
+    background: var(--vscode-button-secondaryBackground, rgba(255,255,255,0.08));
+    color: var(--vscode-button-secondaryForeground, #ccc);
+    border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.25));
+    border-radius: 6px; padding: 0 7px; font-size: 12px; height: 30px;
+    max-width: 200px; min-width: 0;
+  }
+  .file-chip .ficon { display: inline-flex; align-items: center; color: var(--vscode-descriptionForeground, #aaa); }
+  .file-chip .ficon .codicon { font-size: 14px; }
+  .file-chip .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-chip .x { cursor: pointer; opacity: 0.7; flex-shrink: 0; }
+  .file-chip .x:hover { opacity: 1; }
+
+  /* 图片附件缩略图 */
+  .img-chip {
+    display: inline-flex; align-items: center; position: relative; flex: 0 0 auto;
+    border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.25));
+    border-radius: 6px; padding: 2px; height: 48px;
+  }
+  .img-chip .img-thumb {
+    width: 44px; height: 44px; object-fit: cover; border-radius: 4px; display: block;
+  }
+  .img-chip .x {
+    position: absolute; top: -6px; right: -6px;
+    width: 16px; height: 16px; line-height: 14px; text-align: center;
+    border-radius: 50%; background: var(--vscode-button-secondaryBackground, #444);
+    color: var(--vscode-foreground, #ddd); font-size: 11px; cursor: pointer;
+    border: 1px solid rgba(255,255,255,0.3);
+  }
+
+  /* ---------- 通用弹窗（modal）：本插件所有确认/提示类弹层统一复用此样式 ---------- */
+  .modal {
+    position: fixed; inset: 0; z-index: 100;
+    display: flex; align-items: center; justify-content: center;
+    padding: 18px; background: rgba(0, 0, 0, 0.35);
+  }
+  .modal.hidden { display: none; }
+  .modal-card {
+    width: 100%; max-width: 300px;
+    background: var(--vscode-editor-background, #252526);
+    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.15));
+    border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+    padding: 14px; display: flex; flex-direction: column; gap: 12px;
+  }
+  .modal-head { display: flex; gap: 10px; align-items: flex-start; }
+  .modal-icon {
+    flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid transparent;
+  }
+  .modal-icon--warn { color: #ffc107; background: rgba(255, 193, 7, 0.14); border-color: rgba(255, 193, 7, 0.35); }
+  .modal-icon--info { color: #4daafc; background: rgba(77, 170, 252, 0.12); border-color: rgba(77, 170, 252, 0.35); }
+  .modal-title { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+  .modal-sub { font-size: 11px; color: var(--vscode-descriptionForeground, #888); }
+  .modal-code {
+    font-size: 12px; word-break: break-all;
+    background: var(--vscode-input-background, #1e1e1e);
+    border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.15));
+    border-radius: 6px; padding: 6px 9px;
+    font-family: var(--vscode-editor-font-family, monospace);
+  }
+  .modal-code.hidden { display: none; }
+  .modal-body { font-size: 12px; line-height: 1.55; color: var(--vscode-foreground, #ddd); }
+  .modal-ack {
+    display: flex; align-items: flex-start; gap: 6px;
+    font-size: 12px; color: var(--vscode-foreground, #ddd); cursor: pointer;
+  }
+  .modal-ack input { margin-top: 2px; accent-color: var(--vscode-focusBorder, #4daafc); }
+  .modal-ack.hidden { display: none; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .btn {
+    border-radius: 6px; padding: 5px 14px; font-size: 12px; cursor: pointer;
+    font-family: inherit;
+  }
+  .btn-ghost {
+    background: none; color: var(--vscode-foreground, #ddd);
+    border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.22));
+  }
+  .btn-ghost:hover { background: rgba(255,255,255,0.08); }
+  .btn-primary {
+    background: var(--vscode-button-background, #0e639c);
+    color: var(--vscode-button-foreground, #fff); border: 1px solid transparent;
+  }
+  .btn-primary:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
+  .btn-danger {
+    background: #d13438; /* 固定深红：浅色/深色主题都醒目 */
+    color: #fff;
+    border: 1px solid transparent;
+  }
+  .btn-danger:hover { background: #b52e31; }
+  .btn:disabled { opacity: 0.45; cursor: default; }
+  .modal button:focus-visible { outline: 1px solid var(--vscode-focusBorder, #4daafc); outline-offset: 1px; }
+  @media (prefers-reduced-motion: no-preference) {
+    .modal-card { animation: dsh-modal-in 0.16s ease-out; }
+  }
+  @keyframes dsh-modal-in {
+    from { transform: translateY(6px) scale(0.98); opacity: 0; }
+    to { transform: none; opacity: 1; }
+  }

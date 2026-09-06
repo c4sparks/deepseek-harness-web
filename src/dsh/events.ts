@@ -11,7 +11,8 @@ export interface DshRemoteApprovalRequest {
     readonly clientId: string;
     readonly eventId: string;
     readonly agentId: string;
-    readonly toolName: string;
+    /** 上游 request.toolName；缺失时为 undefined，不自行造默认工具名 */
+    readonly toolName?: string;
     readonly callId?: string;
     readonly reason?: string;
 }
@@ -220,6 +221,18 @@ class RemoteEventHub {
     private control: { cancel: () => void } | undefined;
 
     private onFrame(value: unknown): void {
+        // 实验抓帧（$events）：env DSH_RAWLOG=1/full
+        const logMode = process.env['DSH_RAWLOG'];
+        if (logMode) {
+            const f = value as { type?: string; event?: string; eventId?: string; agentId?: string } | undefined;
+            if (logMode === 'full') {
+                console.log(`[dsh-raw] events ` + JSON.stringify(value).slice(0, 200_000));
+            } else {
+                console.log(
+                    `[dsh-raw] events ${String(f?.type ?? 'frame')}${f?.event ? ' event=' + f.event : ''}${f?.eventId ? ' eventId=' + f.eventId : ''}${f?.agentId ? ' agentId=' + f.agentId : ''}`
+                );
+            }
+        }
         const frame = value as
             | { type?: string; clientId?: string; eventId?: string; event?: string; agentId?: string; request?: Record<string, unknown> }
             | undefined;
@@ -255,7 +268,7 @@ class RemoteEventHub {
         this.pending.set(frame.eventId, invocation);
         const request = frame.request ?? {};
         if (frame.event === 'approval/request') {
-            const toolName = typeof request['toolName'] === 'string' ? request['toolName'] : 'tool';
+            const toolName = typeof request['toolName'] === 'string' ? request['toolName'] : undefined;
             const callId = typeof request['callId'] === 'string' ? request['callId'] : undefined;
             const reason = typeof request['reason'] === 'string' ? request['reason'] : undefined;
             for (const handler of set) {

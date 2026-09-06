@@ -614,7 +614,9 @@ export class DshService {
     }
 
     /** 恢复会话：设为当前共享会话并返回消息历史（供 UI 渲染，协议解析复用事件投影） */
-    async restoreSession(sessionId: string): Promise<Array<{ role: 'user' | 'assistant'; text: string }>> {
+    async restoreSession(
+        sessionId: string
+    ): Promise<Array<{ role: 'user' | 'assistant'; text: string; time?: number; provider?: string; model?: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; reasoningTokens?: number; wallSec?: number; ttftSec?: number; tps?: number }>> {
         this.currentSessionId = sessionId;
         return getSessionMessages(sessionId);
     }
@@ -634,6 +636,8 @@ export class DshService {
     async listModels(): Promise<{
         current?: { provider?: string; model?: string; reasoningEffort?: string };
         groups?: Array<{ id: string; name: string; models: Array<{ id: string; name: string; reasoning?: { efforts?: Array<{ id: string; name: string }> } }> }>;
+        /** 上游对加载失败 provider/组的提示（原样透传；UI 只显示组数） */
+        failures?: unknown[];
     }> {
         const sid = await this.getSession();
         const catalog = await modelCatalog();
@@ -650,6 +654,7 @@ export class DshService {
         return {
             current: current ?? catalog.default,
             groups: catalog.groups,
+            failures: catalog.failures,
         };
     }
 
@@ -718,7 +723,7 @@ export class DshService {
             onQuestion?: (q: DshQuestionRequest) => void;
             isCancelled?: () => boolean;
         } = {}
-    ): Promise<{ text: string; stats: DshReplyStats }> {
+    ): Promise<{ text: string; stats: DshReplyStats; time?: number; end?: { kind: string; message?: string } }> {
         if (!(await this.ensureRunning())) {
             throw new Error('DSH 服务不可用，无法对话');
         }
@@ -728,9 +733,8 @@ export class DshService {
                 opts.onApproval?.({
                     approvalId: request.eventId,
                     sessionId: request.agentId,
-                    description:
-                        request.reason ??
-                        `DSH 请求批准执行工具：${request.toolName}（请在网页端或下方确认）`,
+                    toolName: request.toolName,
+                    description: request.reason, // reason 为真实原因；无则 UI 用 toolName 拼提示
                 });
             },
             onQuestion: (request) => {

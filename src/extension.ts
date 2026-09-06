@@ -6,16 +6,17 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { DshService } from './api/dshService';
 import { type DshContentPart, type DshReplyStats } from './dsh';
+import { mergeTurnStats } from './dsh/cumulative';
 import { DshPanel } from './dshPanel';
 import {
+    applyNativeTitlebarContext,
     TITLEBAR_MODE,
-    TITLEBAR_NATIVE_CTX,
     TITLEBAR_MODE_ATTR,
     installChatTitlebar,
     makeTitlebarPanelBroadcaster,
     type TitlebarChatHost,
     type TitlebarMode,
-} from './titlebar';
+} from './titlebar/index';
 
 const dsh = new DshService();
 const panel = new DshPanel({
@@ -138,14 +139,19 @@ interface UsageRecord {
     totalTokens?: number;
 }
 
-/** 记录一次对话的消费到持久化存储 */
-async function recordUsage(state: vscode.Memento, stats: DshReplyStats | undefined): Promise<void> {
+/** 记录一次对话的消费到持久化存储（time 取 dsh 对该回答的自带时间戳，缺省才用本地时刻） */
+async function recordUsage(state: vscode.Memento, stats: DshReplyStats | undefined, apiTime?: number): Promise<void> {
     if (!stats) {
         return;
     }
     const key = 'dsh.usage';
+    // epoch 秒/毫秒自适应，统一存毫秒；无 API 时刻才回退本地 Date.now()
+    const ts =
+        typeof apiTime === 'number' && Number.isFinite(apiTime) && apiTime > 0
+            ? (apiTime > 1e12 ? apiTime : apiTime * 1000)
+            : Date.now();
     const record: UsageRecord = {
-        time: Date.now(),
+        time: ts,
         inputTokens: stats.inputTokens,
         outputTokens: stats.outputTokens,
         cacheReadTokens: stats.cacheReadTokens,
@@ -153,6 +159,16 @@ async function recordUsage(state: vscode.Memento, stats: DshReplyStats | undefin
         reasoningTokens: stats.reasoningTokens,
         totalTokens: stats.totalTokens,
     };
+    if (
+        record.inputTokens === undefined &&
+        record.outputTokens === undefined &&
+        record.cacheReadTokens === undefined &&
+        record.cacheWriteTokens === undefined &&
+        record.reasoningTokens === undefined &&
+        record.totalTokens === undefined
+    ) {
+        return; // 无任何已消耗用量（如停在首个 token 前），不写空行
+    }
     const existing = state.get<UsageRecord[]>(key) ?? [];
     const next = [...existing, record].slice(-500);
     await state.update(key, next);
@@ -574,6 +590,8 @@ function setupChatWebview(
                     if (parts.length === 0) {
                         return;
                     }
+                    // 记录回合开始时的累计投影(官方口径差分基线)；服务未起/会话未建时读不到则为空
+                    const beforeProj = await dsh.getProjections().catch(() => undefined);
                     const result = await dsh.askStreaming(
                         parts,
                         (delta) => {
@@ -598,6 +616,7 @@ function setupChatWebview(
                                         type: 'chatApproval',
                                         approvalId: a.approvalId,
                                         description: a.description,
+                                        toolName: a.toolName,
                                     });
                                 }
                             },
@@ -614,17 +633,23 @@ function setupChatWebview(
                         }
                     );
                     if (g !== gen.n) {
-                        return; // 已取消
+                        // 该回合已被停止/取代(stopTurn 已发 chatDone)：只补记已消耗的 usage，不重复发完成帧
+                        await recordUsage(globalState, result.stats, result.time);
+                        return;
                     }
-                    post({ type: 'chatDone', text: result.text, stats: result.stats });
-                    await recordUsage(globalState, result.stats);
+                    // 回合结束读累计投影 → 差分合并出“本轮”usage/计时(官方口径,逻辑在 dsh/cumulative.ts)
+                    const afterProj = await dsh.getProjections().catch(() => undefined);
+                    const stats = mergeTurnStats(result.stats, beforeProj, afterProj);
+                    post({ type: 'chatDone', text: result.text, stats, time: result.time, end: result.end });
+                    await recordUsage(globalState, stats, result.time);
                     void postChatInfo(webview); // 刷新官方统计/权限
                 } catch (e) {
                     if (g !== gen.n) {
                         return;
                     }
-                    post({ type: 'chatChunk', text: '⚠ ' + (e as Error).message });
-                    post({ type: 'chatDone' });
+                    // 错误以“回合终止原因”呈现(end-note)，不把 '⚠ …' 塞进正文当内容
+                    const message = e instanceof Error ? e.message : String(e);
+                    post({ type: 'chatDone', end: { kind: 'error', message } });
                 }
             })();
         } else if (msg.type === 'cancel') {
@@ -1306,9 +1331,10 @@ export function activate(context: vscode.ExtensionContext) {
     // 初始化上下文（视图标题栏按钮显隐依据）
     vscode.commands.executeCommand('setContext', 'dshViewMode', panel.viewMode);
     vscode.commands.executeCommand('setContext', 'dshPanelOpen', false);
-    // 原生/自绘 标题栏开关（不猜宿主）：selfDrawn(默认) → false 屏蔽 package.json 全部 view/title
+    // 原生/自绘 标题栏开关（不猜宿主）：selfDrawn → false 屏蔽 package.json 全部 view/title
     // 原生按钮；nativeTitle → true，原生按钮出现并受上面两个上下文继续控制显隐。
-    vscode.commands.executeCommand('setContext', TITLEBAR_NATIVE_CTX, TITLEBAR_MODE === 'nativeTitle');
+    // 实现收在 src/titlebar/native/（删原生标题栏时删本调用即可）。
+    applyNativeTitlebarContext(TITLEBAR_MODE === 'nativeTitle');
 
     // 命令：查看消费记录（弹窗报告面板）
     context.subscriptions.push(
