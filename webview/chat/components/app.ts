@@ -104,6 +104,7 @@ function AssistantMessage({ row, store, latest }: { row: Extract<ChatRow, { kind
     ${Thinking({ row })}
     <div class="body" dangerouslySetInnerHTML=${{ __html: bodyHtml }}></div>
     ${row.endMsg ? html`<div class="end-note">⚠ ${row.endMsg}</div>` : null}
+    ${row.status ? html`<div class="status-badge">${row.status}</div>` : null}
     ${RowMeta({
       time: row.time,
       copyable: !!row.text,

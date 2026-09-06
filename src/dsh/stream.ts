@@ -1,5 +1,6 @@
 // dsh 0.1.2-rc.1 流式对话：session/follow 驱动的 waitTurn 与 ask 系列。
 import { openMuxStream } from "./api";
+import { deriveTurnTokenUsage, deriveTurnFacts, type TurnLikeEvent } from "./official/turn-stats";
 import {
     createSession,
     eventText,
@@ -76,18 +77,8 @@ interface TurnResult {
     /** turn/end 的非正常终止原因（error/aborted/interrupted/max-tokens/blocked…）；正常完成则无 */
     end?: { kind: string; message?: string };
 }
-function numberOr(v: unknown): number | undefined {
-    return typeof v === 'number' ? v : undefined;
-}
 function stringOf(v: unknown): string | null {
     return typeof v === 'string' && v.length > 0 ? v : null;
-}
-/** 累加两个可空数值：下一值为 undefined 时保留现值，否则求和（整轮多 assistant/message 的 usage 累计口径）。 */
-function addOpt(prev: number | undefined, next: number | undefined): number | undefined {
-    if (next === undefined) {
-        return prev;
-    }
-    return (prev ?? 0) + next;
 }
 /** 保留一位小数的数值（0.1 精度）；非有限数返回 undefined。 */
 function round1(n: number | undefined): number | undefined {
@@ -146,14 +137,8 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
     let errorAtEnd: { message: string } | undefined;
     let messageTime: number | undefined;
     let endMarker: { kind: string; message?: string } | undefined;
-    // 事件级计时与模型信息（用服务端事件自带 time，不用本地时钟）
-    let provider: string | undefined;
-    let model: string | undefined;
-    let turnStartAt: number | undefined;
-    let stepStartAt: number | undefined;
-    let firstDeltaAt: number | undefined;
-    let lastDeltaAt: number | undefined;
-    let turnEndAt: number | undefined;
+    // 核心 per-turn（模块）入参：只收集本回合关键事件，结束时交 official/turn-stats.ts 计算，不再自行统计
+    const officialEvents: TurnLikeEvent[] = [];
     await new Promise<void>((resolve, reject) => {
         let settled = false;
         let idleTimer: ReturnType<typeof setInterval> | undefined;
@@ -197,18 +182,15 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
             const d = raw.data ?? {};
             switch (raw.type) {
                 case 'assistant/chunk': {
-                    const chunk = d['chunk'] as { type?: string; text?: string } | undefined;
+                    const chunk = d['chunk'] as { type?: string; text?: string; block?: { type?: string; text?: string } } | undefined;
                     if (!chunk) {
                         return;
                     }
+                    officialEvents.push({ type: 'assistant/chunk', time: raw.time, data: { chunk } });
                     if (chunk.type === CHUNK_TEXT && typeof chunk.text === 'string') {
                         text += chunk.text;
                         sawDeltas = true;
                         messageTime ??= raw.time; // 无 assistant/message 时的兜底时刻
-                        if (firstDeltaAt === undefined) {
-                            firstDeltaAt = raw.time; // 首个文本增量（TTFT 终点）
-                        }
-                        lastDeltaAt = raw.time; // 末尾文本增量（解码结束）
                         onDelta(chunk.text);
                     } else if (chunk.type === CHUNK_REASONING && typeof chunk.text === 'string') {
                         const step = typeof d['step'] === 'number' ? d['step'] : undefined;
@@ -219,44 +201,30 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
                 case 'assistant/message': {
                     sawAssistantMessage = true;
                     messageTime = raw.time; // 回答消息在服务端生成的原始时刻
-                    const msgObj = d['message'] as { source?: { provider?: string; model?: string } } | undefined;
-                    const src = msgObj?.source;
-                    if (src && typeof src.provider === 'string') {
-                        provider = src.provider;
-                    }
-                    if (src && typeof src.model === 'string') {
-                        model = src.model;
-                    }
                     const full = eventText(raw); // assistant/message 自带整条消息内容
                     if (full) {
                         text = full; // 以 API 整条消息为准，覆盖 text-delta 的本地拼接
                     }
+                    const msgObj = d['message'] as { source?: { provider?: string; model?: string } } | undefined;
                     const usage = usageOf(d);
-                    if (usage) {
-                        // 整轮口径：一个 turn 可含多个 assistant/message（每步一次），usage 求和累计，
-                        // 不用最后一次覆盖（避免多 step / 重试回合低估）。steps 不在此累计。
-                        lastStats = {
-                            ...lastStats,
-                            inputTokens: addOpt(lastStats.inputTokens, numberOr(usage['inputTokens'] ?? usage['uncachedInputTokens'])),
-                            outputTokens: addOpt(lastStats.outputTokens, numberOr(usage['outputTokens'])),
-                            cacheReadTokens: addOpt(lastStats.cacheReadTokens, numberOr(usage['cacheReadTokens'])),
-                            cacheWriteTokens: addOpt(lastStats.cacheWriteTokens, numberOr(usage['cacheWriteTokens'])),
-                            reasoningTokens: addOpt(lastStats.reasoningTokens, numberOr(usage['reasoningTokens'])),
-                            totalTokens: addOpt(lastStats.totalTokens, numberOr(usage['totalTokens'])),
-                        };
-                    }
+                    // 核心 per-turn 模块入参（usage 归一化/optional 规则交给模块）
+                    officialEvents.push({
+                        type: 'assistant/message',
+                        time: raw.time,
+                        data: {
+                            turn: d['turn'] as number | undefined,
+                            step: d['step'] as number | undefined,
+                            message: msgObj?.source ? { source: msgObj.source } : undefined,
+                            usage,
+                        },
+                    });
                     break;
                 }
                 case 'turn/start':
-                    if (turnStartAt === undefined) {
-                        turnStartAt = raw.time;
-                    }
+                    officialEvents.push({ type: 'turn/start', time: raw.time, data: { turn: d['turn'] as number | undefined } });
                     break;
                 case 'step/start':
-                    stepStartAt = raw.time;
-                    // 每次 LLM 调用(step)重置“本次调用”解码计时窗口，TTFT/TPS 反映最后一次回答调用
-                    firstDeltaAt = undefined;
-                    lastDeltaAt = undefined;
+                    officialEvents.push({ type: 'step/start', time: raw.time, data: { step: d['step'] as number | undefined } });
                     opts.onActivity?.({ type: 'step', step: typeof d['step'] === 'number' ? d['step'] : undefined });
                     break;
                 case 'tool/call':
@@ -267,7 +235,7 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
                     });
                     break;
                 case 'turn/end': {
-                    turnEndAt = raw.time;
+                    officialEvents.push({ type: 'turn/end', time: raw.time, data: { turn: d['turn'] as number | undefined, reason: d['reason'] as { kind?: string } | undefined } });
                     const reason = d['reason'] as { kind?: string; message?: string; error?: { message?: string } } | undefined;
                     const kind = reason?.kind;
                     const message = reason?.error?.message ?? reason?.message;
@@ -339,22 +307,37 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
     if (errorAtEnd && !sawDeltas && !sawAssistantMessage && !text) {
         throw new Error(errorAtEnd.message);
     }
-    // 事件级指标(全用服务端 time)：模型、TTFT、TPS、本轮总用时
-    if (provider) {
-        lastStats = { ...lastStats, provider, model };
-    }
-    const ttftBase = stepStartAt ?? turnStartAt;
-    if (firstDeltaAt !== undefined && ttftBase !== undefined && firstDeltaAt > ttftBase) {
-        lastStats = { ...lastStats, ttftSec: round1((firstDeltaAt - ttftBase) / 1000) };
-    }
-    const outN = typeof lastStats.outputTokens === 'number' ? lastStats.outputTokens : 0;
-    if (firstDeltaAt !== undefined && lastDeltaAt !== undefined && lastDeltaAt > firstDeltaAt && outN > 0) {
-        lastStats = { ...lastStats, tps: Math.round(outN / ((lastDeltaAt - firstDeltaAt) / 1000)) };
-    }
-    const endAt = turnEndAt ?? messageTime ?? lastDeltaAt;
-    const startAt = turnStartAt ?? stepStartAt;
-    if (endAt !== undefined && startAt !== undefined && endAt > startAt) {
-        lastStats = { ...lastStats, wallSec: round1((endAt - startAt) / 1000) };
+    // 核心 per-turn（模块）：与历史同口径，替换旧的自行统计/投影差分
+    const officialUsage = deriveTurnTokenUsage(officialEvents);
+    const officialFacts = deriveTurnFacts(officialEvents);
+    for (const [turnKey, u] of officialUsage) {
+        lastStats = { ...lastStats, inputTokens: u.uncachedInputTokens, outputTokens: u.outputTokens };
+        if (u.cacheReadTokens !== undefined) {
+            lastStats.cacheReadTokens = u.cacheReadTokens;
+        }
+        if (u.cacheWriteTokens !== undefined) {
+            lastStats.cacheWriteTokens = u.cacheWriteTokens;
+        }
+        if (u.reasoningTokens !== undefined) {
+            lastStats.reasoningTokens = u.reasoningTokens;
+        }
+        if (u.routes !== undefined && u.routes.length === 1) {
+            lastStats = { ...lastStats, provider: u.routes[0].provider, model: u.routes[0].model };
+        }
+        const m = officialFacts.metrics.get(turnKey);
+        if (m) {
+            if (m.ttftMs !== undefined) {
+                lastStats.ttftSec = round1(m.ttftMs / 1000);
+            }
+            if (m.tokensPerSecond !== undefined) {
+                lastStats.tps = Math.round(m.tokensPerSecond);
+            }
+        }
+        const rm = officialFacts.runMs.get(turnKey);
+        if (rm !== undefined) {
+            lastStats.wallSec = rm / 1000; // 不预舍入：展示端按官方整秒向下取整
+        }
+        break; // 一次回合
     }
     return { text, stats: lastStats, time: messageTime, end: endMarker };
 }

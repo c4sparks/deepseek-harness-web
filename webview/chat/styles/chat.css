@@ -292,6 +292,14 @@
     font-size: 11px; color: var(--vscode-errorForeground, #f14c4c);
     margin-top: 2px; word-break: break-word;
   }
+  /* 状态小药丸：包裹文字、常驻背景（随主题变量深浅适配，无需 hover） */
+  .status-badge {
+    display: inline-block; width: fit-content; max-width: 100%;
+    margin: 3px 0 0; padding: 0 7px; border-radius: 8px;
+    font-size: 10px; line-height: 1.6; color: var(--vscode-descriptionForeground, #999);
+    border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.35));
+    background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2)));
+  }
   /* 用量 / 用时 图标+弹窗 */
   .turn-meta { position: relative; display: flex; gap: 6px; margin-top: 3px; }
   .tm-btn {

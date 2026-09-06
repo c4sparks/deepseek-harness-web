@@ -32,6 +32,7 @@ import {
     selectAgentPreset as selectAgentPresetRpc,
     type DshAgentPresetRoster,
 } from '../dsh';
+import { sessionDisplayTitle } from '../dsh/official/session-title';
 
 const NODE_REQUIREMENT = '^22.19.0 || >=24.0.0';
 
@@ -597,26 +598,34 @@ export class DshService {
             }
             out.push({
                 sessionId: s.sessionId,
-                title: String(
+                // 官方三层 fallback：title → cwd basename → sessionId（blank 由 UI 显示“新会话”）
+                title:
                     s.blank
                         ? '新会话'
-                        : ((s.projections?.values as Record<string, unknown> | undefined)?.['title'] as
-                                | string
-                                | undefined) ?? s.sessionId.slice(0, 8)
-                ),
+                        : sessionDisplayTitle({
+                              title: (s.projections?.values as Record<string, unknown> | undefined)?.['title'] as string | undefined,
+                              cwd: s.cwd,
+                              sessionId: s.sessionId ?? '',
+                          }),
                 running: !!s.running,
                 blank: !!s.blank,
                 current: isCurrent,
             });
         }
         out.sort((a, b) => Number(b.current) - Number(a.current) || Number(b.running) - Number(a.running));
+        // 会话名一致性诊断：打印官方返回的每条 sessionId+title（env DSH_RAWLOG=1/full）
+        if (process.env['DSH_RAWLOG']) {
+            for (const r of out) {
+                console.log(`[dsh-raw] session-list ${r.sessionId} title=${JSON.stringify(r.title)} running=${r.running} blank=${r.blank} current=${r.current}`);
+            }
+        }
         return out;
     }
 
     /** 恢复会话：设为当前共享会话并返回消息历史（供 UI 渲染，协议解析复用事件投影） */
     async restoreSession(
         sessionId: string
-    ): Promise<Array<{ role: 'user' | 'assistant'; text: string; time?: number; provider?: string; model?: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; reasoningTokens?: number; wallSec?: number; ttftSec?: number; tps?: number }>> {
+    ): Promise<Array<{ role: 'user' | 'assistant'; text: string; time?: number; provider?: string; model?: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; reasoningTokens?: number; wallSec?: number; ttftSec?: number; tps?: number; status?: string }>> {
         this.currentSessionId = sessionId;
         return getSessionMessages(sessionId);
     }

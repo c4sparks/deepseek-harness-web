@@ -53,16 +53,32 @@ export function TurnStats({ usage }: { usage: Record<string, unknown> }) {
   const ttft = num('ttftSec')
   const fmt = (v: number | undefined): string => (typeof v === 'number' ? v.toLocaleString('en-US') : '—')
   const row = (k: string, v: string): unknown => html`<div class="tt-row"><span class="tt-k">${k}</span><span class="tt-v">${v}</span></div>`
-  const hasUsage = total > 0 || (typeof provider === 'string' && provider.length > 0)
+  // 只在实际有数值时显示对应图标（停止/无数据的回答不显示，避免空图标/全是 —）
+  const hasUsage = total > 0
   const hasTime = wall !== undefined || tps !== undefined || ttft !== undefined
   if (!hasUsage && !hasTime) return null
   // 图标旁常显数值：用量=本轮总量(compact)，用时=本轮总用时(秒)
   const usageBadge = compactTokens(total)
+  // 时长按官方整秒向下取整：sub-second 显示 0秒；>=1 分钟显示 X分Y秒
   const wallText = (() => {
     if (wall === undefined) return ''
-    const s = wall >= 10 ? Math.round(wall) : Math.round(wall * 10) / 10
-    return String(s) + '秒'
+    const total = Math.floor(wall)
+    if (total < 60) return String(total) + '秒'
+    return Math.floor(total / 60) + '分' + (total % 60) + '秒'
   })()
+  // 弹窗行：有值才显示（对齐官方，缺失行不出现，不显示 “—”）
+  const usageRows: unknown[] = []
+  if (total > 0) usageRows.push(row('本轮用量', fmt(total) + ' tok'))
+  if (provider || model) usageRows.push(row('提供方 / 模型', [provider, model].filter(Boolean).join('/')))
+  if (hit !== undefined) usageRows.push(row('缓存命中', hit + '%'))
+  if (inp !== undefined) usageRows.push(row('未缓存输入', fmt(inp) + ' tok'))
+  if (cache !== undefined) usageRows.push(row('缓存读取', fmt(cache) + ' tok'))
+  if (out !== undefined)
+    usageRows.push(row('输出', fmt(out) + ' tok' + (reason && reason > 0 ? `（其中推理 ${fmt(reason)} tok）` : '')))
+  const timeRows: unknown[] = []
+  if (wall !== undefined) timeRows.push(row('本轮总用时', wallText))
+  if (tps !== undefined) timeRows.push(row('输出速度（TPS）', tps + ' tok/s'))
+  if (ttft !== undefined) timeRows.push(row('首 token 用时（TTFT）', ttft + '秒'))
   return html`<div class="turn-meta" ref=${wrapRef}>
     ${hasUsage
       ? html`<button class=${'tm-btn' + (open === 'u' ? ' active' : '')} title="本轮用量"
@@ -72,22 +88,7 @@ export function TurnStats({ usage }: { usage: Record<string, unknown> }) {
       ? html`<button class=${'tm-btn' + (open === 't' ? ' active' : '')} title="本轮用时与速度"
           onClick=${() => setOpen(open === 't' ? null : 't')}><span class="codicon codicon-clock"></span>${wallText ? html`<span class="tm-txt">${wallText}</span>` : null}</button>`
       : null}
-    ${open === 'u'
-      ? html`<div class="tt-pop">
-          ${row('本轮用量', fmt(total > 0 ? total : undefined) + ' tok')}
-          ${provider || model ? row('提供方 / 模型', [provider, model].filter(Boolean).join('/')) : null}
-          ${row('缓存命中', hit !== undefined ? hit + '%' : '—')}
-          ${row('未缓存输入', fmt(inp) + ' tok')}
-          ${row('缓存读取', fmt(cache) + ' tok')}
-          ${row('输出', fmt(out) + ' tok' + (reason && reason > 0 ? `（其中推理 ${fmt(reason)} tok）` : ''))}
-        </div>`
-      : null}
-    ${open === 't'
-      ? html`<div class="tt-pop">
-          ${row('本轮总用时', wall !== undefined ? wall + '秒' : '—')}
-          ${row('输出速度（TPS）', tps !== undefined ? tps + ' tok/s' : '—')}
-          ${row('首 token 用时（TTFT）', ttft !== undefined ? ttft + '秒' : '—')}
-        </div>`
-      : null}
+    ${open === 'u' && usageRows.length > 0 ? html`<div class="tt-pop">${usageRows}</div>` : null}
+    ${open === 't' && timeRows.length > 0 ? html`<div class="tt-pop">${timeRows}</div>` : null}
   </div>`
 }

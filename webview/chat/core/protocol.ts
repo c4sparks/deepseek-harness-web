@@ -70,6 +70,8 @@ export interface HistoryMessage {
   wallSec?: number
   ttftSec?: number
   tps?: number
+  /** 停止状态展示文案（已停止 · Stopped），仅被停止的回合最后一条 assistant 有 */
+  status?: string
 }
 
 // ---------- 宿主 → 页面 ----------

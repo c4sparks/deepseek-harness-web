@@ -2,7 +2,7 @@
   "name": "deepseek-harness-web",
   "displayName": "DeepSeek Harness Web",
   "description": "DeepSeek Harness 插件",
-  "version": "0.1.5",
+  "version": "0.1.6-rc.1",
   "publisher": "sparks-dev",
   "icon": "assets/icon.png",
   "engines": {
@@ -11,7 +11,8 @@
   },
   "categories": [
     "AI",
-    "Chat"
+    "Chat",
+    "Other"
   ],
   "activationEvents": [
     "onStartupFinished",

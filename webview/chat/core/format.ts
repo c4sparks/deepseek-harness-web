@@ -1,20 +1,9 @@
 // 展示层纯函数(无状态/DOM):工具名中文化、消息统计与底部统计条文案。
 // 与旧 chat.ts 逻辑一致,供组件与 store 复用。
 
-/** turn/end 的终止原因(kind)→ 用户可读短句。正常/未知 kind 返回空串。 */
-export function turnEndNote(end: { kind?: string; message?: string } | undefined): string {
-  if (!end || !end.kind) return ''
-  const kindText: Record<string, string> = {
-    error: '回合出错',
-    aborted: '回合被中止',
-    interrupted: '回合被打断',
-    'max-tokens': '达到最大 token 上限',
-    blocked: '回合被阻塞',
-    cancelled: '已取消',
-  }
-  const head = kindText[end.kind] ?? `回合以 ${end.kind} 结束`
-  const detail = end.message && end.message.trim() ? `：${end.message.trim()}` : ''
-  return head + detail
+/** turn/end 终止状态角标：先不翻译，直接回显官方 reason.kind 原值（completed/未知返回空）。与 src/dsh/session.ts 一致。 */
+export function turnStatusBadge(kind: string | undefined): string {
+  return kind && kind !== 'completed' ? kind : ''
 }
 
 /** dsh 事件/快照自带的原始时间戳(epoch 秒或毫秒,由上游给出)→ 本地 HH:mm:ss。无值不伪造。 */
@@ -118,8 +107,10 @@ export function formatStatsLine(projections: Record<string, unknown>): { text: s
   const cache = t['cacheReadTokens'] as number | undefined
   const cacheWrite = t['cacheWriteTokens'] as number | undefined
   const output = t['outputTokens'] as number | undefined
-  if (typeof input === 'number' && typeof cache === 'number' && input + cache > 0) {
-    parts.push(`缓存命中 ${((cache / (input + cache)) * 100).toFixed(0)}%`)
+  // 官方 billedInputTokens = uncached + cacheRead + cacheWrite；命中率分母用 billedInput
+  const billedInput = (input ?? 0) + (cache ?? 0) + (cacheWrite ?? 0)
+  if (typeof cache === 'number' && billedInput > 0) {
+    parts.push(`缓存命中 ${((cache / billedInput) * 100).toFixed(0)}%`)
   }
   if (typeof input === 'number') parts.push(`输入 ${input} tok`)
   if (typeof output === 'number') parts.push(`输出 ${output} tok`)

@@ -6,7 +6,7 @@
 import { computed, signal, type Signal } from '@preact/signals'
 import type { ChatHost } from '../host'
 import type { HostToViewMessage, ImageAttachment, PermissionOption, QuestionSpec, ChatModelInfo, ChatAgentPreset } from '../protocol'
-import { friendlyToolName, formatStatsLine, formatApiTime, turnEndNote, MODE_NAMES } from '../format'
+import { friendlyToolName, formatStatsLine, formatApiTime, turnStatusBadge, MODE_NAMES } from '../format'
 
 export { MODE_NAMES }
 
@@ -31,6 +31,8 @@ export type ChatRow =
       usageRaw?: Record<string, unknown>
       /** turn/end 非正常终止原因（已本地化的短句），正常完成则空 */
       endMsg?: string
+      /** 停止状态展示文案（已停止 · Stopped），仅被停止/中断/取消的回答有 */
+      status?: string
       thinkingVisible: boolean
       collapsed: boolean
       stepCount: number
@@ -246,13 +248,17 @@ export function createChatStore(host: ChatHost): ChatStore {
     // end = turn/end 非正常终止原因 → 本地化提示,正常完成则不显示
     const rowTime = time !== undefined ? formatApiTime(time) : row.time
     const rowText = typeof text === 'string' && text !== '' ? text : row.text
-    const endMsg = turnEndNote(end)
+    // 所有非正常终止(停止/中断/出错/超长/阻塞) → 右下角角标：直接回显官方 reason.kind 原值
+    const status = turnStatusBadge(end?.kind) || undefined
+    // error 时把服务端返回的原始错误消息附上（不翻译）
+    const endMsg = end?.kind === 'error' && end?.message ? end.message : ''
     replace(row.key, {
       ...row,
       done: true,
       time: rowTime,
       text: rowText,
       endMsg: endMsg || undefined,
+      status,
       stats: '', // 用量/用时已由图标+弹窗呈现，不再生成独立脚注文本
       usageRaw: stats ? { ...stats } : undefined,
       collapsed: true,
@@ -447,6 +453,7 @@ export function createChatStore(host: ChatHost): ChatStore {
       wallSec?: number
       ttftSec?: number
       tps?: number
+      status?: string
     }>,
     sessionId: string | undefined
   ): void {
@@ -466,7 +473,16 @@ export function createChatStore(host: ChatHost): ChatStore {
           const v = item[k]
           if (typeof v === 'number') u[k] = v
         }
-        const hasUsage = typeof u['provider'] === 'string' || typeof u['inputTokens'] === 'number' || typeof u['outputTokens'] === 'number'
+        // 用量/用时按钮独立：任一(用量 token/provider 或 时间 wall/ttft/tps)存在即挂 TurnStats。
+        // 对齐官方：TurnTailNodeView 里 📊 用量 pill ⇐ 该回合 tokenUsage 存在才渲染；
+        // ⏱ 用时 pill ⇐ runMs 存在才渲染（deriveTurnMetrics 的 TTFT/TPS 缺行则官方隐藏）。
+        const hasUsage =
+          typeof u['provider'] === 'string' ||
+          typeof u['inputTokens'] === 'number' ||
+          typeof u['outputTokens'] === 'number' ||
+          typeof u['wallSec'] === 'number' ||
+          typeof u['ttftSec'] === 'number' ||
+          typeof u['tps'] === 'number'
         push({
           kind: 'assistant',
           key: rowKey++,
@@ -476,6 +492,7 @@ export function createChatStore(host: ChatHost): ChatStore {
           text: item.text,
           stats: '',
           usageRaw: hasUsage ? u : undefined,
+          status: item.status,
           thinkingVisible: false,
           collapsed: true,
           stepCount: 0,

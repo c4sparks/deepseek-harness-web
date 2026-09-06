@@ -6,7 +6,6 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { DshService } from './api/dshService';
 import { type DshContentPart, type DshReplyStats } from './dsh';
-import { mergeTurnStats } from './dsh/cumulative';
 import { DshPanel } from './dshPanel';
 import {
     applyNativeTitlebarContext,
@@ -530,7 +529,7 @@ function setupChatWebview(
                 // 取消失败忽略
             }
         })();
-        post({ type: 'chatDone' });
+        post({ type: 'chatDone', end: { kind: 'cancelled' } }); // 停止 → UI 显示“已停止 · Stopped”
     };
 
     // 握手：等页面脚本就绪后再推一次 chatInfo（避免重建/切回视图时数据丢失）
@@ -590,8 +589,6 @@ function setupChatWebview(
                     if (parts.length === 0) {
                         return;
                     }
-                    // 记录回合开始时的累计投影(官方口径差分基线)；服务未起/会话未建时读不到则为空
-                    const beforeProj = await dsh.getProjections().catch(() => undefined);
                     const result = await dsh.askStreaming(
                         parts,
                         (delta) => {
@@ -637,11 +634,9 @@ function setupChatWebview(
                         await recordUsage(globalState, result.stats, result.time);
                         return;
                     }
-                    // 回合结束读累计投影 → 差分合并出“本轮”usage/计时(官方口径,逻辑在 dsh/cumulative.ts)
-                    const afterProj = await dsh.getProjections().catch(() => undefined);
-                    const stats = mergeTurnStats(result.stats, beforeProj, afterProj);
-                    post({ type: 'chatDone', text: result.text, stats, time: result.time, end: result.end });
-                    await recordUsage(globalState, stats, result.time);
+                    // 本轮 usage/计时已在 stream.ts 用官方模块(official/turn-stats.ts)算好，直接下发
+                    post({ type: 'chatDone', text: result.text, stats: result.stats, time: result.time, end: result.end });
+                    await recordUsage(globalState, result.stats, result.time);
                     void postChatInfo(webview); // 刷新官方统计/权限
                 } catch (e) {
                     if (g !== gen.n) {
@@ -952,6 +947,19 @@ async function wsRestore(wsId: string, sessionId: string, blank: boolean): Promi
     dsh.setCurrentWorkspace(wsId);
     const messages = await dsh.restoreSession(sessionId);
     console.warn(`[dsh-restore] session=${sessionId} messages=${messages.length}`);
+    if (process.env['DSH_RAWLOG']) {
+        // 历史用量/计时一致性诊断：打印每条 assistant 消息当前拿到的官方字段
+        for (const m of messages) {
+            if (m.role !== 'assistant') {
+                continue;
+            }
+            console.log(
+                `[dsh-raw] history-assistant len=${m.text.length} provider=${m.provider ?? '-'} model=${m.model ?? '-'} ` +
+                    `in=${m.inputTokens ?? '-'} out=${m.outputTokens ?? '-'} cache=${m.cacheReadTokens ?? '-'} ` +
+                    `wall=${m.wallSec ?? '-'} ttft=${m.ttftSec ?? '-'} tps=${m.tps ?? '-'}`
+            );
+        }
+    }
     if (messages.length === 0 && !blank) {
         vscode.window.showInformationMessage('已恢复会话，但 dsh 快照中没有返回可显示的历史消息');
     }

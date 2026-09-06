@@ -1,6 +1,8 @@
 // dsh 0.1.2-rc.1 会话域：follow 事件模型/快照、session/model 操作、workspace 枚举。
 import * as crypto from "node:crypto";
 import { openMuxStream, rpcCall } from "./api";
+import { deriveTurnTokenUsage, deriveTurnFacts, type TurnLikeEvent } from "./official/turn-stats";
+import { expandChunkRows } from "./official/chunk-rows";
 // ---------- 会话事件模型（dsh v0.1.2-rc.1 follow 载荷形状） ----------
 export type DshContentPart =
     | { type: 'text'; text: string }
@@ -103,9 +105,14 @@ export async function readFollowSnapshot(sessionId: string, maxMessages = 5000, 
                     const records = Array.isArray(v['records']) ? v['records'] : [];
                     const events: RawEvent[] = [];
                     for (const r of records) {
-                        const e = toRawEvent(r);
-                        if (e) {
-                            events.push(e);
+                        const rr = r as { type?: unknown } | undefined;
+                        if (rr && rr.type === 'chunks') {
+                            for (const e of expandChunkRows(r)) {
+                                events.push(e as RawEvent);
+                            }
+                        } else {
+                            const e = toRawEvent(r);
+                            if (e) {events.push(e);}
                         }
                     }
                     events.sort((a, b) => a.seq - b.seq);
@@ -170,35 +177,34 @@ export type SessionMessageItem = {
     wallSec?: number;
     ttftSec?: number;
     tps?: number;
+    /** 停止状态展示文案（已停止 · Stopped），仅该回合被停止/中断/取消时给最后一条 assistant */
+    status?: string;
 };
 export async function getSessionMessages(sessionId: string): Promise<SessionMessageItem[]> {
     const snap = await readFollowSnapshot(sessionId);
     const out: SessionMessageItem[] = [];
     const round10 = (n: number): number => Math.round(n * 10) / 10;
-    // 顺序扫描快照事件：跟踪 turn/start、step/start、text-delta 时间，给每条 assistant 消息算指标
-    let turnStartAt: number | undefined;
-    let stepStartAt: number | undefined;
-    let firstChunkAt: number | undefined;
-    let lastChunkAt: number | undefined;
+    // 核心 per-turn 统计委托 src/dsh/official/turn-stats.ts；本函数只做“拆消息 + 附加结果”，保持薄
+    const lastAsst = new Map<number, number>(); // turn -> out 中最后一条 assistant 下标
+    const endStatus = new Map<number, string>(); // 非 completed 的 turn -> 状态(回显 kind)
+    const partialText = new Map<number, string>();
+    const finalTextTurns = new Set<number>();
+    const chunkPiece = (e: RawEvent): string => {
+        const ch = e.data?.['chunk'] as { type?: string; text?: string; block?: { type?: string; text?: string } } | undefined;
+        if (!ch) {return '';}
+        if (ch.type === 'text-delta') {return typeof ch.text === 'string' ? ch.text : '';}
+        if (ch.type === 'block-end' && ch.block?.type === 'text') {return typeof ch.block.text === 'string' ? ch.block.text : '';}
+        return '';
+    };
     for (const e of snap.events) {
-        const t = e.time;
-        if (e.type === 'turn/start') {
-            turnStartAt = t;
-            continue;
-        }
-        if (e.type === 'step/start') {
-            stepStartAt = t;
-            firstChunkAt = undefined;
-            lastChunkAt = undefined;
-            continue;
-        }
-        const chunk = e.data?.['chunk'] as { type?: string } | undefined;
-        if (e.type === 'assistant/chunk' && chunk && chunk.type === 'text-delta' && typeof t === 'number') {
-            if (firstChunkAt === undefined) {
-                firstChunkAt = t;
+        const d = e.data ?? {};
+        const turn = typeof d['turn'] === 'number' ? (d['turn'] as number) : undefined;
+        // 累计该回合流式文本(半截终止但无最终 message 时用来合成回答行)
+        if (turn !== undefined && e.type === 'assistant/chunk') {
+            const piece = chunkPiece(e);
+            if (piece) {
+                partialText.set(turn, (partialText.get(turn) ?? '') + piece);
             }
-            lastChunkAt = t;
-            continue;
         }
         if (eventIsSurfaceHuman(e)) {
             const text = textOfBlocks(e.data?.['content']);
@@ -209,53 +215,113 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
         }
         if (e.type === 'assistant/message') {
             const text = eventText(e);
-            if (!text) {
-                continue;
+            if (text) {
+                out.push({ role: 'assistant', text, time: e.time });
+                if (turn !== undefined) {
+                    lastAsst.set(turn, out.length - 1);
+                    finalTextTurns.add(turn);
+                    partialText.delete(turn);
+                }
             }
+            continue;
+        }
+        if (e.type === 'turn/end') {
+            const kind = (d['reason'] as { kind?: string } | undefined)?.kind;
+            if (kind && kind !== 'completed' && turn !== undefined) {
+                endStatus.set(turn, kind); // 先回显核心 kind，不翻译
+            }
+            // 有流式文本、被打断/中止且无最终 assistant/message → 合成半截回答行(官方会显示并给用时)
+            if (turn !== undefined && !finalTextTurns.has(turn)) {
+                const partial = (partialText.get(turn) ?? '').trim();
+                if (partial) {
+                    out.push({ role: 'assistant', text: partial, time: e.time });
+                    lastAsst.set(turn, out.length - 1);
+                    partialText.delete(turn);
+                }
+            }
+        }
+    }
+    // 核心 per-turn：用量 / TTFT/TPS / runMs 全部由模块算
+    const usage = deriveTurnTokenUsage(snap.events as unknown as TurnLikeEvent[]);
+    const facts = deriveTurnFacts(snap.events as unknown as TurnLikeEvent[]);
+    for (const [turn, idx] of lastAsst) {
+        const item = out[idx];
+        if (!item || item.role !== 'assistant') {
+            continue;
+        }
+        const st = endStatus.get(turn);
+        if (st) {
+            item.status = st;
+        }
+        // 用量 pill 与 用时 pill 各自独立：
+        //  用量 只在可证 usage(deriveTurnTokenUsage 推得出)时填；推不出不显示用量
+        //  用时(总用时/TTFT/TPS) 与 usage 无关，凡 runMs/metrics 有就填
+        const u = usage.get(turn);
+        if (u) {
+            item.inputTokens = u.uncachedInputTokens;
+            item.outputTokens = u.outputTokens;
+            if (u.cacheReadTokens !== undefined) {item.cacheReadTokens = u.cacheReadTokens;}
+            if (u.cacheWriteTokens !== undefined) {item.cacheWriteTokens = u.cacheWriteTokens;}
+            if (u.reasoningTokens !== undefined) {item.reasoningTokens = u.reasoningTokens;}
+            if (u.routes !== undefined && u.routes.length === 1) {
+                item.provider = u.routes[0].provider;
+                item.model = u.routes[0].model;
+            }
+        }
+        const m = facts.metrics.get(turn);
+        if (m) {
+            if (m.ttftMs !== undefined) {item.ttftSec = round10(m.ttftMs / 1000);}
+            if (m.tokensPerSecond !== undefined) {item.tps = Math.round(m.tokensPerSecond);}
+        }
+        const rm = facts.runMs.get(turn);
+        // 不预舍入：保留精确 ms→s，展示端按官方整秒向下取整
+        if (rm !== undefined) {item.wallSec = rm / 1000;}
+    }
+    // 调试：每回合计时诊断（env DSH_RAWLOG=full 才打）
+    if (process.env['DSH_RAWLOG'] === 'full') {
+        interface Cnt { step: number; td: number; rd: number; be: number; msg: number; ts: number; te: number;
+            ss?: number; ftd?: number; frd?: number; msgT?: number; }
+        const cnt = new Map<number, Cnt>();
+        for (const e of snap.events) {
             const d = e.data ?? {};
-            const msg = d['message'] as { source?: { provider?: string; model?: string } } | undefined;
-            const src = msg?.source;
-            const usage = usageOf(d);
-            const n = (k: string): number | undefined => {
-                const v = usage?.[k];
-                return typeof v === 'number' ? (v as number) : undefined;
-            };
-            const output = n('outputTokens');
-            // 服务端事件时间算指标（与实时同口径）
-            const wallSec =
-                typeof t === 'number' && turnStartAt !== undefined && t > turnStartAt ? round10((t - turnStartAt) / 1000) : undefined;
-            let ttftSec: number | undefined;
-            if (firstChunkAt !== undefined && stepStartAt !== undefined && firstChunkAt > stepStartAt) {
-                ttftSec = round10((firstChunkAt - stepStartAt) / 1000);
-            }
-            let tps: number | undefined;
-            if (firstChunkAt !== undefined && lastChunkAt !== undefined && lastChunkAt > firstChunkAt && output !== undefined && output > 0) {
-                tps = Math.round(output / ((lastChunkAt - firstChunkAt) / 1000));
-            }
-            out.push({
-                role: 'assistant',
-                text,
-                time: e.time,
-                provider: src?.provider,
-                model: src?.model,
-                inputTokens: n('inputTokens') ?? n('uncachedInputTokens'),
-                outputTokens: output,
-                cacheReadTokens: n('cacheReadTokens'),
-                cacheWriteTokens: n('cacheWriteTokens'),
-                reasoningTokens: n('reasoningTokens'),
-                wallSec,
-                ttftSec,
-                tps,
-            });
-            // 该条消息消费完本步解码窗口，重置以免串到后续消息的计时
-            firstChunkAt = undefined;
-            lastChunkAt = undefined;
+            const turn = typeof d['turn'] === 'number' ? (d['turn'] as number) : undefined;
+            if (turn === undefined) {continue;}
+            const c = cnt.get(turn) ?? { step: 0, td: 0, rd: 0, be: 0, msg: 0, ts: 0, te: 0 };
+            if (e.type === 'step/start') {c.step += 1; if (c.ss === undefined) {c.ss = e.time;}}
+            else if (e.type === 'turn/start') {c.ts += 1;}
+            else if (e.type === 'turn/end') {c.te += 1;}
+            else if (e.type === 'assistant/chunk') {
+                const ch = d['chunk'] as { type?: string } | undefined;
+                if (ch?.type === 'text-delta') {c.td += 1; if (c.ftd === undefined) {c.ftd = e.time;}}
+                else if (ch?.type === 'reasoning-delta') {c.rd += 1; if (c.frd === undefined) {c.frd = e.time;}}
+                else if (ch?.type === 'block-end') {c.be += 1;}
+            } else if (e.type === 'assistant/message') {c.msg += 1; if (c.msgT === undefined) {c.msgT = e.time;}}
+            cnt.set(turn, c);
+        }
+        for (const [turn, idx] of lastAsst) {
+            const item = out[idx];
+            if (!item || item.role !== 'assistant') {continue;}
+            const c = cnt.get(turn);
+            const u = usage.get(turn);
+            const m = facts.metrics.get(turn);
+            const rm = facts.runMs.get(turn);
+            console.log(
+                `[dsh-raw] history-metrics turn=${turn} ` +
+                    `ev=${c ? `ts:${c.ts} te:${c.te} step:${c.step} msg:${c.msg} td:${c.td} rd:${c.rd} be:${c.be}` : '?'} ` +
+                    (c && c.ss !== undefined ? `ss=${c.ss} ` : 'ss=- ') +
+                    (c && c.ftd !== undefined ? `ftd=${c.ftd} ` : 'ftd=- ') +
+                    (c && c.frd !== undefined ? `frd=${c.frd} ` : 'frd=- ') +
+                    (c && c.msgT !== undefined ? `msgT=${c.msgT} ` : 'msgT=- ') +
+                    `out=${u ? u.outputTokens : '-'} run=${rm ?? '-'}ms ` +
+                    `ttft=${m && m.ttftMs !== undefined ? m.ttftMs : '-'}ms tps=${m && m.tokensPerSecond !== undefined ? Math.round(m.tokensPerSecond) : '-'}`
+            );
         }
     }
     return out;
 }
+
 /**
- * 会话官方投影（适配 dsh v0.1.2-rc.1）。
+ * 会话核心投影（适配 dsh v0.1.2-rc.1）。
  * 上游：无 `session.history` 投影；经 `session/follow` 快照的 projections.values 返回。
  * 实测键：title / goal / sessionStats / tokenUsage / permissions / modelSelection /
  * sessionListMetadata / todos / plan / contextPressure 等（rc1 web 组合注册的投影）。
