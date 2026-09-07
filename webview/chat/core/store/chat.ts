@@ -6,7 +6,7 @@
 import { computed, signal, type Signal } from '@preact/signals'
 import type { ChatHost } from '../host'
 import type { HostToViewMessage, ImageAttachment, PermissionOption, QuestionSpec, ChatModelInfo, ChatAgentPreset } from '../protocol'
-import { friendlyToolName, formatStatsLine, formatApiTime, turnStatusBadge, MODE_NAMES } from '../format'
+import { friendlyToolName, formatStatsLine, formatMsgClock, turnStatusBadge, MODE_NAMES } from '../format'
 
 export { MODE_NAMES }
 
@@ -95,7 +95,7 @@ export interface ChatStore {
 }
 
 let rowKey = 1
-const nowTime = (): string => new Date().toTimeString().slice(0, 8)
+const nowTime = (): string => formatMsgClock(Date.now())
 
 export function createChatStore(host: ChatHost): ChatStore {
   const messages = signal<ChatRow[]>([])
@@ -175,7 +175,7 @@ export function createChatStore(host: ChatHost): ChatStore {
   // ---------- 消息流动作(本地渲染) ----------
   function addUser(textMsg: string, imgs: ImageAttachment[] = [], time?: number): void {
     // 实时本地上送用本地时刻;恢复历史时传入 dsh 事件自带时间戳,不覆盖为"现在"
-    push({ kind: 'user', key: rowKey++, text: textMsg, images: imgs, time: time !== undefined ? formatApiTime(time) : nowTime() })
+    push({ kind: 'user', key: rowKey++, text: textMsg, images: imgs, time: time !== undefined ? formatMsgClock(time) : nowTime() })
   }
   function beginAssistant(prompt = ''): void {
     ensureAssistant(prompt)
@@ -246,7 +246,7 @@ export function createChatStore(host: ChatHost): ChatStore {
     // time 取 chatDone 里 dsh 对该回答事件的自带时间戳(完成时刻),非本地伪造;
     // text 若带(chatDone 的 assistant/message 全文),以 API 整条消息为准覆盖流式拼接;
     // end = turn/end 非正常终止原因 → 本地化提示,正常完成则不显示
-    const rowTime = time !== undefined ? formatApiTime(time) : row.time
+    const rowTime = time !== undefined ? formatMsgClock(time) : row.time
     const rowText = typeof text === 'string' && text !== '' ? text : row.text
     // 所有非正常终止(停止/中断/出错/超长/阻塞) → 右下角角标：直接回显官方 reason.kind 原值
     const status = turnStatusBadge(end?.kind) || undefined
@@ -486,7 +486,7 @@ export function createChatStore(host: ChatHost): ChatStore {
         push({
           kind: 'assistant',
           key: rowKey++,
-          time: item.time !== undefined ? formatApiTime(item.time) : '',
+          time: item.time !== undefined ? formatMsgClock(item.time) : '',
           done: true,
           prompt: lastUser,
           text: item.text,

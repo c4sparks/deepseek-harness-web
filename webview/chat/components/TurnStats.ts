@@ -1,7 +1,7 @@
 // 用量 / 用时 弹窗组件（对齐 dsh 官方字段）。喂入 chatDone.stats 原始值(usageRaw)。
 // 独立成组件，后续要改字段文案/布局/触发方式只动这里。
 import { html } from 'htm/preact'
-import { useEffect, useRef, useState } from 'preact/hooks'
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
 import { compactTokens } from '../core/format'
 
 // 全局单实例弹窗：任意一行打开用量/用时弹窗时，关闭其它行已打开的弹窗（最新点击胜出）
@@ -9,6 +9,8 @@ const closeOthers = new Set<() => void>()
 
 export function TurnStats({ usage }: { usage: Record<string, unknown> }) {
   const [open, setOpen] = useState<'u' | 't' | null>(null)
+  // 弹窗默认向上展开；顶部空间不足（如列表最上方消息，无法再往上滚）时翻到下方，避免被顶/标题栏截断
+  const [below, setBelow] = useState(false)
   const wrapRef = useRef<HTMLDivElement | null>(null)
   // close 用 ref 固定身份：注册表/关闭其它时按稳定函数身份排除自身
   const closeRef = useRef<() => void>(() => {})
@@ -35,6 +37,27 @@ export function TurnStats({ usage }: { usage: Record<string, unknown> }) {
       closeOthers.delete(fn)
     }
   }, [])
+  // 弹窗打开后量一下所在消息与其滚动容器(#messages)的间距：上方放不下就翻到下方。
+  // 上方空间以消息相对滚动视口顶部的距离衡量（滚动到顶=0，无法继续向上）。
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current
+    if (!wrap || !open) {
+      setBelow(false)
+      return
+    }
+    const pop = wrap.querySelector<HTMLElement>('.tt-pop')
+    const scrollHost = wrap.closest('#messages')
+    if (!pop || !scrollHost) {
+      setBelow(false)
+      return
+    }
+    const a = wrap.getBoundingClientRect()
+    const s = scrollHost.getBoundingClientRect()
+    const needAbove = pop.offsetHeight + 8
+    const roomAbove = a.top - s.top
+    const roomBelow = s.bottom - a.bottom
+    setBelow(roomAbove < needAbove && roomBelow >= 8)
+  }, [open])
   const num = (k: string): number | undefined => {
     const v = usage[k]
     return typeof v === 'number' ? (v as number) : undefined
@@ -88,7 +111,7 @@ export function TurnStats({ usage }: { usage: Record<string, unknown> }) {
       ? html`<button class=${'tm-btn' + (open === 't' ? ' active' : '')} title="本轮用时与速度"
           onClick=${() => setOpen(open === 't' ? null : 't')}><span class="codicon codicon-clock"></span>${wallText ? html`<span class="tm-txt">${wallText}</span>` : null}</button>`
       : null}
-    ${open === 'u' && usageRows.length > 0 ? html`<div class="tt-pop">${usageRows}</div>` : null}
-    ${open === 't' && timeRows.length > 0 ? html`<div class="tt-pop">${timeRows}</div>` : null}
+    ${open === 'u' && usageRows.length > 0 ? html`<div class=${'tt-pop' + (below ? ' tt-below' : '')}>${usageRows}</div>` : null}
+    ${open === 't' && timeRows.length > 0 ? html`<div class=${'tt-pop' + (below ? ' tt-below' : '')}>${timeRows}</div>` : null}
   </div>`
 }

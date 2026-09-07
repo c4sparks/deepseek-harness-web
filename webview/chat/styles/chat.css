@@ -315,14 +315,29 @@
   .tm-btn.active { color: var(--vscode-foreground, #ddd); background: rgba(128,128,128,0.25); }
   .tt-pop {
     position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 40;
-    min-width: 230px; max-width: 320px;
-    /* 用 editorWidget 变量让弹窗与消息背景区分开（深色主题也清晰） */
-    background: var(--vscode-editorWidget-background, #181818);
+    /* 宽度随内容自适应：提供方/模型等短内容时弹窗收窄(不再被固定 min-width 撑宽)；
+       内容长则按需放宽，使“提供方/模型”保持一行，封顶 max-width 后长文本再折行 */
+    width: max-content; max-width: 320px;
     color: var(--vscode-editorWidget-foreground, var(--vscode-foreground, #ddd));
-    border: 1px solid var(--vscode-widget-border, rgba(255,255,255,0.35));
-    border-radius: 8px; box-shadow: 0 6px 18px rgba(0,0,0,0.45);
-    padding: 6px 10px; display: flex; flex-direction: column; gap: 2px;
+    border-radius: 8px; padding: 6px 10px;
+    display: flex; flex-direction: column; gap: 2px;
+    /* 深浅两套主题分别给“浮层表面”：editorWidget 底在很多主题里与聊天画布/消息气泡同色，
+       只靠它弹窗会和背景糊成一片。故按 VS Code 注入的 body 主题类分档调底色、描边、投影。 */
+    background: var(--vscode-editorWidget-background, #252526);
+    border: 1px solid var(--vscode-widget-border, rgba(255,255,255,0.3));
   }
+  body.vscode-dark .tt-pop, body.vscode-high-contrast .tt-pop {
+    background: var(--vscode-editorWidget-background, #2c2c31);
+    border-color: var(--vscode-widget-border, #5a5a5e);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+  }
+  body.vscode-light .tt-pop {
+    background: var(--vscode-editorWidget-background, #f0f0f0);
+    border-color: var(--vscode-widget-border, #c9c9c9);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.18);
+  }
+  /* 列表最上方消息上方放不下（无法再往上滚）时由 TurnStats 加 tt-below 翻到下方，避免被顶/标题栏截断 */
+  .tt-pop.tt-below { bottom: auto; top: calc(100% + 6px); }
   .tt-row { display: flex; justify-content: space-between; gap: 14px; font-size: 11px; line-height: 1.5; }
   .tt-k { opacity: 0.7; white-space: nowrap; }
   .tt-v { text-align: right; word-break: break-word; font-variant-numeric: tabular-nums; }
@@ -427,7 +442,7 @@
   .msg.latest .msg-meta { opacity: 1; }
   /* 用量/用时弹窗打开时保持动作区常显（TurnStats 打开会给所在 .msg 加 meta-open，防闪烁/消失） */
   .msg.meta-open .msg-meta { opacity: 1; }
-  .msg-meta .time { font-variant-numeric: tabular-nums; }
+  .msg-meta .time { font-variant-numeric: tabular-nums; white-space: nowrap; }
 
   /* 消息操作按钮 */
   .msg-actions { position: relative; display: flex; align-items: center; gap: 2px; }

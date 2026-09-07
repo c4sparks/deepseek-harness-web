@@ -6,13 +6,28 @@ export function turnStatusBadge(kind: string | undefined): string {
   return kind && kind !== 'completed' ? kind : ''
 }
 
-/** dsh 事件/快照自带的原始时间戳(epoch 秒或毫秒,由上游给出)→ 本地 HH:mm:ss。无值不伪造。 */
-export function formatApiTime(t: number | undefined | null): string {
+/** 零填充两位数 */
+const pad2 = (n: number): string => String(n).padStart(2, '0')
+
+/**
+ * 消息时钟（对齐 dsh 官方 formatMessageClock + 中文 clock.md/clock.ymd 模板）：
+ * 同日 → HH:mm；今年更早 → M月D日 HH:mm；更早年份 → Y年M月D日 HH:mm。
+ * 无值返回 ''。t 为 dsh 事件/快照自带 epoch（秒或毫秒，由上游给出）。
+ */
+export function formatMsgClock(t: number | undefined | null): string {
   if (typeof t !== 'number' || !Number.isFinite(t) || t <= 0) {
     return ''
   }
   const ms = t > 1e12 ? t : t * 1000
-  return new Date(ms).toTimeString().slice(0, 8)
+  const d = new Date(ms)
+  const n = new Date()
+  const clock = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+  if (d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()) {
+    return clock
+  }
+  const sameYear = d.getFullYear() === n.getFullYear()
+  const date = sameYear ? `${d.getMonth() + 1}月${d.getDate()}日` : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`
+  return `${date} ${clock}`
 }
 
 /** 工具名 → 友好中文 */
