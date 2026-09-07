@@ -644,7 +644,7 @@ export class DshService {
     /** 列出可用模型 + 当前选择 + 推理等级（rc1：目录=session/modelCatalog，当前=modelSelection 投影） */
     async listModels(): Promise<{
         current?: { provider?: string; model?: string; reasoningEffort?: string };
-        groups?: Array<{ id: string; name: string; models: Array<{ id: string; name: string; reasoning?: { efforts?: Array<{ id: string; name: string }> } }> }>;
+        groups?: Array<{ id: string; name: string; models: Array<{ id: string; name: string; reasoning?: { efforts?: Array<{ id: string; name: string }>; defaultEffort?: string } }> }>;
         /** 上游对加载失败 provider/组的提示（原样透传；UI 只显示组数） */
         failures?: unknown[];
     }> {

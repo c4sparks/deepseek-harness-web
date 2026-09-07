@@ -9,6 +9,10 @@ import { renderMd } from '../core/markdown'
 import { MODE_NAMES, DANGEROUS_PERMS } from '../core/format'
 import { showDialog } from '../modal'
 import { TurnStats } from './TurnStats'
+import { SearchPicker } from './SearchPicker'
+import { ModelPicker } from './ModelPicker'
+import { useTriggerMenu } from '../core/trigger/useTrigger'
+import { slashTrigger } from '../core/trigger/slash'
 
 // ---------------- Welcome ----------------
 function Welcome({ store }: { store: ChatStore }) {
@@ -187,8 +191,11 @@ function QuestionCard({ row, store }: { row: Extract<ChatRow, { kind: 'question'
 }
 
 function Notice({ row }: { row: Extract<ChatRow, { kind: 'notice' }> }) {
+  // 对话内命令结果/错误行：失败红点+红字；成功正常色（对齐官方错误行；不走 VSCode 通知）
+  const tone = row.tone === 'ok' ? 'ok' : 'error'
   return html`<div class="msg assistant"><div class="col"><div class="name"></div>
-    <div class="body"><div class="user-text" style=${{ color: 'var(--vscode-errorForeground)' }}>⚠ ${row.text}</div></div>
+    <div class="body"><div class=${'user-text notice-line notice-' + tone}><span class="notice-dot">●</span>
+      ${row.command ? html`<span class="notice-cmd">${row.command} · </span>` : null}<span class="notice-msg">${row.text}</span></div></div>
   </div></div>`
 }
 
@@ -276,75 +283,72 @@ function Popup({ store }: { store: ChatStore }) {
     return base
   }
 
-  // 权限
+  // 权限（公共可搜索选择弹窗 SearchPicker：顶部搜索 + 方向键选择）
   let permPopup = html`<div id="permPopup" class="popup hidden"></div>`
   if (open === 'perm') {
-    const opts = sel.permOptions
+    const permOpts = sel.permOptions.map((o) => ({ value: o.value, name: o.name, description: o.description }))
+    const pickPerm = (o: { value: string; name?: string }): void => {
+      if (o.value === sel.currentPerm) {
+        store.closePopups()
+        return
+      }
+      if (DANGEROUS_PERMS.has(o.value)) {
+        store.closePopups()
+        const label = o.value === 'danger-full-access' ? 'Full access' : o.name || o.value
+        void showDialog({
+          icon: 'warn',
+          title: `确认启用 ${label}？`,
+          body:
+            `启用 ${label} 后，agent 将减少确认步骤，并且可以直接执行更多操作，` +
+            `包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。`,
+          ack: '我已了解风险，并愿意继续',
+          okText: '启用',
+          okStyle: 'danger',
+          cancelText: '取消',
+        }).then((ok) => {
+          if (ok) store.selectPerm(o.value)
+        })
+        return
+      }
+      store.selectPerm(o.value)
+    }
     permPopup = html`<div id="permPopup" class="popup" style=${style('permBtn', false)}>
-      ${opts.length === 0
-        ? html`<div class="opt" style=${{ opacity: 0.6 }}>没有可用的权限</div>`
-        : opts.map(
-            (o) => html`<div class=${'opt' + (o.value === sel.currentPerm ? ' selected' : '')} key=${o.value} title=${o.description ?? ''}
-              onClick=${async () => {
-                if (o.value === sel.currentPerm) {
-                  store.closePopups()
-                  return
-                }
-                if (DANGEROUS_PERMS.has(o.value)) {
-                  store.closePopups()
-                  const label = o.value === 'danger-full-access' ? 'Full access' : o.name || o.value
-                  const ok = await showDialog({
-                    icon: 'warn',
-                    title: `确认启用 ${label}？`,
-                    body:
-                      `启用 ${label} 后，agent 将减少确认步骤，并且可以直接执行更多操作，` +
-                      `包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。`,
-                    ack: '我已了解风险，并愿意继续',
-                    okText: '启用',
-                    okStyle: 'danger',
-                    cancelText: '取消',
-                  })
-                  if (ok) store.selectPerm(o.value)
-                  return
-                }
-                store.selectPerm(o.value)
-              }}>${o.name || o.value}</div>`
-          )}
+      <${SearchPicker} title="权限" options=${permOpts} currentId=${sel.currentPerm}
+        onPick=${pickPerm} onClose=${() => store.closePopups()} emptyText="没有可用的权限" />
     </div>`
   }
 
-  // 模型 + 推理等级
+  // 模型 + 推理等级：按钮入口 = 完整分组 + 推理等级(保持旧版)；/model 斜杠入口 = 仅可搜索模型列表
   let modelPopup = html`<div id="modelPopup" class="popup hidden"></div>`
   if (open === 'model') {
-    const activeModel = (provider: string, model: string): { name?: string; reasoning?: { efforts?: Array<{ id: string; name: string }> } } | undefined =>
-      sel.modelGroups?.find((g) => g.id === provider)?.models.find((m) => m.id === model)
-    const efforts = activeModel(sel.curProvider, sel.curModel)?.reasoning?.efforts ?? []
+    // 模型图标入口的完整「模型+推理等级」view（独立组件 ModelPicker，便于后续单独改样式）
     modelPopup = html`<div id="modelPopup" class="popup" style=${style('modelBtn', false)}>
-      <div class="popup-title">模型</div>
+      <${ModelPicker} store=${store} />
+    </div>`
+  } else if (open === 'modelSearch') {
+    // /model：摊平成单列表供 SearchPicker 搜索(名称/提供方)，选完即关
+    const modelOptions = (sel.modelGroups ?? []).flatMap((g) =>
+      g.models.map((m) => ({
+        value: `${g.id}::${m.id}`,
+        name: m.name || m.id,
+        description: `${g.name || g.id}${m.description ? ` · ${m.description}` : ''}`,
+      }))
+    )
+    const currentModelValue = sel.curProvider && sel.curModel ? `${sel.curProvider}::${sel.curModel}` : ''
+    const pickModel = (o: { value: string }): void => {
+      const sep = o.value.indexOf('::')
+      if (sep < 0) return
+      const provider = o.value.slice(0, sep)
+      const model = o.value.slice(sep + 2)
+      store.selectModel(provider, model)
+      store.closePopups()
+    }
+    modelPopup = html`<div id="modelPopup" class="popup" style=${style('modelBtn', false)}>
       ${sel.modelFailures.length > 0
         ? html`<div class="popup-fail" title=${JSON.stringify(sel.modelFailures)}>⚠ ${sel.modelFailures.length} 组模型加载失败</div>`
         : null}
-      ${(sel.modelGroups ?? []).map(
-        (g) =>
-          g.models.length > 0 &&
-          html`<div key=${g.id}>
-            <div class="optgroup-label">${g.name || g.id}</div>
-            ${g.models.map(
-              (m) => html`<div class=${'opt' + (g.id === sel.curProvider && m.id === sel.curModel ? ' selected' : '')} key=${m.id}
-                title=${m.description || m.name || m.id}
-                onClick=${() => store.selectModel(g.id, m.id)}>${m.name || m.id}</div>`
-            )}
-          </div>`
-      )}
-      ${efforts.length > 0
-        ? html`<div>
-            <div class="optgroup-label">推理等级</div>
-            ${efforts.map(
-              (e) => html`<div class=${'opt reason' + (e.id === sel.curEffort ? ' selected' : '')} key=${e.id}
-                onClick=${() => store.selectModel(sel.curProvider, sel.curModel, e.id)}>${e.name || e.id}</div>`
-            )}
-          </div>`
-        : null}
+      <${SearchPicker} title="模型" options=${modelOptions} currentId=${currentModelValue}
+        onPick=${pickModel} onClose=${() => store.closePopups()} emptyText="没有可用的模型" />
     </div>`
   }
 
@@ -381,7 +385,7 @@ function Composer({ store }: { store: ChatStore }) {
     if (focusTick > 0) taRef.current?.focus()
   }, [focusTick])
 
-  // 点击外部关闭弹窗
+  // 点击外部关闭弹窗（触发器菜单由 useTriggerMenu 自管关闭）
   useEffect(() => {
     const onClick = (e: MouseEvent): void => {
       const t = e.target as Node
@@ -389,7 +393,7 @@ function Composer({ store }: { store: ChatStore }) {
         const el = document.getElementById(id)
         return !!el && el.contains(t)
       }
-      if (inSel('permPopup') || inSel('modelPopup') || inSel('modePopup') || inSel('permBtn') || inSel('modelBtn') || inSel('modeBtn')) return
+      if (inSel('permPopup') || inSel('modelPopup') || inSel('modePopup') || inSel('permBtn') || inSel('modelBtn') || inSel('modeBtn') || inSel('triggerPopup')) return
       if (store.openPopup.value) store.closePopups()
     }
     document.addEventListener('click', onClick)
@@ -416,7 +420,65 @@ function Composer({ store }: { store: ChatStore }) {
     const found = s.modeOptions.find((m) => m.id === s.currentMode)
     return found?.name || MODE_NAMES[s.currentMode] || s.currentMode
   }
+
+  // 输入触发器菜单："/" 由独立模块实现(core/trigger/slash.ts)；将来 "@ " 等只需在此数组追加一项
+  const trigger = useTriggerMenu([slashTrigger(store)], store, taRef)
+
+  // 参数阶段占位 hint：输入恰为「/命令 」时，在光标后以灰色显示该命令 input.hint（如 <text>）
+  const slashHint = ((): string => {
+    const v = text
+    if (!v || v.includes('\n')) return ''
+    if (!/^\/\S+[\t 　]+$/.test(v)) return ''
+    const name = v.slice(1).trim().split(/[\s　]+/)[0].toLowerCase()
+    const c = store.slashCatalog.value?.commands.find((cc) => cc.name.toLowerCase() === name)
+    return c?.input?.hint ?? ''
+  })()
+  const [ghostX, setGhostX] = useState(0)
+  const [ghostY, setGhostY] = useState(0)
+  useEffect(() => {
+    const el = taRef.current
+    if (!slashHint || !el) {
+      setGhostX(0)
+      setGhostY(0)
+      return
+    }
+    const cs = getComputedStyle(el)
+    const probe = document.createElement('span')
+    probe.style.cssText =
+      `position:absolute;visibility:hidden;white-space:pre;pointer-events:none;` +
+      `font-family:${cs.fontFamily};font-size:${cs.fontSize};line-height:${cs.lineHeight};`
+    probe.textContent = el.value
+    document.body.appendChild(probe)
+    const w = probe.getBoundingClientRect().width
+    probe.remove()
+    const box = el.closest('#inputbox')
+    const er = el.getBoundingClientRect()
+    const br = box?.getBoundingClientRect()
+    setGhostX((br ? er.left - br.left : 0) + parseFloat(cs.paddingLeft) + w)
+    setGhostY((br ? er.top - br.top : 0) + parseFloat(cs.paddingTop))
+  }, [slashHint, text])
+
+  // 已 claim 的斜杠命令行（/命令 参数…，首词命中带 hint 的 host 命令）：普通 Enter 直接执行（对齐官方）
+  const argCommand = ((): string | null => {
+    const v = text
+    if (!v || v.includes('\n') || !v.startsWith('/')) return null
+    const t = v.trimEnd()
+    const name = t.slice(1).split(/[\s　]+/)[0]?.toLowerCase()
+    if (!name || !/\s/.test(t.slice(1))) return null // 至少 token+空格才算进入参数
+    const c = store.slashCatalog.value?.commands.find((cc) => cc.name.toLowerCase() === name)
+    return c?.input?.hint ? t : null
+  })()
+  const inputKeyDown = (e: KeyboardEvent): void => {
+    trigger.onKeyDown(e)
+    if (e.defaultPrevented) return
+    if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey && argCommand) {
+      e.preventDefault()
+      store.runSlash(argCommand)
+    }
+  }
+
   const canSend = text.trim().length > 0 || store.attachments.value.length > 0 || store.images.value.length > 0
+  const plan = store.planState.value
 
   return html`<div id="composer"
     onDragOver=${(e: Event) => e.preventDefault()}
@@ -434,11 +496,15 @@ function Composer({ store }: { store: ChatStore }) {
       }
     }}>
     <${Popup} store=${store} />
+    ${trigger.popup}
     <${AttachmentBar} store=${store} />
     <div id="inputbox">
       <textarea id="input" ref=${taRef} placeholder="向 AI 提问（Ctrl+Enter 发送）" value=${text}
-        onInput=${(e: Event) => { store.text.value = (e.target as HTMLTextAreaElement).value }}
-        onKeyDown=${(e: KeyboardEvent) => { if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); store.send() } }}
+        onInput=${(e: Event) => { store.text.value = (e.target as HTMLTextAreaElement).value; trigger.sync() }}
+        onKeyDown=${inputKeyDown}
+        onKeyUp=${trigger.sync}
+        onSelect=${trigger.sync}
+        onClick=${trigger.sync}
         onPaste=${(e: ClipboardEvent) => {
           const items = e.clipboardData?.items
           if (!items) return
@@ -452,6 +518,7 @@ function Composer({ store }: { store: ChatStore }) {
             }
           }
         }}></textarea>
+      ${slashHint ? html`<span class="input-ghost" style=${{ left: ghostX + 'px', top: ghostY + 'px' }}>${slashHint}</span>` : null}
       <div id="inputbar">
         <button id="attach" title="添加文件/图片" onClick=${() => store.pickFile()}>＋</button>
         <div class="sel-group">
@@ -481,6 +548,11 @@ function Composer({ store }: { store: ChatStore }) {
           <svg class="stop-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
         </button>
       </div>
+      ${plan && (plan.active || plan.pending) ? html`<div id="chipRow">
+        <button id="planChip" disabled=${plan.pending ? true : undefined}
+          title=${plan.pending ? 'Plan 切换中…' : 'Plan 模式中，点击退出'}
+          onClick=${() => store.runSlash('/plan off')}>plan${plan.pending ? '…' : ' ✕'}</button>
+      </div>` : null}
     </div>
   </div>`
 }

@@ -382,7 +382,12 @@ export async function modelCatalog(): Promise<{
     groups?: Array<{
         id: string;
         name: string;
-        models: Array<{ id: string; name: string; description?: string; reasoning?: { efforts?: Array<{ id: string; name: string }> } }>;
+        models: Array<{
+            id: string;
+            name: string;
+            description?: string;
+            reasoning?: { efforts?: Array<{ id: string; name: string }>; defaultEffort?: string };
+        }>;
     }>;
     /** 上游对加载失败 provider/组的提示，形状以 0.1.2-rc.1 返回为准（仅透传、UI 只显示组数） */
     failures?: unknown[];

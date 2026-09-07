@@ -29,7 +29,12 @@ export interface QuestionSpec {
 export interface ChatModelGroup {
   id: string
   name: string
-  models: Array<{ id: string; name: string; description?: string; reasoning?: { efforts?: Array<{ id: string; name: string }> } }>
+  models: Array<{
+    id: string
+    name: string
+    description?: string
+    reasoning?: { efforts?: Array<{ id: string; name: string }>; defaultEffort?: string }
+  }>
 }
 
 export interface ChatModelInfo {
@@ -51,6 +56,21 @@ export interface ChatAgentPreset {
   description?: string
   isDefault?: boolean
   broken?: string
+}
+
+/** 「/」菜单：dsh 斜杠命令目录条目（commands/list 返回值）。 */
+export interface SlashCommandInfo {
+  name: string
+  description: string
+  /** 带参数命令的输入提示（如 permission 的 "<preset>"）。 */
+  input?: { hint: string }
+}
+/** 「/」菜单：当前会话可用技能条目（skill.list 返回值）。 */
+export interface SlashSkillInfo {
+  name: string
+  description: string
+  /** 是否允许模型自行调用；false 时仅用户可调（用户斜杠发送仍可用）。 */
+  modelInvocable: boolean
 }
 
 export interface HistoryMessage {
@@ -121,6 +141,9 @@ export type HostToViewMessage =
       sessions?: Array<{ sessionId: string; title: string; running: boolean; blank: boolean; current?: boolean }>
     }
   | { type: 'wsActionDone'; ok?: boolean; message?: string }
+  // 「/」菜单：目录(命令+技能)与命令执行结果
+  | { type: 'slashCatalog'; commands: SlashCommandInfo[]; skills: SlashSkillInfo[] }
+  | { type: 'slashResult'; ok?: boolean; command?: string; message?: string }
 
 // ---------- 页面 → 宿主 ----------
 export type ViewToHostMessage =
@@ -145,3 +168,6 @@ export type ViewToHostMessage =
       blank?: boolean
     }
   | { type: 'selfInfoReq' }
+  // 「/」菜单：请求目录(命令+技能)、执行一条 dsh 斜杠命令
+  | { type: 'slashListReq' }
+  | { type: 'slashRun'; text: string }

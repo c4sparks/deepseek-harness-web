@@ -138,6 +138,33 @@ async function rpcCallAt<T = unknown>(port: number, method: string, payload: unk
     }
     return resolveRpcResponse<T>(parsed as RpcResponse<T>, wireMethod);
 }
+/**
+ * 按给定 wire 信封发送一次 RPC 并解析 result.value（与 rpcCallAt 相同的鉴权重试逻辑，
+ * 但不做 argsWrap——由调用方按各代际接口约定给出完整 payload，如 commands/execute 的
+ * `{ args }` 与 skill.list 的扁平 `{ sessionId }`）。
+ */
+async function postWire<T = unknown>(port: number, wireMethod: string, payload: unknown): Promise<T> {
+    const body: RpcRequest = { type: 'client-request', rpcId: crypto.randomUUID(), method: wireMethod, payload };
+    const json = JSON.stringify(body);
+    let parsed: RpcResponse;
+    try {
+        parsed = await sendClientRequest(port, wireMethod, body, json, authCookieForPort(port));
+    } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const needAuth = msg.includes('HTTP 401') || msg.includes('HTTP 403');
+        if (needAuth && getEndpoint().port === port && getEndpoint().authUrl) {
+            const loggedIn = await loginEndpoint(getEndpoint());
+            if (loggedIn) {
+                parsed = await sendClientRequest(port, wireMethod, body, json, authCookieForPort(port));
+            } else {
+                throw e;
+            }
+        } else {
+            throw e;
+        }
+    }
+    return resolveRpcResponse<T>(parsed as RpcResponse<T>, wireMethod);
+}
 // ---------- 斜杠命令（commands/execute） ----------
 export interface DshCommandExec {
     commandId?: string;
@@ -199,6 +226,32 @@ export async function runSessionCommand(sessionId: string, line: string): Promis
         });
         req.end(json);
     });
+}
+// ---------- 命令目录 / 技能目录（web 端「/」菜单的数据源） ----------
+/** 会话级 host 命令描述（commands/list 返回值；name 不含开头 "/"）。 */
+export interface DshCommandDescriptor {
+    name: string;
+    description: string;
+    /** 带参数命令的输入提示（如 permission 的 "<preset>"）。 */
+    input?: { hint: string };
+}
+/** 会话级用户可调用技能（skill.list 返回值）。 */
+export interface DshSkillEntry {
+    name: string;
+    description: string;
+    whenToUse?: string;
+    /** 是否允许模型自行调用；false 时仅用户可调（斜杠唤起仍可由用户发送）。 */
+    modelInvocable: boolean;
+}
+/** 拉取当前会话的斜杠命令目录：`commands/list`，payload `{ args:{ agentId } }`（斜杠代际）。 */
+export async function listCommands(sessionId: string): Promise<DshCommandDescriptor[]> {
+    const value = await postWire<DshCommandDescriptor[]>(getEndpoint().port, 'commands/list', { args: { agentId: sessionId } });
+    return Array.isArray(value) ? value : [];
+}
+/** 拉取当前会话的用户可调用技能：`skill.list`，payload 扁平 `{ sessionId }`（点号代际，勿包 args）。 */
+export async function listSkills(sessionId: string): Promise<DshSkillEntry[]> {
+    const value = await postWire<{ skills?: DshSkillEntry[] }>(getEndpoint().port, 'skill.list', { sessionId });
+    return Array.isArray(value?.skills) ? value.skills : [];
 }
 // ---------- 握手探测 ----------
 export interface DshProbeResult {

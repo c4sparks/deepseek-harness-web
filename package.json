@@ -2,7 +2,7 @@
   "name": "deepseek-harness-web",
   "displayName": "DeepSeek Harness Web",
   "description": "DeepSeek Harness 插件",
-  "version": "0.1.6-rc.1",
+  "version": "0.1.6-rc.2",
   "publisher": "sparks-dev",
   "icon": "assets/icon.png",
   "engines": {
@@ -129,27 +129,27 @@
         {
           "command": "dsh.openInBrowser",
           "when": "dsh.titlebarNative == true && (view == 'dsh.launcher' || webviewId == 'dsh.launcher') && dshPanelOpen == true && dshViewMode == 'internal'",
-          "group": "navigation@1"
+          "group": "navigation@2"
         },
         {
           "command": "dsh.openInEditor",
           "when": "dsh.titlebarNative == true && (view == 'dsh.launcher' || webviewId == 'dsh.launcher') && (dshPanelOpen == false || dshViewMode == 'browser')",
-          "group": "navigation@1"
+          "group": "navigation@3"
         },
         {
           "command": "dsh.reload",
           "when": "dsh.titlebarNative == true && (view == 'dsh.launcher' || webviewId == 'dsh.launcher') && dshPanelOpen == true",
-          "group": "navigation@2"
+          "group": "navigation@4"
         },
         {
           "command": "dsh.newSession",
           "when": "dsh.titlebarNative == true && (view == 'dsh.launcher' || webviewId == 'dsh.launcher')",
-          "group": "navigation@3"
+          "group": "navigation@5"
         },
         {
           "command": "dsh.moveToEditor",
           "when": "dsh.titlebarNative == true && (view == 'dsh.launcher' || webviewId == 'dsh.launcher')",
-          "group": "navigation@5"
+          "group": "navigation@6"
         },
         {
           "command": "dsh.usage",

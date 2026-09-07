@@ -175,10 +175,11 @@
   #composer {
     position: relative;
     z-index: 20;
-    padding: 8px 12px;
+    padding: 8px 12px 4px; /* 底边收紧：缩小输入框底线与底部统计(tok 行)间距 */
     background: var(--vscode-editor-background, #1e1e1e);
   }
   #inputbox {
+    position: relative; /* 让 / 命令参数占位 hint 能以文本区定位 */
     display: flex; flex-direction: column;
     border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.45));
     border-radius: 10px; background: var(--vscode-input-background, #252526);
@@ -186,14 +187,35 @@
   #inputbox:focus-within { border-color: var(--vscode-focusBorder, #4daafc); }
   #input {
     width: 100%; box-sizing: border-box; resize: none; border: none; outline: none;
-    min-height: 56px; max-height: 150px; background: transparent;
+    min-height: 68px; max-height: 150px; background: transparent;
     color: var(--vscode-input-foreground, #ddd); padding: 10px 14px 4px;
     font-family: inherit; font-size: 13px;
   }
   #inputbar {
     display: flex; align-items: center; gap: 4px;
-    padding: 2px 10px 6px 2px;
+    padding: 2px 10px 4px 2px; /* plan chip 与上行(图标行)间距 */
   }
+  /* / 命令参数阶段占位 hint：紧跟光标后、灰色 */
+  .input-ghost {
+    position: absolute; pointer-events: none;
+    font-family: inherit; font-size: 13px; line-height: inherit;
+    color: var(--vscode-input-placeholderForeground, rgba(200,200,200,0.5));
+    white-space: pre;
+    user-select: none;
+  }
+  /* 模式/状态 chip 独立行(在图标行下方，为后续功能留位) */
+  #chipRow {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    padding: 0 10px 4px 4px; /* 左 4px 距输入框左边 */
+  }
+  #planChip {
+    border: 1px solid var(--vscode-charts-purple, #b180d7);
+    color: var(--vscode-charts-purple, #b180d7);
+    background: rgba(177, 128, 215, 0.15);
+    font-size: 11px; line-height: 1; padding: 3px 8px; border-radius: 10px; cursor: pointer; flex: none;
+  }
+  #planChip:hover { background: rgba(177, 128, 215, 0.28); }
+  #planChip:disabled { opacity: 0.55; cursor: default; }
   #attach, #permBtn, #modelBtn, #modeBtn {
     width: 22px; height: 22px; border: none; background: none;
     color: var(--vscode-foreground, #ddd); cursor: pointer; border-radius: 4px;
@@ -267,6 +289,47 @@
     color: var(--vscode-list-activeSelectionForeground, var(--vscode-foreground, #ddd));
   }
   .popup .opt.reason { padding-left: 18px; font-size: 11px; }
+  /* 输入触发器菜单("/" 命令、"@ " 引用等)：名称+描述两段式，略宽、描述超长省略 */
+  #triggerPopup {
+    width: min(340px, 92vw);
+    max-width: none;
+  }
+  #triggerPopup .opt {
+    gap: 8px;
+    align-items: baseline;
+    min-width: 0;
+  }
+  #triggerPopup .trigger-name {
+    flex: none;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  #triggerPopup .trigger-desc {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    opacity: 0.72;
+  }
+  /* 公共可搜索选择弹窗（SearchPicker）：顶部搜索框 + 列表 */
+  .spicker { display: flex; flex-direction: column; gap: 2px; }
+  .spicker-search {
+    box-sizing: border-box; width: 100%; margin: 0 0 2px; padding: 4px 8px; font-size: 12px;
+    background: var(--vscode-input-background, #1e1e1e); color: var(--vscode-input-foreground, #ddd);
+    border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.18)); border-radius: 5px; outline: none;
+  }
+  .spicker-search:focus { border-color: var(--vscode-focusBorder, #4daafc); }
+  .spicker-list { display: flex; flex-direction: column; gap: 1px; }
+  .spicker .opt { align-items: baseline; gap: 8px; }
+  .spicker .sp-name { flex: none; white-space: nowrap; }
+  .spicker .sp-desc {
+    flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 11px; opacity: 0.72;
+  }
   #send {
     margin-left: auto;
     width: 24px; height: 24px; border-radius: 50%; border: none;
@@ -304,13 +367,14 @@
   .turn-meta { position: relative; display: flex; gap: 6px; margin-top: 3px; }
   .tm-btn {
     display: inline-flex; align-items: center; justify-content: center; gap: 2px;
-    min-width: 20px; height: 20px;
+    min-width: 20px; height: 20px; flex: 0 0 auto;
     border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.18));
     background: none; color: var(--vscode-descriptionForeground, #999);
     padding: 0 6px; border-radius: 4px; cursor: pointer; line-height: 0;
+    white-space: nowrap;
   }
   .tm-btn .codicon { font-size: 13px; line-height: 1; }
-  .tm-btn .tm-txt { font-size: 10px; line-height: 1; font-variant-numeric: tabular-nums; }
+  .tm-btn .tm-txt { font-size: 10px; line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .tm-btn:hover { background: rgba(255,255,255,0.08); }
   .tm-btn.active { color: var(--vscode-foreground, #ddd); background: rgba(128,128,128,0.25); }
   .tt-pop {
@@ -442,10 +506,12 @@
   .msg.latest .msg-meta { opacity: 1; }
   /* 用量/用时弹窗打开时保持动作区常显（TurnStats 打开会给所在 .msg 加 meta-open，防闪烁/消失） */
   .msg.meta-open .msg-meta { opacity: 1; }
-  .msg-meta .time { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .msg-meta .time { font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  /* 动作区(复制/重新生成/用量/用时)整段不压缩：窄栏时挤占左侧时间标签(出省略号)，不换行 */
+  .msg-meta .msg-actions { flex: none; min-width: 0; }
 
   /* 消息操作按钮 */
-  .msg-actions { position: relative; display: flex; align-items: center; gap: 2px; }
+  .msg-actions { position: relative; display: flex; align-items: center; gap: 2px; flex-wrap: nowrap; }
   .msg-actions button {
     border: none; background: none; color: var(--vscode-descriptionForeground, #888);
     font-size: 12px; cursor: pointer; padding: 2px 5px; border-radius: 4px; line-height: 1;
@@ -467,7 +533,7 @@
 
   /* 底部官方统计（左对齐，超长省略，悬停显示全文） */
   #statsbar {
-    padding: 2px 12px 0; font-size: 11px;
+    padding: 0 12px 4px; font-size: 11px; /* 顶部收紧，贴近输入框 */
     color: var(--vscode-descriptionForeground, #888);
     text-align: left; white-space: nowrap; overflow: hidden;
     text-overflow: ellipsis; cursor: default;
@@ -583,3 +649,11 @@
     from { transform: translateY(6px) scale(0.98); opacity: 0; }
     to { transform: none; opacity: 1; }
   }
+  /* 对话内命令结果/错误行：红点(失败)/常规色(成功) + 命令 + 文案 */
+  .user-text.notice-line { color: var(--vscode-foreground, #ddd); }
+  .user-text.notice-line .notice-dot { font-size: 10px; margin-right: 6px; }
+  .user-text.notice-line.notice-error .notice-dot,
+  .user-text.notice-line.notice-error .notice-msg { color: var(--vscode-errorForeground, #f14c4c); }
+  .user-text.notice-line.notice-ok .notice-dot,
+  .user-text.notice-line.notice-ok .notice-msg { color: var(--vscode-foreground, #ddd); }
+  .user-text.notice-line .notice-cmd { opacity: 0.75; }

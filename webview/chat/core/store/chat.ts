@@ -5,7 +5,16 @@
 // 行为与旧 chat.ts 保持等价(逐函数映射见方案 P3/P4)。
 import { computed, signal, type Signal } from '@preact/signals'
 import type { ChatHost } from '../host'
-import type { HostToViewMessage, ImageAttachment, PermissionOption, QuestionSpec, ChatModelInfo, ChatAgentPreset } from '../protocol'
+import type {
+  HostToViewMessage,
+  ImageAttachment,
+  PermissionOption,
+  QuestionSpec,
+  ChatModelInfo,
+  ChatAgentPreset,
+  SlashCommandInfo,
+  SlashSkillInfo,
+} from '../protocol'
 import { friendlyToolName, formatStatsLine, formatMsgClock, turnStatusBadge, MODE_NAMES } from '../format'
 
 export { MODE_NAMES }
@@ -42,7 +51,7 @@ export type ChatRow =
     }
   | { kind: 'approval'; key: number; approvalId: string; description: string; toolName?: string }
   | { kind: 'question'; key: number; rpcId: string; sessionId?: string; questions: QuestionSpec[]; disabled: boolean }
-  | { kind: 'notice'; key: number; text: string }
+  | { kind: 'notice'; key: number; text: string; command?: string; tone?: 'error' | 'ok' }
 
 export interface SelectorState {
   permOptions: PermissionOption[]
@@ -67,12 +76,20 @@ export interface ChatStore {
   images: Signal<ImageAttachment[]>
   focusTick: Signal<number>
   sel: Signal<SelectorState>
-  openPopup: Signal<'perm' | 'model' | 'mode' | null>
+  openPopup: Signal<'perm' | 'model' | 'mode' | 'modelSearch' | null>
   statsLine: Signal<{ text: string; title: string }>
+  /** 「/」菜单目录(host 命令+技能)；null=尚未拉到 */
+  slashCatalog: Signal<{ commands: SlashCommandInfo[]; skills: SlashSkillInfo[] } | null>
+  /** plan 协作状态(投影 plan)；null=未启用/无该能力 */
+  planState: Signal<{ active: boolean; pending: boolean } | null>
   permNameOf: Map<string, string>
   // 动作
   send(): void
   cancel(): void
+  /** 行首 `/` 菜单需要目录时调用(宿主异步回 slashCatalog；并发去重) */
+  requestSlashList(): void
+  /** 执行一条 dsh 斜杠命令(发宿主 slashRun；清空输入) */
+  runSlash(text: string): void
   suggestion(p: string): void
   regenerate(p: string, images?: ImageAttachment[]): void
   copy(text: string): void
@@ -83,6 +100,10 @@ export interface ChatStore {
   removeAttachment(p: string): void
   readImageFile(file: File): void
   togglePopup(w: 'perm' | 'model' | 'mode'): void
+  /** 打开「仅模型列表的可搜索弹窗」（/model 斜杠入口用；与按钮的完整模型弹窗区分） */
+  openModelSearch(): void
+  /** 标记下一次 selectPerm/selectModel 是「/」菜单发起（结果追加到对话区）；按钮入口不调用 */
+  markSlashPick(kind: 'permission' | 'model'): void
   closePopups(): void
   selectPerm(value: string): void
   selectModel(provider: string, model: string, effort?: string): void
@@ -90,7 +111,7 @@ export interface ChatStore {
   answerApproval(approvalId: string, allow: boolean, key: number): void
   submitQuestion(key: number, rpcId: string | undefined, sessionId: string | undefined, answers: Array<{ id: string; selected: string[]; custom?: string }>): void
   cancelQuestion(key: number, rpcId: string | undefined, sessionId: string | undefined): void
-  showNotice(text: string): void
+  showNotice(text: string, command?: string, tone?: 'error' | 'ok'): void
   onHostMessage(m: HostToViewMessage): void
 }
 
@@ -105,8 +126,13 @@ export function createChatStore(host: ChatHost): ChatStore {
   const attachments = signal<string[]>([])
   const images = signal<ImageAttachment[]>([])
   const focusTick = signal(0)
-  const openPopup = signal<'perm' | 'model' | 'mode' | null>(null)
+  const openPopup = signal<'perm' | 'model' | 'mode' | 'modelSearch' | null>(null)
   const statsLine = signal({ text: '', title: '' })
+  const slashCatalog = signal<{ commands: SlashCommandInfo[]; skills: SlashSkillInfo[] } | null>(null)
+  const planState = signal<{ active: boolean; pending: boolean } | null>(null)
+  let slashListInflight = false
+  // 由「/」菜单打开的选择(permission/model)：选中后把操作结果追加到对话区；按钮入口不设此标记
+  let slashPickKind: 'permission' | 'model' | null = null
   const permNameOf = new Map<string, string>()
   const sel = signal<SelectorState>({
     permOptions: [],
@@ -139,6 +165,11 @@ export function createChatStore(host: ChatHost): ChatStore {
     processing.value = false
     statsLine.value = { text: '', title: '' }
     openPopup.value = null
+    // 新会话后 slash 目录需重新拉取(会话内命令/技能可能不同)
+    slashCatalog.value = null
+    planState.value = null
+    slashListInflight = false
+    slashPickKind = null
   }
 
   // 当前"流式进行中"的 assistant 行(至多一个);无则 undefined
@@ -285,6 +316,17 @@ export function createChatStore(host: ChatHost): ChatStore {
     const attach = attachments.value
     const imgs = images.value
     if ((!msg && attach.length === 0 && imgs.length === 0) || processing.value) return
+    // 「/」命令路由：纯文本单行、行首 `/` 且首词命中 host 命令目录 → 执行 dsh 斜杠命令而非发消息。
+    // 技能行(/技能名…)不在此列，照常走 chatSend（宿主 pre-step 识别 /技能名 头）。
+    const cat = slashCatalog.value
+    if (attach.length === 0 && imgs.length === 0 && !msg.includes('\n') && msg.startsWith('/') && cat) {
+      const name = msg.slice(1).split(/[\s　]+/)[0].toLowerCase()
+      if (name && cat.commands.some((c) => c.name.toLowerCase() === name)) {
+        text.value = ''
+        host.post({ type: 'slashRun', text: msg })
+        return
+      }
+    }
     const refs = attach.map((a) => '@' + a.replace(/\\/g, '/'))
     const prompt = [...refs, msg].filter(Boolean).join('\n\n')
     addUser(prompt, imgs)
@@ -297,6 +339,19 @@ export function createChatStore(host: ChatHost): ChatStore {
   }
   function cancel(): void {
     host.post({ type: 'cancel' })
+  }
+  /** 行首 `/` 菜单需要目录时调用；宿主异步回 slashCatalog（并发去重）。 */
+  function requestSlashList(): void {
+    if (slashListInflight) return
+    slashListInflight = true
+    host.post({ type: 'slashListReq' })
+  }
+  /** 执行一条 dsh 斜杠命令：清空输入后发宿主（不入聊天气泡）。 */
+  function runSlash(line: string): void {
+    const t = (line ?? '').trim()
+    if (!t.startsWith('/')) return
+    if (text.value === t) text.value = ''
+    host.post({ type: 'slashRun', text: t })
   }
   function suggestion(p: string): void {
     if (!p || processing.value) return
@@ -353,9 +408,17 @@ export function createChatStore(host: ChatHost): ChatStore {
   // ---------- 选择器(权限 / 模型 / 模式) ----------
   function closePopups(): void {
     openPopup.value = null
+    slashPickKind = null
+  }
+  /** 标记下一次 selectPerm/selectModel 是「/」菜单发起(用于把操作结果追加到对话区)。 */
+  function markSlashPick(kind: 'permission' | 'model'): void {
+    slashPickKind = kind
   }
   function togglePopup(w: 'perm' | 'model' | 'mode'): void {
     openPopup.value = openPopup.value === w ? null : w
+  }
+  function openModelSearch(): void {
+    openPopup.value = 'modelSearch'
   }
   function rememberPermName(o: { value: string; name?: string }): void {
     permNameOf.set(o.value, o.name || o.value)
@@ -371,6 +434,11 @@ export function createChatStore(host: ChatHost): ChatStore {
     if (found) rememberPermName(found)
     sel.value = { ...sel.value, currentPerm: value }
     host.post({ type: 'chatSelectPermission', preset: value })
+    // 由「/permission」发起：把切到的预设名追加到对话区(按钮入口不设标记，不进对话)
+    if (slashPickKind === 'permission') {
+      const label = found ? found.name || found.value : value
+      push({ kind: 'notice', key: rowKey++, text: label, command: 'permission', tone: 'ok' })
+    }
     closePopups()
   }
   function setModels(models: ChatModelInfo | undefined): void {
@@ -386,14 +454,42 @@ export function createChatStore(host: ChatHost): ChatStore {
     }
   }
   function selectModel(provider: string, model: string, effort?: string): void {
+    // 对齐官方 ui-model-selection selectionOf：
+    //   重新选当前同一 provider+model → 保留当前推理等级；
+    //   切到别的模型 → 用该模型 reasoning.defaultEffort（模型默认等级随模型走）。
+    // 显式传 effort(用户主动改等级)时始终用它。
+    const s0 = sel.value
+    const sameRoute = s0.curProvider === provider && s0.curModel === model
+    let eff = effort
+    if (eff === undefined) {
+      if (sameRoute) {
+        eff = s0.curEffort || undefined
+      } else {
+        const g = s0.modelGroups?.find((x) => x.id === provider)
+        const m = g?.models.find((x) => x.id === model)
+        eff = m?.reasoning?.defaultEffort || undefined
+      }
+    }
     sel.value = { ...sel.value, curProvider: provider, curModel: model }
-    if (effort !== undefined) sel.value = { ...sel.value, curEffort: effort }
+    if (eff !== undefined) {
+      sel.value = { ...sel.value, curEffort: eff }
+    } else if (!sameRoute) {
+      // 切走的模型没有默认等级：本地先清空旧等级，等宿主 postChatInfo 回刷真实值
+      sel.value = { ...sel.value, curEffort: '' }
+    }
     host.post({
       type: 'chatSelectModel',
       provider,
       model,
-      reasoningEffort: effort !== undefined ? effort || undefined : undefined,
+      reasoningEffort: eff !== undefined ? eff || undefined : undefined,
     })
+    // 由「/model」发起：把选到的 提供方 · 模型 · 等级 追加到对话区(按钮入口不设标记，不进对话)
+    if (slashPickKind === 'model') {
+      const gName = s0.modelGroups?.find((x) => x.id === provider)?.name || provider
+      const mName = s0.modelGroups?.find((x) => x.id === provider)?.models.find((x) => x.id === model)?.name || model
+      const label = `${gName} · ${mName}${eff ? ` · ${eff}` : ''}`
+      push({ kind: 'notice', key: rowKey++, text: label, command: 'model', tone: 'ok' })
+    }
   }
   function setModes(info: { presets?: ChatAgentPreset[] } | undefined, current: string | undefined, locked: boolean | undefined): void {
     if (!info?.presets) return
@@ -433,8 +529,8 @@ export function createChatStore(host: ChatHost): ChatStore {
     removeWhere((r) => r.kind === 'question' && r.rpcId === (rpcId ?? ''))
   }
 
-  const showNotice = (msgText: string): void => {
-    push({ kind: 'notice', key: rowKey++, text: msgText })
+  const showNotice = (msgText: string, command?: string, tone: 'error' | 'ok' = 'error'): void => {
+    push({ kind: 'notice', key: rowKey++, text: msgText, command, tone })
   }
 
   // ---------- 历史恢复 ----------
@@ -551,6 +647,9 @@ export function createChatStore(host: ChatHost): ChatStore {
           const perms = proj['permissions'] as { options?: PermissionOption[]; currentValue?: string } | undefined
           setPermOptions(perms?.options, perms?.currentValue)
           statsLine.value = formatStatsLine(proj)
+          // plan 协作状态(plan/mode 折叠)，能力未组合则键缺失→保持 null
+          const p = proj['plan'] as { active?: boolean; pending?: boolean } | undefined
+          planState.value = p && typeof p.active === 'boolean' ? { active: p.active, pending: !!p.pending } : null
         }
         setModels(m.models)
         setModes(m.agentPresets, m.agentPreset, m.agentPresetLocked)
@@ -565,6 +664,14 @@ export function createChatStore(host: ChatHost): ChatStore {
         break
       case 'clear':
         reset()
+        break
+      case 'slashCatalog':
+        slashCatalog.value = { commands: m.commands ?? [], skills: m.skills ?? [] }
+        slashListInflight = false
+        break
+      case 'slashResult':
+        // 命令结果一律进对话区(不走 VSCode 通知)：失败红点+红字，成功正常色
+        if (m.message) showNotice(m.message, m.command, m.ok === false ? 'error' : 'ok')
         break
       // 标题栏消息归 titlebar(入口另行路由),本 store 忽略
       case 'panelState':
@@ -588,9 +695,13 @@ export function createChatStore(host: ChatHost): ChatStore {
     sel,
     openPopup,
     statsLine,
+    slashCatalog,
+    planState,
     permNameOf,
     send,
     cancel,
+    requestSlashList,
+    runSlash,
     suggestion,
     regenerate,
     copy,
@@ -601,6 +712,8 @@ export function createChatStore(host: ChatHost): ChatStore {
     removeAttachment,
     readImageFile,
     togglePopup,
+    openModelSearch,
+    markSlashPick,
     closePopups,
     selectPerm,
     selectModel,

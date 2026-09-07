@@ -5,6 +5,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { DshService } from './api/dshService';
+import { ChatInputService } from './chatInputService';
 import { type DshContentPart, type DshReplyStats } from './dsh';
 import { DshPanel } from './dshPanel';
 import {
@@ -18,6 +19,8 @@ import {
 } from './titlebar/index';
 
 const dsh = new DshService();
+// 输入框功能宿主侧服务：承载 "/" 斜杠命令/技能，后续输入触发类功能都挂这里（复用 dsh 的会话/就绪）
+const chatInput = new ChatInputService(dsh);
 const panel = new DshPanel({
     ensureRunning: () => dsh.ensureRunning(),
     // DSH 网页面板开关/查看模式变化 → 广播 panelState（自绘标题栏 webview 消费）。
@@ -725,6 +728,25 @@ function setupChatWebview(
                     vscode.window.showInformationMessage(`切换至: ${msg.preset}`);
                 } catch (e) {
                     vscode.window.showErrorMessage((e as Error).message);
+                }
+            })();
+        } else if (msg.type === 'slashListReq') {
+            void (async () => {
+                const commands = await chatInput.listCommands();
+                const skills = await chatInput.listSkills();
+                post({ type: 'slashCatalog', commands, skills });
+            })();
+        } else if (msg.type === 'slashRun') {
+            void (async () => {
+                const res = await chatInput.runCommand(msg.text ?? '');
+                const commandName = (msg.text ?? '').trim().replace(/^\/+/, '').split(/[\s　]+/)[0] || undefined;
+                post({ type: 'slashResult', ok: res.ok, command: commandName, message: res.text });
+                // 成功/失败结果均已随 slashResult 回给 webview，由 store 显示在对话区(不走 VSCode 通知)
+                if (res.ok) {
+                    // 状态类命令(plan/goal/permission…)执行后：等事件落定再读投影刷新，
+                    // 否则 plan/mode 等折叠投影仍停在旧值(plan chip 不消失)
+                    await new Promise((r) => setTimeout(r, 300));
+                    await postChatInfo(webview);
                 }
             })();
         }
