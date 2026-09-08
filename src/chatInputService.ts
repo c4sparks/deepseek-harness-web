@@ -5,8 +5,13 @@ import {
     listCommands as listCommandsRpc,
     listSkills as listSkillsRpc,
     runSessionCommand,
+    fetchSessionLogZip as fetchSessionLogZipRpc,
+    listFileReferences as listFileReferencesRpc,
+    listSessionReferenceCandidates as listSessionReferenceCandidatesRpc,
+    ExportUnsupportedError,
     type DshCommandDescriptor,
     type DshSkillEntry,
+    type SessionLogZip,
 } from './dsh';
 
 /** ChatInputService 需要的宿主会话能力(由 DshService 提供)。 */
@@ -30,15 +35,53 @@ export class ChatInputService {
         }
     }
 
-    /** 当前会话可用的技能(skill.list)；拉取失败返回空数组。 */
+    /** 当前会话可用的技能(skills/list)；拉取失败返回空数组。失败原因打日志便于区分「端点/载荷错」与「服务确实无技能」。 */
     async listSkills(): Promise<DshSkillEntry[]> {
         try {
             if (!(await this.session.ensureRunning())) {
+                console.warn('[dsh-slash] skills/list: 服务未就绪，跳过');
                 return [];
             }
-            return await listSkillsRpc(await this.session.getSession());
-        } catch {
+            const skills = await listSkillsRpc(await this.session.getSession());
+            console.warn(`[dsh-slash] skills/list ok: ${skills.length} 条${skills[0] ? `，首条 ${skills[0].name}` : ''}`);
+            return skills;
+        } catch (e) {
+            console.warn(`[dsh-slash] skills/list 失败：${e instanceof Error ? e.message : String(e)}`);
             return [];
+        }
+    }
+
+    /**
+     * 「@」引用候选：并发拉当前工作区文件/目录 + 可引用会话（按查询串）。任一侧失败降级为空数组。
+     * 返回结构直接对应 webview 协议 atCatalog。
+     */
+    async listAtRefs(query: string): Promise<{
+        files: Array<{ path: string; kind: 'file' | 'directory' }>;
+        sessions: Array<{ sessionId: string; label: string; sameWorkspace?: boolean; mention: string }>;
+    }> {
+        try {
+            if (!(await this.session.ensureRunning())) {
+                return { files: [], sessions: [] };
+            }
+            const sid = await this.session.getSession();
+            const [files, candidates] = await Promise.all([
+                listFileReferencesRpc(sid, query),
+                listSessionReferenceCandidatesRpc(sid, query),
+            ]);
+            return {
+                files: files.map((f) => ({ path: f.path, kind: f.kind })),
+                sessions: candidates
+                    .filter((c) => typeof c.mention === 'string' && c.mention.length > 0)
+                    .map((c) => ({
+                        sessionId: c.sessionId,
+                        label: c.label,
+                        sameWorkspace: c.sameWorkspace,
+                        mention: c.mention as string,
+                    })),
+            };
+        } catch (e) {
+            console.warn(`[dsh-at] listAtRefs 失败：${e instanceof Error ? e.message : String(e)}`);
+            return { files: [], sessions: [] };
         }
     }
 
@@ -56,6 +99,29 @@ export class ChatInputService {
             return { ok: true, text: exec.result?.text };
         } catch (e) {
             return { ok: false, text: e instanceof Error ? e.message : String(e) };
+        }
+    }
+
+    /**
+     * 取回当前会话日志 ZIP（/export 的真实下载数据）。返回 { ok:false, unsupported:true } 表示
+     * 运行中的 dsh 没有该下载路由（上层应回退为仅回显 /export 命令文本）；其他失败回退文本描述。
+     */
+    async fetchSessionLogZip(): Promise<
+        | { ok: true; zip: SessionLogZip }
+        | { ok: false; unsupported: boolean; text: string }
+    > {
+        if (!(await this.session.ensureRunning())) {
+            return { ok: false, unsupported: false, text: 'DSH 服务不可用，无法导出会话日志' };
+        }
+        const sid = await this.session.getSession();
+        try {
+            const zip = await fetchSessionLogZipRpc(sid);
+            return { ok: true, zip };
+        } catch (e) {
+            if (e instanceof ExportUnsupportedError) {
+                return { ok: false, unsupported: true, text: e.message };
+            }
+            return { ok: false, unsupported: false, text: e instanceof Error ? e.message : String(e) };
         }
     }
 }

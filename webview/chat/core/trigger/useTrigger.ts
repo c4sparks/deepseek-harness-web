@@ -15,12 +15,38 @@ export interface TriggerRow {
   name: string
   /** 展示前缀，如 '/'。 */
   prefix: string
+  /** 选项图标（codicon 类名，如 folder/file）；设置后优先渲染小图标而非 prefix */
+  icon?: string
+  /** 是否可“钻取”（目录行）：渲染右侧 ›，点击/Tab 交给 def.drill 进入下一层 */
+  hasDrill?: boolean
   description: string
   /** 可选输入提示（如 permission 的 "<preset>"）。 */
   hint?: string
+  /** pick 后应插入到输入框的文本（@ 引用用：carry 官方 mention token）；缺省则由框架按 name 生成 */
+  value?: string
+  /** 过滤/命中用文本（默认 name）；@ 用全路径/会话id 命中，而展示仍用短名 */
+  searchText?: string
   /** 分组标识（同组连续排一起）；提供 groupLabel 时在该组首行前渲染分组头。 */
   group?: string
   groupLabel?: string
+}
+
+/** 把候选名里匹配查询串的片段高亮（大小写不敏感；q 空返回原文）。 */
+function hl(text: string, q: string): unknown[] {
+  if (!q) return [text]
+  const low = text.toLowerCase()
+  const needle = q.toLowerCase()
+  const out: unknown[] = []
+  let i = 0
+  for (;;) {
+    const at = low.indexOf(needle, i)
+    if (at < 0) break
+    if (at > i) out.push(text.slice(i, at))
+    out.push(html`<span class="trigger-hl">${text.slice(at, at + needle.length)}</span>`)
+    i = at + needle.length
+  }
+  out.push(text.slice(i))
+  return out
 }
 
 /** pick 时提供给 def 的输入改写助手。 */
@@ -37,8 +63,12 @@ export interface TriggerDef {
   match(text: string, caret: number): { query: string; start: number } | null
   /** 返回全部候选行（过滤由框架按 query 做）。可在内部做异步目录预取。 */
   rows(): TriggerRow[]
+  /** 弹窗顶部的面包屑/路径条（@ 下钻目录用）；返回 null 则不显示 */
+  header?(query: string): string | null
   /** 选中某行后的行为。 */
   pick(row: TriggerRow, helpers: TriggerPickHelpers): void
+  /** 目录行可选的“钻取”（Tab）：返回 true = 保留 @目录/ 并继续列其子项（菜单不关）；false = 交给 pick。 */
+  drill?(row: TriggerRow, helpers: TriggerPickHelpers): boolean
 }
 
 export interface TriggerMenuApi {
@@ -67,7 +97,7 @@ export function useTriggerMenu(defs: TriggerDef[], store: ChatStore, taRef: { cu
   const def = sel ? defs.find((d) => d.id === sel.defId) : undefined
   const allRows = def ? def.rows() : []
   const q = sel?.query.trim().toLowerCase() ?? ''
-  const rows = q ? allRows.filter((r) => r.name.toLowerCase().includes(q)) : allRows
+  const rows = q ? allRows.filter((r) => ((r.searchText ?? r.name).toLowerCase().includes(q))) : allRows
   const open = !!def && rows.length > 0
   const active = Math.min(Math.max(idx, 0), Math.max(rows.length - 1, 0))
 
@@ -103,31 +133,60 @@ export function useTriggerMenu(defs: TriggerDef[], store: ChatStore, taRef: { cu
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const pick = (row: TriggerRow): void => {
-    if (!def || !sel) return
+  // 选中行(键盘 ↑/↓ 或鼠标悬停改变 active)始终滚进弹窗可视区：列表长、选项溢出时可“跟手”
+  useEffect(() => {
+    if (!open) return
+    const menu = document.getElementById(MENU_ID)
+    if (!menu) return
+    const el = menu.querySelector<HTMLElement>(`[data-idx="${active}"]`)
+    if (!el) return
+    const top = el.offsetTop
+    const bottom = top + el.offsetHeight
+    if (top < menu.scrollTop) {
+      menu.scrollTop = top
+    } else if (bottom > menu.scrollTop + menu.clientHeight) {
+      menu.scrollTop = bottom - menu.clientHeight
+    }
+  }, [active, open])
+
+  const makeHelpers = (): TriggerPickHelpers | null => {
+    if (!def || !sel) return null
     const text = store.text.value
     const caret = taRef.current?.selectionStart ?? text.length
     const start = sel.start
-    const replace = (value: string): void => {
-      const next = text.slice(0, start) + value + text.slice(caret)
-      store.text.value = next
-      const nc = start + value.length
+    const focusAt = (pos: number): void => {
       queueMicrotask(() => {
         const el = taRef.current
-        el?.setSelectionRange(nc, nc)
+        el?.setSelectionRange(pos, pos)
         el?.focus()
       })
     }
-    const clear = (): void => {
-      store.text.value = text.slice(0, start) + text.slice(caret)
-      queueMicrotask(() => {
-        const el = taRef.current
-        el?.setSelectionRange(start, start)
-        el?.focus()
-      })
+    return {
+      replace: (value: string): void => {
+        store.text.value = text.slice(0, start) + value + text.slice(caret)
+        focusAt(start + value.length)
+      },
+      clear: (): void => {
+        store.text.value = text.slice(0, start) + text.slice(caret)
+        focusAt(start)
+      },
     }
-    def.pick(row, { replace, clear })
+  }
+
+  const pick = (row: TriggerRow): void => {
+    const h = makeHelpers()
+    if (!def || !h) return
+    def.pick(row, h)
     close()
+  }
+
+  /** 目录钻取：返回 true = 已进入下一层（保留 @目录/、菜单保持并刷新候选）；false = 未处理 */
+  const drill = (row: TriggerRow): boolean => {
+    const h = makeHelpers()
+    if (!def || !h || typeof def.drill !== 'function') return false
+    if (!def.drill(row, h)) return false
+    queueMicrotask(() => sync())
+    return true
   }
 
   const onKeyDown = (e: KeyboardEvent): void => {
@@ -143,24 +202,40 @@ export function useTriggerMenu(defs: TriggerDef[], store: ChatStore, taRef: { cu
     } else if (e.key === 'ArrowUp') {
       e.preventDefault()
       setIdx((i) => (i - 1 + rows.length) % rows.length)
-    } else if (e.key === 'Enter' || e.key === 'Tab') {
+    } else if (e.key === 'Enter') {
       e.preventDefault()
       if (rows[active]) pick(rows[active])
+    } else if (e.key === 'Tab') {
+      e.preventDefault()
+      const row = rows[active]
+      if (!row) return
+      if (!drill(row)) pick(row) // 非目录行 Tab = 回车式选中
     } else if (e.key === 'Escape') {
       close()
     }
   }
 
+  // 弹窗顶部路径条（@ 下钻进目录时显示 工作区 › …）
+  const qRaw = sel?.query.trim() ?? ''
+  const hdr = def?.header ? def.header(qRaw) : null
+
   const popup = open
     ? html`<div id=${MENU_ID} class="popup" role="listbox">
+        ${hdr ? html`<div class="trigger-path">${hdr}</div>` : null}
         ${rows.map((r, i) => {
           const showHead = r.groupLabel && (i === 0 || rows[i - 1].group !== r.group)
           return html`${showHead ? html`<div class="optgroup-label">${r.groupLabel}</div>` : null}
             <div class=${i === active ? 'opt selected' : 'opt'} role="option" aria-selected=${i === active}
+              data-idx=${i}
               onMouseEnter=${() => setIdx(i)}
               onClick=${() => pick(r)} title=${r.description}>
-              <span class="trigger-name">${r.prefix}${r.name}</span>
+              <span class="trigger-name">${r.icon ? html`<span class="codicon trigger-ico codicon-${r.icon}"></span>` : r.prefix}${hl(r.name, q)}</span>
               <span class="trigger-desc">${r.description}${r.hint ? `　${r.hint}` : ''}</span>
+              ${r.hasDrill
+                ? html`<span class="trigger-drill codicon codicon-chevron-right" role="button" aria-label="进入文件夹"
+                    title="进入文件夹（Tab）"
+                    onClick=${(ev: Event) => { ev.stopPropagation(); drill(r) }}></span>`
+                : null}
             </div>`
         })}
       </div>`

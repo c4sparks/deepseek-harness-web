@@ -65,12 +65,25 @@ export interface SlashCommandInfo {
   /** 带参数命令的输入提示（如 permission 的 "<preset>"）。 */
   input?: { hint: string }
 }
-/** 「/」菜单：当前会话可用技能条目（skill.list 返回值）。 */
+/** 「/」菜单：当前会话可用技能条目（skills/list 返回值）。 */
 export interface SlashSkillInfo {
   name: string
   description: string
   /** 是否允许模型自行调用；false 时仅用户可调（用户斜杠发送仍可用）。 */
   modelInvocable: boolean
+}
+
+/** 「@」引用：文件/目录候选（fileReferences/list 返回；path 为相对工作区，无前导斜杠）。 */
+export interface AtFileRef {
+  path: string
+  kind: 'file' | 'directory'
+}
+/** 「@」引用：会话候选（sessionReferenceResolver/candidates 返回；mention 即选中后应插入的正文 token）。 */
+export interface AtSessionRef {
+  sessionId: string
+  label: string
+  sameWorkspace?: boolean
+  mention: string
 }
 
 export interface HistoryMessage {
@@ -144,6 +157,8 @@ export type HostToViewMessage =
   // 「/」菜单：目录(命令+技能)与命令执行结果
   | { type: 'slashCatalog'; commands: SlashCommandInfo[]; skills: SlashSkillInfo[] }
   | { type: 'slashResult'; ok?: boolean; command?: string; message?: string }
+  // 「@」引用：候选(文件/目录 + 会话)，query=候选对应查询串
+  | { type: 'atCatalog'; query: string; files: AtFileRef[]; sessions: AtSessionRef[] }
 
 // ---------- 页面 → 宿主 ----------
 export type ViewToHostMessage =
@@ -171,3 +186,5 @@ export type ViewToHostMessage =
   // 「/」菜单：请求目录(命令+技能)、执行一条 dsh 斜杠命令
   | { type: 'slashListReq' }
   | { type: 'slashRun'; text: string }
+  // 「@」引用：按查询串请求文件/会话候选
+  | { type: 'atListReq'; query: string }

@@ -141,7 +141,7 @@ async function rpcCallAt<T = unknown>(port: number, method: string, payload: unk
 /**
  * 按给定 wire 信封发送一次 RPC 并解析 result.value（与 rpcCallAt 相同的鉴权重试逻辑，
  * 但不做 argsWrap——由调用方按各代际接口约定给出完整 payload，如 commands/execute 的
- * `{ args }` 与 skill.list 的扁平 `{ sessionId }`）。
+ * `{ args }` 与 skills/list 的 `{ args:{ request } }`）。
  */
 async function postWire<T = unknown>(port: number, wireMethod: string, payload: unknown): Promise<T> {
     const body: RpcRequest = { type: 'client-request', rpcId: crypto.randomUUID(), method: wireMethod, payload };
@@ -235,7 +235,7 @@ export interface DshCommandDescriptor {
     /** 带参数命令的输入提示（如 permission 的 "<preset>"）。 */
     input?: { hint: string };
 }
-/** 会话级用户可调用技能（skill.list 返回值）。 */
+/** 会话级用户可调用技能（skills/list 返回值）。 */
 export interface DshSkillEntry {
     name: string;
     description: string;
@@ -248,10 +248,46 @@ export async function listCommands(sessionId: string): Promise<DshCommandDescrip
     const value = await postWire<DshCommandDescriptor[]>(getEndpoint().port, 'commands/list', { args: { agentId: sessionId } });
     return Array.isArray(value) ? value : [];
 }
-/** 拉取当前会话的用户可调用技能：`skill.list`，payload 扁平 `{ sessionId }`（点号代际，勿包 args）。 */
+/** 拉取当前会话的用户可调用技能：`skills/list`（Typert namespace+method，rc.1 实测）。
+ *  payload `{ args:{ request:{ sessionId } } }`：技能的 args 描述符**不接受 `agentId`**（报
+ *  `unexpected "agentId"`），会话 id 只走 `request.sessionId`（勿加 agentId，勿用点号 `skill.list`）。 */
 export async function listSkills(sessionId: string): Promise<DshSkillEntry[]> {
-    const value = await postWire<{ skills?: DshSkillEntry[] }>(getEndpoint().port, 'skill.list', { sessionId });
+    const value = await postWire<{ skills?: DshSkillEntry[] }>(getEndpoint().port, 'skills/list', {
+        args: { request: { sessionId } },
+    });
     return Array.isArray(value?.skills) ? value.skills : [];
+}
+// ---------- "@" 引用候选（fileReferences / sessionReferenceResolver） ----------
+/** 文件/目录引用候选（fileReferences/list 返回；path 为相对工作区，无前导斜杠）。 */
+export interface DshFileReference {
+    path: string;
+    kind: 'file' | 'directory';
+}
+/** 会话引用候选（sessionReferenceResolver/candidates 返回；mention 即插入正文的 token）。 */
+export interface DshSessionReferenceCandidate {
+    sessionId: string;
+    label: string;
+    cwd?: string;
+    sameWorkspace?: boolean;
+    createdAt?: number | string;
+    mention?: string;
+}
+/** 拉取当前工作区文件/目录引用：`fileReferences/list`，payload `{ args:{ agentId, query } }`（适配 rc.1）。 */
+export async function listFileReferences(sessionId: string, query: string): Promise<DshFileReference[]> {
+    const value = await postWire<DshFileReference[]>(getEndpoint().port, 'fileReferences/list', {
+        args: { agentId: sessionId, query },
+    });
+    return Array.isArray(value) ? value : [];
+}
+/** 拉取可引用会话候选：`sessionReferenceResolver/candidates`，payload `{ args:{ agentId, query } }`（适配 rc.1）。 */
+export async function listSessionReferenceCandidates(
+    sessionId: string,
+    query: string
+): Promise<DshSessionReferenceCandidate[]> {
+    const value = await postWire<DshSessionReferenceCandidate[]>(getEndpoint().port, 'sessionReferenceResolver/candidates', {
+        args: { agentId: sessionId, query },
+    });
+    return Array.isArray(value) ? value : [];
 }
 // ---------- 握手探测 ----------
 export interface DshProbeResult {

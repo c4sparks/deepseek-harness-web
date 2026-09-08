@@ -4,6 +4,7 @@
 //   UI 层：侧边栏对话视图（本文件内）+ DSH 网页面板（src/dshPanel.ts）
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as os from 'os';
 import { DshService } from './api/dshService';
 import { ChatInputService } from './chatInputService';
 import { type DshContentPart, type DshReplyStats } from './dsh';
@@ -474,6 +475,40 @@ async function postChatInfo(webview: vscode.Webview): Promise<void> {
 }
 
 /**
+ * 状态类斜杠命令(/plan /goal…)执行后的投影刷新。dsh 把 plan/goal 选择按会话事件 fold 成投影：
+ * 空闲时立即落定(committed)，有 open turn 时排到下一个 accepted pre-step 边界才写(queued)。
+ * 单次延时(旧 300ms)刷新会读在事件落定前后 → chip 停在旧值。这里先做一次保底刷新，再对被跟踪键
+ * 轮询少量次数：值一旦变化(如 queued 在回合边界落定)即再推一次 chatInfo，让 chip 正确收敛/消失。
+ */
+async function refreshChatInfoAfterSlash(webview: vscode.Webview, commandName: string): Promise<void> {
+    const trackedKey = commandName === 'plan' ? 'plan' : commandName === 'goal' ? 'goal' : null;
+    const snap = async (): Promise<string | undefined> => {
+        try {
+            const proj = await dsh.getProjections();
+            const v = proj[trackedKey as string];
+            return v === undefined ? '<undef>' : JSON.stringify(v ?? null);
+        } catch {
+            return undefined; // 服务瞬时不可读：当未变化处理
+        }
+    };
+    const before = trackedKey ? await snap() : undefined;
+    await new Promise((r) => setTimeout(r, 300));
+    await postChatInfo(webview); // 保底刷新（等同旧行为，先让 UI 拿到 command/run 的 pending/committed 状态）
+    if (!trackedKey) {
+        return;
+    }
+    for (let i = 0; i < 5; i++) {
+        await new Promise((r) => setTimeout(r, 400));
+        const now = await snap();
+        if (now !== before) {
+            // queued 选择已在回合边界落定（或中途事件使投影再变）→ 再推一次收敛 UI
+            await postChatInfo(webview);
+            break;
+        }
+    }
+}
+
+/**
  * 聊天 webview 统一接线：加载 UI + 处理消息（聊天/停止/文件/复制/工作区）。侧边栏和编辑器面板共用。
  * titlebarMode：模式字符串（侧边栏恒 = TITLEBAR_MODE；编辑器面板恒 'nativeTitle' 作"纯聊天无标题栏"标记）。
  */
@@ -736,18 +771,57 @@ function setupChatWebview(
                 const skills = await chatInput.listSkills();
                 post({ type: 'slashCatalog', commands, skills });
             })();
-        } else if (msg.type === 'slashRun') {
+        } else if (msg.type === 'atListReq') {
             void (async () => {
-                const res = await chatInput.runCommand(msg.text ?? '');
-                const commandName = (msg.text ?? '').trim().replace(/^\/+/, '').split(/[\s　]+/)[0] || undefined;
-                post({ type: 'slashResult', ok: res.ok, command: commandName, message: res.text });
-                // 成功/失败结果均已随 slashResult 回给 webview，由 store 显示在对话区(不走 VSCode 通知)
-                if (res.ok) {
-                    // 状态类命令(plan/goal/permission…)执行后：等事件落定再读投影刷新，
-                    // 否则 plan/mode 等折叠投影仍停在旧值(plan chip 不消失)
-                    await new Promise((r) => setTimeout(r, 300));
-                    await postChatInfo(webview);
+                const refs = await chatInput.listAtRefs(msg.query ?? '');
+                post({ type: 'atCatalog', query: msg.query ?? '', files: refs.files, sessions: refs.sessions });
+            })();
+        } else if (msg.type === 'slashRun') {
+            const line = (msg.text ?? '').trim();
+            const commandName = line.replace(/^\/+/, '').split(/[\s　]+/)[0] || '';
+            void (async () => {
+                // /export（无参）：官方 web 命令本体只回一句提示，真实下载是 GET /api/session.export 的 ZIP。
+                // 插件在这里直接拉该路由 → 用户选保存路径写文件，得到真实「下载面」；服务不支持该路由则回退命令文本回显。
+                if (commandName === 'export' && /^\/export\s*$/.test(line)) {
+                    const dl = await chatInput.fetchSessionLogZip();
+                    if (dl.ok) {
+                        const uri = await vscode.window.showSaveDialog({
+                            defaultUri: vscode.Uri.file(path.join(os.homedir(), 'Downloads', dl.zip.filename)),
+                            filters: { 'ZIP 归档': ['zip'] },
+                            saveLabel: '导出会话日志',
+                        });
+                        if (!uri) {
+                            post({ type: 'slashResult', ok: true, command: 'export', message: '已取消导出' });
+                            return;
+                        }
+                        try {
+                            await vscode.workspace.fs.writeFile(uri, dl.zip.data);
+                            post({ type: 'slashResult', ok: true, command: 'export', message: `已导出会话日志：${uri.fsPath}` });
+                        } catch (e) {
+                            post({
+                                type: 'slashResult',
+                                ok: false,
+                                command: 'export',
+                                message: `保存会话日志失败：${e instanceof Error ? e.message : String(e)}`,
+                            });
+                        }
+                        return;
+                    }
+                    if (!dl.unsupported) {
+                        post({ type: 'slashResult', ok: false, command: 'export', message: dl.text });
+                        return;
+                    }
+                    // 本服务没有下载路由：与官方一致，仅把 /export 命令返回的提示文本显示到对话区
+                    const fallback = await chatInput.runCommand('/export');
+                    post({ type: 'slashResult', ok: fallback.ok, command: 'export', message: fallback.text });
+                    return;
                 }
+                // 其它命令（含带参 /export foo，官方返回错误）：走 commands/execute 文本回显
+                const res = await chatInput.runCommand(line);
+                post({ type: 'slashResult', ok: res.ok, command: commandName, message: res.text });
+                // 成功/失败结果均已随 slashResult 回给 webview，由 store 显示在对话区(不走 VSCode 通知)；
+                // 状态类命令(/plan /goal)由 refreshChatInfoAfterSlash 轮询投影，让 chip 收敛/消失
+                await refreshChatInfoAfterSlash(webview, commandName);
             })();
         }
     });

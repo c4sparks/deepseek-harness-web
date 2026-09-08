@@ -14,6 +14,8 @@ import type {
   ChatAgentPreset,
   SlashCommandInfo,
   SlashSkillInfo,
+  AtFileRef,
+  AtSessionRef,
 } from '../protocol'
 import { friendlyToolName, formatStatsLine, formatMsgClock, turnStatusBadge, MODE_NAMES } from '../format'
 
@@ -27,7 +29,7 @@ export interface StepModel {
 }
 
 export type ChatRow =
-  | { kind: 'user'; key: number; text: string; images: ImageAttachment[]; time: string }
+  | { kind: 'user'; key: number; text: string; images: ImageAttachment[]; time: string; refs?: Array<{ kind: RefChip['kind']; label: string }> }
   | {
       kind: 'assistant'
       key: number
@@ -53,6 +55,17 @@ export type ChatRow =
   | { kind: 'question'; key: number; rpcId: string; sessionId?: string; questions: QuestionSpec[]; disabled: boolean }
   | { kind: 'notice'; key: number; text: string; command?: string; tone?: 'error' | 'ok' }
 
+/** 输入框引用贴片（@ 选出，不进正文；发送时转成引用行）。 */
+export interface RefChip {
+  key: number
+  kind: 'file' | 'directory' | 'session'
+  label: string
+  /** 发送时注入 prompt 的引用文本（文件 @path / 会话 @[label](dsh-session:…)） */
+  token: string
+  /** 供 tooltip 展示的完整相对路径/会话 id 等 */
+  detail?: string
+}
+
 export interface SelectorState {
   permOptions: PermissionOption[]
   currentPerm: string
@@ -74,20 +87,30 @@ export interface ChatStore {
   text: Signal<string>
   attachments: Signal<string[]>
   images: Signal<ImageAttachment[]>
+  /** 「@」引用贴片（不进正文；发送时转为引用行） */
+  refs: Signal<RefChip[]>
   focusTick: Signal<number>
   sel: Signal<SelectorState>
   openPopup: Signal<'perm' | 'model' | 'mode' | 'modelSearch' | null>
   statsLine: Signal<{ text: string; title: string }>
   /** 「/」菜单目录(host 命令+技能)；null=尚未拉到 */
   slashCatalog: Signal<{ commands: SlashCommandInfo[]; skills: SlashSkillInfo[] } | null>
+  /** 「@」引用候选(文件/目录+会话)；null=尚未拉到/换会话清空；query=该候选对应的查询串 */
+  atCatalog: Signal<{ query: string; files: AtFileRef[]; sessions: AtSessionRef[] } | null>
   /** plan 协作状态(投影 plan)；null=未启用/无该能力 */
   planState: Signal<{ active: boolean; pending: boolean } | null>
+  /** 会话目标(投影 goal)；null=无目标/能力缺失。goal bar 常驻条数据源（形状按官方 GoalProjection） */
+  goalState: Signal<{ objective: string; phase: string } | null>
+  /** 主动触底请求计数：用户发送/重新生成/恢复会话时 +1（MessageList 消费后清零并强制滚到底） */
+  scrollPend: Signal<number>
   permNameOf: Map<string, string>
   // 动作
   send(): void
   cancel(): void
   /** 行首 `/` 菜单需要目录时调用(宿主异步回 slashCatalog；并发去重) */
   requestSlashList(): void
+  /** 按查询串请求「@」候选(文件/目录+会话)；宿主异步回 atCatalog，最新查询 wins */
+  requestAtList(query: string): void
   /** 执行一条 dsh 斜杠命令(发宿主 slashRun；清空输入) */
   runSlash(text: string): void
   suggestion(p: string): void
@@ -98,6 +121,9 @@ export interface ChatStore {
   removeImage(i: ImageAttachment): void
   addAttachment(p: string): void
   removeAttachment(p: string): void
+  /** 添加一条 @ 引用贴片（文件/目录/会话） */
+  addRef(kind: RefChip['kind'], label: string, token: string, detail?: string): void
+  removeRef(key: number): void
   readImageFile(file: File): void
   togglePopup(w: 'perm' | 'model' | 'mode'): void
   /** 打开「仅模型列表的可搜索弹窗」（/model 斜杠入口用；与按钮的完整模型弹窗区分） */
@@ -125,12 +151,22 @@ export function createChatStore(host: ChatHost): ChatStore {
   const text = signal('')
   const attachments = signal<string[]>([])
   const images = signal<ImageAttachment[]>([])
+  const refs = signal<RefChip[]>([])
   const focusTick = signal(0)
+  let refKey = 1
   const openPopup = signal<'perm' | 'model' | 'mode' | 'modelSearch' | null>(null)
   const statsLine = signal({ text: '', title: '' })
   const slashCatalog = signal<{ commands: SlashCommandInfo[]; skills: SlashSkillInfo[] } | null>(null)
+  const atCatalog = signal<{ query: string; files: AtFileRef[]; sessions: AtSessionRef[] } | null>(null)
   const planState = signal<{ active: boolean; pending: boolean } | null>(null)
+  const goalState = signal<{ objective: string; phase: string } | null>(null)
+  const scrollPend = signal(0)
   let slashListInflight = false
+  // 「@」候选拉取：单飞行 + 最新查询 wins（输入中不断打 @ 只保留最后查询）
+  let atInflight = false
+  let atPendingQuery: string | null = null
+  /** 目录未到时用户已按 Enter 的「/」行：先存下，待 slashCatalog 到达再裁决(命令→执行/其余→普通消息) */
+  let pendingSlash: string | null = null
   // 由「/」菜单打开的选择(permission/model)：选中后把操作结果追加到对话区；按钮入口不设此标记
   let slashPickKind: 'permission' | 'model' | null = null
   const permNameOf = new Map<string, string>()
@@ -161,15 +197,21 @@ export function createChatStore(host: ChatHost): ChatStore {
     messages.value = []
     attachments.value = []
     images.value = []
+    refs.value = []
     text.value = ''
     processing.value = false
     statsLine.value = { text: '', title: '' }
     openPopup.value = null
     // 新会话后 slash 目录需重新拉取(会话内命令/技能可能不同)
     slashCatalog.value = null
+    atCatalog.value = null
     planState.value = null
+    goalState.value = null
     slashListInflight = false
+    atInflight = false
+    atPendingQuery = null
     slashPickKind = null
+    pendingSlash = null
   }
 
   // 当前"流式进行中"的 assistant 行(至多一个);无则 undefined
@@ -204,9 +246,9 @@ export function createChatStore(host: ChatHost): ChatStore {
   }
 
   // ---------- 消息流动作(本地渲染) ----------
-  function addUser(textMsg: string, imgs: ImageAttachment[] = [], time?: number): void {
+  function addUser(textMsg: string, imgs: ImageAttachment[] = [], time?: number, refs?: Array<{ kind: RefChip['kind']; label: string }>): void {
     // 实时本地上送用本地时刻;恢复历史时传入 dsh 事件自带时间戳,不覆盖为"现在"
-    push({ kind: 'user', key: rowKey++, text: textMsg, images: imgs, time: time !== undefined ? formatMsgClock(time) : nowTime() })
+    push({ kind: 'user', key: rowKey++, text: textMsg, images: imgs, time: time !== undefined ? formatMsgClock(time) : nowTime(), refs })
   }
   function beginAssistant(prompt = ''): void {
     ensureAssistant(prompt)
@@ -315,23 +357,38 @@ export function createChatStore(host: ChatHost): ChatStore {
     const msg = text.value.trim()
     const attach = attachments.value
     const imgs = images.value
-    if ((!msg && attach.length === 0 && imgs.length === 0) || processing.value) return
+    if ((!msg && attach.length === 0 && imgs.length === 0 && refs.value.length === 0) || processing.value) return
     // 「/」命令路由：纯文本单行、行首 `/` 且首词命中 host 命令目录 → 执行 dsh 斜杠命令而非发消息。
     // 技能行(/技能名…)不在此列，照常走 chatSend（宿主 pre-step 识别 /技能名 头）。
     const cat = slashCatalog.value
-    if (attach.length === 0 && imgs.length === 0 && !msg.includes('\n') && msg.startsWith('/') && cat) {
+    if (attach.length === 0 && imgs.length === 0 && !msg.includes('\n') && msg.startsWith('/')) {
       const name = msg.slice(1).split(/[\s　]+/)[0].toLowerCase()
-      if (name && cat.commands.some((c) => c.name.toLowerCase() === name)) {
+      const matched = !!(name && cat && cat.commands.some((c) => c.name.toLowerCase() === name))
+      if (matched) {
         text.value = ''
         host.post({ type: 'slashRun', text: msg })
         return
       }
+      if (!cat) {
+        // 目录尚未拉到(换会话后首条即发 /xxx)：先挂起、取目录，待 slashCatalog 到达再裁决，
+        // 避免把 /compact 之类当普通文本发给 agent
+        pendingSlash = msg
+        requestSlashList()
+        return
+      }
+      // cat 已到但首词未命中(技能/未知斜杠 token)：落回普通发送(技能走 chatSend、未知 token 走消息，与官方一致)
     }
-    const refs = attach.map((a) => '@' + a.replace(/\\/g, '/'))
-    const prompt = [...refs, msg].filter(Boolean).join('\n\n')
-    addUser(prompt, imgs)
+    const attachRefs = attach.map((a) => '@' + a.replace(/\\/g, '/'))
+    const refTokens = refs.value.map((r) => r.token)
+    const prompt = [...attachRefs, ...refTokens, msg].filter(Boolean).join('\n\n') // 发给 dsh：含引用 token
+    const display = [...attachRefs, msg].filter(Boolean).join('\n\n') // 气泡展示：引用以 chip 呈现，不铺 @token 文本
+    const refSnap = refs.value.map((r) => ({ kind: r.kind, label: r.label }))
+    // 用户主动发送：即使滚动条在上面也强制滚到底看新内容（流式中自己翻上去则不受影响）
+    scrollPend.value = scrollPend.value + 1
+    addUser(display, imgs, undefined, refSnap.length ? refSnap : undefined)
     attachments.value = []
     images.value = []
+    refs.value = []
     text.value = ''
     processing.value = true
     beginAssistant(prompt) // 立即出现"思考中…"行(与 setProcessing(true) 行为一致)
@@ -346,6 +403,37 @@ export function createChatStore(host: ChatHost): ChatStore {
     slashListInflight = true
     host.post({ type: 'slashListReq' })
   }
+  /** 「@」按查询串请求候选；最新查询 wins（输入过程只保留最后串，落后响应到达后自动补发）。 */
+  function requestAtList(query: string): void {
+    atPendingQuery = query
+    if (atInflight) return
+    // 已持有同一查询的候选且无待发请求 → 跳过（光标/输入抖动去重）
+    if (atCatalog.value && atCatalog.value.query === query) return
+    atInflight = true
+    host.post({ type: 'atListReq', query })
+  }
+  /** slashCatalog 到达后裁决被挂起的「/」行：命中命令→执行；未命中→按普通消息发出(仅当用户没改写输入)。 */
+  function resolvePendingSlash(): void {
+    if (!pendingSlash) return
+    const line = pendingSlash
+    pendingSlash = null
+    const cat = slashCatalog.value
+    if (!cat) return // 目录仍未拉到(理论上不会)：直接放弃，避免误发
+    const name = line.slice(1).split(/[\s　]+/)[0].toLowerCase()
+    if (name && cat.commands.some((c) => c.name.toLowerCase() === name)) {
+      // 命令：直接执行（runSlash 只在输入仍等于本行时清空，避免盖掉用户新输入）
+      runSlash(line)
+      return
+    }
+    // 未命中命令：按普通消息发（技能行 / 未知斜杠 token；用户已改写输入则放弃，交给下一次发送）
+    if (text.value === line) {
+      text.value = ''
+      addUser(line)
+      processing.value = true
+      beginAssistant(line)
+      host.post({ type: 'chatSend', text: line })
+    }
+  }
   /** 执行一条 dsh 斜杠命令：清空输入后发宿主（不入聊天气泡）。 */
   function runSlash(line: string): void {
     const t = (line ?? '').trim()
@@ -355,6 +443,7 @@ export function createChatStore(host: ChatHost): ChatStore {
   }
   function suggestion(p: string): void {
     if (!p || processing.value) return
+    scrollPend.value = scrollPend.value + 1
     addUser(p)
     processing.value = true
     beginAssistant(p)
@@ -363,6 +452,7 @@ export function createChatStore(host: ChatHost): ChatStore {
   function regenerate(p: string, images?: ImageAttachment[]): void {
     if (!p || processing.value) return
     processing.value = true
+    scrollPend.value = scrollPend.value + 1
     beginAssistant(p)
     // user 行带图时重生成保留原图（assistant 行重生成传 text-only，images 为空数组）
     const imgs = images ?? []
@@ -393,6 +483,13 @@ export function createChatStore(host: ChatHost): ChatStore {
   }
   const removeAttachment = (p: string): void => {
     attachments.value = attachments.value.filter((a) => a !== p)
+  }
+  /** 添加一条 @ 引用贴片（label 用于显示，token 为发送时注入 prompt 的引用文本）。 */
+  function addRef(kind: RefChip['kind'], label: string, token: string, detail?: string): void {
+    refs.value = [...refs.value, { key: refKey++, kind, label, token, detail }]
+  }
+  const removeRef = (key: number): void => {
+    refs.value = refs.value.filter((r) => r.key !== key)
   }
   function readImageFile(file: File): void {
     const reader = new FileReader()
@@ -599,6 +696,10 @@ export function createChatStore(host: ChatHost): ChatStore {
       }
     }
     processing.value = false
+    // 恢复会话后落到最新（若历史非空）
+    if (messages.value.length > 0) {
+      scrollPend.value = scrollPend.value + 1
+    }
   }
 
   // ---------- typed 归约器(host → 本 store) ----------
@@ -650,9 +751,30 @@ export function createChatStore(host: ChatHost): ChatStore {
           // plan 协作状态(plan/mode 折叠)，能力未组合则键缺失→保持 null
           const p = proj['plan'] as { active?: boolean; pending?: boolean } | undefined
           planState.value = p && typeof p.active === 'boolean' ? { active: p.active, pending: !!p.pending } : null
+          // goal 常驻（官方 goal bar 数据源）：goal 投影 null=无目标、缺键=能力未组合。
+          // 形状按官方 GoalProjection{goal:{objective,phase,…}}，顺带兼容扁平 string/object 的旧/变体。
+          const rawGoal: unknown = proj['goal']
+          let goalObj: string | undefined
+          let goalPhase = ''
+          if (typeof rawGoal === 'string') {
+            goalObj = rawGoal || undefined
+          } else if (rawGoal && typeof rawGoal === 'object') {
+            const rec = rawGoal as Record<string, unknown>
+            const nested = rec['goal']
+            const src = nested && typeof nested === 'object' ? (nested as Record<string, unknown>) : rec
+            const obj = src['objective']
+            const ph = src['phase']
+            if (typeof obj === 'string' && obj) goalObj = obj
+            if (typeof ph === 'string') goalPhase = ph
+          }
+          goalState.value = goalObj ? { objective: goalObj, phase: goalPhase } : null
         }
         setModels(m.models)
         setModes(m.agentPresets, m.agentPreset, m.agentPresetLocked)
+        // 会话建立/切换后预取「/」目录：把「目录未到即发 /xxx」的窗口压到最小（换会话 reset 已把目录清空）
+        if (!slashListInflight && (!slashCatalog.value || (slashCatalog.value.commands.length === 0 && slashCatalog.value.skills.length === 0))) {
+          requestSlashList()
+        }
         break
       }
       case 'draft':
@@ -668,6 +790,23 @@ export function createChatStore(host: ChatHost): ChatStore {
       case 'slashCatalog':
         slashCatalog.value = { commands: m.commands ?? [], skills: m.skills ?? [] }
         slashListInflight = false
+        // 目录到达后：裁决目录未到时挂起的「/」行(命令→执行，其余→普通消息)
+        resolvePendingSlash()
+        break
+      case 'atCatalog':
+        atInflight = false
+        if (atPendingQuery !== null) {
+          const q = atPendingQuery
+          if (q === m.query) {
+            // 响应匹配最新查询：落库
+            atCatalog.value = { query: m.query, files: m.files ?? [], sessions: m.sessions ?? [] }
+            atPendingQuery = null
+          } else {
+            // 期间查询串又前进：用最新串继续拉(丢弃这份落后响应)
+            atPendingQuery = null
+            requestAtList(q)
+          }
+        }
         break
       case 'slashResult':
         // 命令结果一律进对话区(不走 VSCode 通知)：失败红点+红字，成功正常色
@@ -691,16 +830,21 @@ export function createChatStore(host: ChatHost): ChatStore {
     text,
     attachments,
     images,
+    refs,
     focusTick,
     sel,
     openPopup,
     statsLine,
     slashCatalog,
+    atCatalog,
     planState,
+    goalState,
+    scrollPend,
     permNameOf,
     send,
     cancel,
     requestSlashList,
+    requestAtList,
     runSlash,
     suggestion,
     regenerate,
@@ -710,6 +854,8 @@ export function createChatStore(host: ChatHost): ChatStore {
     removeImage,
     addAttachment,
     removeAttachment,
+    addRef,
+    removeRef,
     readImageFile,
     togglePopup,
     openModelSearch,

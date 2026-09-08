@@ -6,3 +6,4 @@ export * from './webProxy';
 export * from './session';
 export * from './stream';
 export * from './legacy';
+export * from './sessionExport';

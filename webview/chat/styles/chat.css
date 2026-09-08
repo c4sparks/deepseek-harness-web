@@ -144,7 +144,10 @@
   .msg.user { flex-direction: row-reverse; }
   .msg.user .avatar { background: var(--vscode-badge-background, #3a3a3a); color: var(--vscode-foreground, #ccc); }
   .msg.assistant .avatar { background: var(--vscode-badge-background, #3a3a3a); color: var(--vscode-foreground, #ddd); }
-  .msg .col { display: flex; flex-direction: column; gap: 4px; max-width: 86%; }
+  .msg .col { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  /* 差异化：发送者(user)内容窄、贴合右侧；回复(assistant)满宽、随对话区自适应 */
+  .msg.user .col { max-width: 78%; align-self: flex-end; }
+  .msg.assistant .col { max-width: 100%; }
   .msg .name { display: none; } /* 默认隐藏 "你"/"dsh" 角色文字 */
   .msg.user .body {
     background: var(--vscode-input-background, #252526); border-radius: 10px;
@@ -153,6 +156,16 @@
   .msg.assistant .body { white-space: normal; word-break: break-word; }
   .msg.user .body .user-text { white-space: pre-wrap; }
   .msg.user .body .user-img { margin-top: 6px; }
+  /* 用户消息里 @ 引用以内联高亮 chip 展示：一行流、自动换行(真换行来自文本) */
+  .user-refs { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 6px; }
+  .msg-ref-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: rgba(117, 190, 255, 0.14);
+    color: var(--vscode-charts-blue, #75beff);
+    border: 1px solid var(--vscode-charts-blue, #75beff);
+    border-radius: 9px; padding: 1px 8px; font-size: 11px; line-height: 1.5;
+  }
+  .msg-ref-chip .ficon { font-size: 12px; }
   .msg.user .body .user-img img {
     max-width: 100%; max-height: 240px; border-radius: 8px; display: block;
     border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
@@ -185,6 +198,18 @@
     border-radius: 10px; background: var(--vscode-input-background, #252526);
   }
   #inputbox:focus-within { border-color: var(--vscode-focusBorder, #4daafc); }
+  /* @ 引用贴片：叠在 textarea 首行行首(absolute，不占高)；textarea 用 text-indent 只缩进首行 → 回车/换行回到最左 */
+  #refRow {
+    position: absolute; top: 6px; left: 8px; z-index: 1;
+    display: flex; align-items: center; gap: 4px;
+    flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none;
+    max-width: 62%; min-width: 0;
+    pointer-events: auto;
+  }
+  #refRow::-webkit-scrollbar { display: none; }
+  #refRow .ref-chip { height: 20px; font-size: 11px; padding: 0 7px; border-radius: 10px; max-width: 160px; flex: 0 0 auto; }
+  #refRow .ref-chip .ficon { font-size: 12px; line-height: 1; }
+  #refRow .ref-chip .x { font-size: 10px; margin-left: 1px; }
   #input {
     width: 100%; box-sizing: border-box; resize: none; border: none; outline: none;
     min-height: 68px; max-height: 150px; background: transparent;
@@ -216,6 +241,25 @@
   }
   #planChip:hover { background: rgba(177, 128, 215, 0.28); }
   #planChip:disabled { opacity: 0.55; cursor: default; }
+  /* goal 常驻 chip（与 plan chip 同排）：显示目标 + 阶段动作；active 默认绿，paused/blocked 变色 */
+  #goalChip {
+    display: inline-flex; align-items: center; gap: 2px; min-width: 0; max-width: 100%;
+    border: 1px solid var(--vscode-charts-green, #89d185);
+    color: var(--vscode-charts-green, #89d185);
+    background: rgba(137, 209, 133, 0.13);
+    font-size: 11px; line-height: 1; padding: 2px 4px 2px 8px; border-radius: 10px; flex: 0 1 auto;
+  }
+  #goalChip.goal-paused { border-color: var(--vscode-charts-yellow, #e2c08d); color: var(--vscode-charts-yellow, #e2c08d); background: rgba(226, 192, 141, 0.12); }
+  #goalChip.goal-blocked { border-color: var(--vscode-charts-red, #f14c4c); color: var(--vscode-charts-red, #f14c4c); background: rgba(241, 76, 76, 0.12); }
+  #goalChip .goal-obj {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    max-width: min(46vw, 240px); /* 窄面板时截断，长目标不撑爆 chipRow */
+  }
+  #goalChip .chip-act {
+    border: none; background: none; color: inherit; cursor: pointer;
+    font-size: 10px; line-height: 1; padding: 1px 2px; border-radius: 4px; flex: none; opacity: 0.85;
+  }
+  #goalChip .chip-act:hover { background: rgba(128, 128, 128, 0.28); opacity: 1; }
   #attach, #permBtn, #modelBtn, #modeBtn {
     width: 22px; height: 22px; border: none; background: none;
     color: var(--vscode-foreground, #ddd); cursor: pointer; border-radius: 4px;
@@ -260,18 +304,30 @@
     opacity: 0.72;
   }
 
-  /* 图标点击后向上展开的选择面板 */
+  /* 图标点击后向上展开的选择面板：用「浮层色板」而非对话区底色，避免与聊天背景融为一体看不清 */
   .popup {
     position: absolute; bottom: 100%; left: 8px; z-index: 50;
     min-width: 180px; max-width: 300px; max-height: 46vh; overflow-y: auto;
-    background: var(--vscode-editor-background, #1e1e1e);
-    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.15));
-    border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+    background: var(--vscode-editorSuggestWidget-background, var(--vscode-editorWidget-background, var(--vscode-menu-background, var(--vscode-editor-background, #1e1e1e))));
+    border: 1px solid var(--vscode-editorSuggestWidget-border, var(--vscode-dropdown-border, var(--vscode-panel-border, rgba(255,255,255,0.25))));
+    border-radius: 8px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 6px 22px rgba(0,0,0,0.45);
     padding: 6px; display: flex; flex-direction: column; gap: 1px;
   }
   .popup.hidden { display: none; }
   .popup .popup-title { font-size: 11px; opacity: 0.7; padding: 2px 6px 4px; }
   .popup .optgroup-label { font-size: 11px; opacity: 0.6; padding: 4px 6px 2px; }
+  /* @ 下钻的顶部路径条：工作区 › 目录…，下方细线分隔列表 */
+  .trigger-path {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground, #999);
+    padding: 2px 8px 5px;
+    border-bottom: 1px solid var(--vscode-panel-border, rgba(255, 255, 255, 0.14));
+    margin-bottom: 3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .popup .popup-fail {
     font-size: 11px; color: var(--vscode-errorForeground, #f14c4c);
     padding: 2px 6px 4px; word-break: break-word;
@@ -301,10 +357,41 @@
   }
   #triggerPopup .trigger-name {
     flex: none;
+    max-width: 190px; overflow: hidden; text-overflow: ellipsis; /* 长名(会话标题/深路径)截断，不撑宽 */
     font-family: var(--vscode-editor-font-family, monospace);
     font-size: 12px;
     font-weight: 600;
     white-space: nowrap;
+  }
+  /* 候选名里命中查询串的片段：主题链接色高亮 */
+  #triggerPopup .trigger-hl {
+    color: var(--vscode-textLink-foreground, var(--vscode-charts-blue, #4daafc));
+    font-weight: 700;
+  }
+  /* 选项小图标（codicon 细线风格）：文件夹/文件/对话 */
+  #triggerPopup .trigger-ico {
+    font-size: 13px;
+    margin-right: 2px;
+    opacity: 0.9;
+    flex: none;
+  }
+  /* 目录行右侧的“进入下一层”按钮（codicon chevron-right） */
+  #triggerPopup .trigger-drill {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    margin-left: 8px;
+    padding: 0 3px;
+    cursor: pointer;
+    color: var(--vscode-descriptionForeground, #999);
+    font-size: 20px; /* codicon 放大，便于点击 */
+    line-height: 1;
+    border-radius: 4px;
+    user-select: none;
+  }
+  #triggerPopup .trigger-drill:hover {
+    color: var(--vscode-foreground, #ddd);
+    background: rgba(128, 128, 128, 0.25);
   }
   #triggerPopup .trigger-desc {
     flex: 1 1 auto;
@@ -502,6 +589,8 @@
     display: flex; align-items: center; gap: 6px; font-size: 11px;
     color: var(--vscode-descriptionForeground, #888); opacity: 0; transition: opacity 0.15s;
   }
+  /* 发送者消息：时间/复制等右对齐（贴气泡右缘，头像一侧） */
+  .msg.user .msg-meta { justify-content: flex-end; }
   .msg:hover .msg-meta { opacity: 1; }
   .msg.latest .msg-meta { opacity: 1; }
   /* 用量/用时弹窗打开时保持动作区常显（TurnStats 打开会给所在 .msg 加 meta-open，防闪烁/消失） */
@@ -562,6 +651,20 @@
   .file-chip .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .file-chip .x { cursor: pointer; opacity: 0.7; flex-shrink: 0; }
   .file-chip .x:hover { opacity: 1; }
+
+  /* @ 引用贴片：蓝色小片（视觉代替正文里的 @token，正文不出 @） */
+  .ref-chip {
+    display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto;
+    background: rgba(117, 190, 255, 0.14);
+    color: var(--vscode-charts-blue, #75beff);
+    border: 1px solid var(--vscode-charts-blue, #75beff);
+    border-radius: 6px; padding: 0 7px; font-size: 12px; height: 30px;
+    max-width: 220px; min-width: 0;
+  }
+  .ref-chip .ficon { display: inline-flex; align-items: center; font-size: 11px; }
+  .ref-chip .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ref-chip .x { cursor: pointer; opacity: 0.8; flex-shrink: 0; margin-left: 2px; }
+  .ref-chip .x:hover { opacity: 1; }
 
   /* 图片附件缩略图 */
   .img-chip {

@@ -13,6 +13,15 @@ import { SearchPicker } from './SearchPicker'
 import { ModelPicker } from './ModelPicker'
 import { useTriggerMenu } from '../core/trigger/useTrigger'
 import { slashTrigger } from '../core/trigger/slash'
+import { atTrigger } from '../core/trigger/at'
+
+// goal chip 的阶段中文标签（与官方 GoalPhase 对应；complete 时不显示 chip）
+const GOAL_PHASE_LABEL: Record<string, string> = {
+  active: '进行中',
+  paused: '已暂停',
+  blocked: '阻塞',
+  complete: '已完成',
+}
 
 // ---------------- Welcome ----------------
 function Welcome({ store }: { store: ChatStore }) {
@@ -85,6 +94,12 @@ function RowMeta({
 
 function UserMessage({ row, store, latest }: { row: Extract<ChatRow, { kind: 'user' }>; store: ChatStore; latest?: boolean }) {
   return html`<div class="msg user${latest ? ' latest' : ''}"><div class="col"><div class="name"></div><div class="body">
+    ${row.refs && row.refs.length > 0
+      ? html`<div class="user-refs">${row.refs.map(
+          (r) => html`<span class="msg-ref-chip" key=${r.label + r.kind}>
+            <span class="ficon codicon codicon-${r.kind === 'directory' ? 'folder-opened' : r.kind === 'session' ? 'comment-discussion' : 'file'}"></span>${r.label}</span>`
+        )}</div>`
+      : null}
     ${row.text ? html`<div class="user-text">${row.text}</div>` : null}
     ${row.images.map(
       (img: ImageAttachment) =>
@@ -201,14 +216,42 @@ function Notice({ row }: { row: Extract<ChatRow, { kind: 'notice' }> }) {
 
 function MessageList({ store }: { store: ChatStore }) {
   const ref = useRef<HTMLDivElement | null>(null)
-  // 新消息/流式推进时若用户本就贴底则自动滚到底(与旧 chat.ts 一致)
+  // 智能跟随滚动：是否粘在底部由「用户滚动手势」决定(stickRef)，而非每条新消息的瞬时距离。
+  //   - stickRef=true(初始/发送/滚回底部)：新消息/流式持续自动到底，大段内容也粘得住；
+  //   - stickRef=false(用户向上翻读旧内容)：不抢阅读位置，内容照常累积在下方；
+  //   - 主动发送/重新生成/恢复会话(store.scrollPend>0) 与手动滚回底部 → 恢复跟随。
+  const stickRef = useRef(true)
+  // 上次滚动位置：按“方向”判断用户是否在向上拖——一旦向上滚(哪怕 1px)立即解除跟随，
+  // 不等离开底部阈值，避免贴底跟随“抢手柄”；只有真正回到底部才恢复跟随。
+  const lastTopRef = useRef(0)
   useEffect(() => {
     const el = ref.current
-    if (el && el.scrollHeight - el.scrollTop - el.clientHeight < 48) el.scrollTop = el.scrollHeight
+    if (!el) return
+    if (store.scrollPend.value > 0) {
+      el.scrollTop = el.scrollHeight
+      store.scrollPend.value = 0
+      stickRef.current = true
+      return
+    }
+    if (stickRef.current) {
+      el.scrollTop = el.scrollHeight
+    }
   })
   if (store.view.value !== 'chat') return null
   const list = store.messages.value
-  return html`<div id="messages" ref=${ref}>
+  return html`<div id="messages" ref=${ref}
+    onScroll=${() => {
+      const el = ref.current
+      if (!el) return
+      if (el.scrollTop < lastTopRef.current) {
+        // 用户正在向上拖 → 立即解除跟随（流式新内容照常累积在下方，不抢位置）
+        stickRef.current = false
+      } else if (el.scrollHeight - el.scrollTop - el.clientHeight < 24) {
+        // 已回到底部 → 恢复跟随
+        stickRef.current = true
+      }
+      lastTopRef.current = el.scrollTop
+    }}>
     ${list.map((row, i) => {
       const latest = i === list.length - 1
       switch (row.kind) {
@@ -231,7 +274,9 @@ function MessageList({ store }: { store: ChatStore }) {
 function AttachmentBar({ store }: { store: ChatStore }) {
   const imgs = store.images.value
   const paths = store.attachments.value
-  if (imgs.length === 0 && paths.length === 0) return html`<div id="attachments" class="hidden"></div>`
+  if (imgs.length === 0 && paths.length === 0) {
+    return html`<div id="attachments" class="hidden"></div>`
+  }
   return html`<div id="attachments">
     ${imgs.map(
       (img) => html`<span class="img-chip" key=${img.name}>
@@ -379,11 +424,32 @@ function Composer({ store }: { store: ChatStore }) {
   const sel = store.sel.value
   const focusTick = store.focusTick.value
   const taRef = useRef<HTMLTextAreaElement | null>(null)
+  const refRowRef = useRef<HTMLDivElement | null>(null)
 
   // draft 到来 → 聚焦
   useEffect(() => {
     if (focusTick > 0) taRef.current?.focus()
   }, [focusTick])
+
+  // 贴片叠在首行行首：按 #refRow 实际宽度只缩进 textarea 的第一行(text-indent)，
+  // 后续行/回车换行自然回到最左；垂直方向按 textarea 实测行高+上内距把贴片中心对准首行文字中心
+  useEffect(() => {
+    const ta = taRef.current
+    if (!ta) return
+    const row = refRowRef.current
+    if (row) {
+      const w = Math.min(row.scrollWidth, Math.max(0, ta.clientWidth * 0.62))
+      ta.style.textIndent = `${w}px`
+      const cs = getComputedStyle(ta)
+      let lh = parseFloat(cs.lineHeight)
+      if (!Number.isFinite(lh) || lh <= 0) lh = Math.round((parseFloat(cs.fontSize) || 13) * 1.4)
+      const pt = parseFloat(cs.paddingTop)
+      const chipH = row.firstElementChild ? (row.firstElementChild as HTMLElement).offsetHeight : 20
+      row.style.top = `${Math.max(4, Math.round(pt + lh / 2 - chipH / 2))}px`
+    } else {
+      ta.style.textIndent = ''
+    }
+  })
 
   // 点击外部关闭弹窗（触发器菜单由 useTriggerMenu 自管关闭）
   useEffect(() => {
@@ -421,8 +487,8 @@ function Composer({ store }: { store: ChatStore }) {
     return found?.name || MODE_NAMES[s.currentMode] || s.currentMode
   }
 
-  // 输入触发器菜单："/" 由独立模块实现(core/trigger/slash.ts)；将来 "@ " 等只需在此数组追加一项
-  const trigger = useTriggerMenu([slashTrigger(store)], store, taRef)
+  // 输入触发器菜单："/" 斜杠 与 "@" 引用各自独立成模块(core/trigger/*.ts)；加新触发只需在数组追加一项
+  const trigger = useTriggerMenu([slashTrigger(store), atTrigger(store)], store, taRef)
 
   // 参数阶段占位 hint：输入恰为「/命令 」时，在光标后以灰色显示该命令 input.hint（如 <text>）
   const slashHint = ((): string => {
@@ -474,11 +540,24 @@ function Composer({ store }: { store: ChatStore }) {
     if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey && argCommand) {
       e.preventDefault()
       store.runSlash(argCommand)
+    } else if (e.key === 'Backspace') {
+      // 贴片在文字之前：光标在最左(前面没有字符)时，退格删除最靠右(离文字最近)的贴片
+      const ta = taRef.current
+      const refs = store.refs.value
+      if (ta && refs.length > 0 && ta.selectionStart === 0 && ta.selectionEnd === 0) {
+        e.preventDefault()
+        store.removeRef(refs[refs.length - 1].key)
+      }
     }
   }
 
-  const canSend = text.trim().length > 0 || store.attachments.value.length > 0 || store.images.value.length > 0
+  const canSend =
+    text.trim().length > 0 ||
+    store.attachments.value.length > 0 ||
+    store.images.value.length > 0 ||
+    store.refs.value.length > 0
   const plan = store.planState.value
+  const goal = store.goalState.value
 
   return html`<div id="composer"
     onDragOver=${(e: Event) => e.preventDefault()}
@@ -499,6 +578,15 @@ function Composer({ store }: { store: ChatStore }) {
     ${trigger.popup}
     <${AttachmentBar} store=${store} />
     <div id="inputbox">
+      ${store.refs.value.length > 0
+        ? html`<div id="refRow" ref=${refRowRef}>${store.refs.value.map(
+            (r) => html`<span class="ref-chip" key=${r.key} title=${r.token || r.detail || ''}>
+              <span class="ficon codicon codicon-${r.kind === 'directory' ? 'folder-opened' : r.kind === 'session' ? 'comment-discussion' : 'file'}"></span>
+              <span class="fname">${r.label}</span>
+              <span class="x" onClick=${() => store.removeRef(r.key)}>✕</span>
+            </span>`
+          )}</div>`
+        : null}
       <textarea id="input" ref=${taRef} placeholder="向 AI 提问（Ctrl+Enter 发送）" value=${text}
         onInput=${(e: Event) => { store.text.value = (e.target as HTMLTextAreaElement).value; trigger.sync() }}
         onKeyDown=${inputKeyDown}
@@ -548,10 +636,21 @@ function Composer({ store }: { store: ChatStore }) {
           <svg class="stop-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
         </button>
       </div>
-      ${plan && (plan.active || plan.pending) ? html`<div id="chipRow">
-        <button id="planChip" disabled=${plan.pending ? true : undefined}
-          title=${plan.pending ? 'Plan 切换中…' : 'Plan 模式中，点击退出'}
-          onClick=${() => store.runSlash('/plan off')}>plan${plan.pending ? '…' : ' ✕'}</button>
+      ${(plan && (plan.active || plan.pending)) || goal ? html`<div id="chipRow">
+        ${plan && (plan.active || plan.pending)
+          ? html`<button id="planChip" disabled=${plan.pending ? true : undefined}
+              title=${plan.pending ? 'Plan 切换中…' : 'Plan 模式中，点击退出'}
+              onClick=${() => store.runSlash('/plan off')}>plan${plan.pending ? '…' : ' ✕'}</button>`
+          : null}
+        ${goal && goal.phase !== 'complete'
+          ? html`<div id="goalChip" class=${'goal-' + (goal.phase || 'active')}
+              title=${`目标（${GOAL_PHASE_LABEL[goal.phase] || goal.phase}）：${goal.objective}`}>
+              <span class="goal-obj">🎯 ${goal.objective}</span>
+              ${goal.phase === 'active' ? html`<button class="chip-act" title="暂停目标" onClick=${() => store.runSlash('/goal pause')}>⏸</button>` : null}
+              ${goal.phase === 'paused' ? html`<button class="chip-act" title="继续目标" onClick=${() => store.runSlash('/goal resume')}>▶</button>` : null}
+              <button class="chip-act" title="清除目标" onClick=${() => store.runSlash('/goal clear')}>✕</button>
+            </div>`
+          : null}
       </div>` : null}
     </div>
   </div>`

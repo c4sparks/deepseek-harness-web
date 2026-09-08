@@ -17,6 +17,7 @@
 - 鉴权：`?token=` 登录拿 `dsh-auth-*` cookie（HttpOnly + SameSite=Strict）；仅回环不放行。
   内嵌面板不能直接 iframe `/?token=`（Webview 无法携带 cookie），插件在扩展进程起本地认证代理
   `dsh/webProxy.ts`：只监听 127.0.0.1，转发 HTTP/WS 时替上游附加 cookie；外部浏览器用 authUrl 直开。
+- 文件流下载（rc.1 `/export` 会话日志 ZIP）：`GET /api/session.export?sessionId=…&includeDescendants=true`，非信封直连，宿主经 `src/dsh/sessionExport.ts` 取回 → 保存对话框写文件。
 
 ## 方法契约（斜杠 + args，点号 404）
 > 命名约定（详见 00 §4.3）：导出函数名不携带 dsh 版本前缀；方法适配的版本与上游接口写在其 JSDoc。
@@ -30,6 +31,10 @@
 | session/page · session/follow | request | 分页冷读 / 热流订阅 | rc1 无 session.history |
 | workspace/create · workspace/follow | request | 建工作区 / 枚举 | follow 走 mux |
 | commands/execute | {agentId,line,images} | 斜杠命令(/permission) | 点号 404 |
+| commands/list | {agentId} | `/` 指令目录 | 与 commands/execute 同 args 信封 |
+| skills/list | {request:{sessionId}} | `/` 技能目录 | **args 不接受 agentId**（描述符拒，实测 `unexpected "agentId"`）；只放 `{request:{sessionId}}`。勿用旧 `skill.list`（点号不存在）【2026-09-08 实测修正】 |
+| fileReferences/list | {agentId,query} | `@` 文件/目录候选 | 返回 `{path,kind}`，path 为工作区相对 |
+| sessionReferenceResolver/candidates | {agentId,query} | `@` 会话候选 | 条目含 `mention`=应插入正文的 token【2026-09-08】 |
 | agentPresets/list · agentPresets/select | {} / {agentId,agentPreset} | 列 agent 模式 / 空白会话切换模式【v0.1.4 · dsh 0.1.2-rc.1 新增】 | 已开始会话切换会被拒绝 |
 | $events（流） | 空 args | 审批/提问等 Remote Event 下发 | open 走 /api/remote.mux |
 | $events/result | {clientId,eventId,outcome} | 本地应答审批/提问 | outcome 形状见下节 |
@@ -55,6 +60,7 @@ usage：uncachedInputTokens/outputTokens/cacheReadTokens/cacheWriteTokens/reason
 
 ## 插件功能 ↔ dsh 对接
 F1 聊天(session/prompt+follow+事件)、F2 模型(modelCatalog/selectModel)、F3 权限(permissions+commands/execute)、F4 工作区(workspace/follow+session)、F5 右键(共享会话)、F6 消费记录(usage)、F7 网页(内嵌=dsh/webProxy 同源地址；外部浏览器=authUrl)、F8 启动(dsh CLI/probe)、F9 会话模式(agentPresets/list+select，v0.1.4 · dsh 0.1.2-rc.1)、审批提问($events 流 + $events/result 聊天内应答)。升级时按此定位改 dsh/ 与投影。
+- F10 输入触发：`/` 菜单 = `commands/list`（指令）+ `skills/list`（技能，payload 仅 request）；`@` 引用 = `fileReferences/list`（文件/目录）+ `sessionReferenceResolver/candidates`（会话，条目带 mention）；`/export` 真实下载 = GET `/api/session.export`。【2026-09-08】
 
 ## 升级 dsh / 插件
 1. 隔离 `DSH_HOME` + `dsh web --no-open --port 0` + `?token=` 登录。
