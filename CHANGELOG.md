@@ -2,6 +2,13 @@
 
 All notable changes to the "deepseek-harness-web" extension will be documented in this file.
 
+## [0.1.6] - 2026-09-08
+
+### 变更
+
+- 交互能力增强：完善 Slash Commands（/斜杠命令）与 @Mentions（@上下文提及），通过内联触发机制实现快捷指令执行与上下文引用注入，缩短操作路径
+- 监控完善：每条回复可查看「本轮用量」（提供方 / 模型、未缓存输入、缓存读取 / 写入、输出 token）与「本轮用时和速度」（本轮总用时、首 token 用时 TTFT、输出速度 TPS）
+
 ## [0.1.5] - 2026-09-06
 
 - UI优化
