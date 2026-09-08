@@ -534,12 +534,30 @@ function Composer({ store }: { store: ChatStore }) {
     const c = store.slashCatalog.value?.commands.find((cc) => cc.name.toLowerCase() === name)
     return c?.input?.hint ? t : null
   })()
+  // 已认领的技能行(/技能 参数…)：普通 Enter = 作为技能正常发送（chatSend，宿主 pre-step 识别 /技能名）
+  const skillClaim = ((): string | null => {
+    const v = text
+    if (!v || v.includes('\n') || !v.startsWith('/')) return null
+    const t = v.trimEnd()
+    const name = t.slice(1).split(/[\s　]+/)[0]?.toLowerCase()
+    if (!name || !/\s/.test(t.slice(1))) return null
+    return store.slashCatalog.value?.skills.some((sk) => sk.name.toLowerCase() === name) ? t : null
+  })()
   const inputKeyDown = (e: KeyboardEvent): void => {
     trigger.onKeyDown(e)
     if (e.defaultPrevented) return
-    if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey && argCommand) {
-      e.preventDefault()
-      store.runSlash(argCommand)
+    if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey) {
+      if (argCommand) {
+        e.preventDefault()
+        store.text.value = '' // 回车执行 host 指令：无条件清空输入
+        store.runSlash(argCommand)
+        return
+      }
+      if (skillClaim) {
+        e.preventDefault()
+        store.send() // 技能行：回车即作为技能正常发送（宿主 pre-step 识别）
+        return
+      }
     } else if (e.key === 'Backspace') {
       // 贴片在文字之前：光标在最左(前面没有字符)时，退格删除最靠右(离文字最近)的贴片
       const ta = taRef.current
