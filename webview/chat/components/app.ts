@@ -587,7 +587,7 @@ function Composer({ store }: { store: ChatStore }) {
             </span>`
           )}</div>`
         : null}
-      <textarea id="input" ref=${taRef} placeholder="向 AI 提问（Ctrl+Enter 发送）" value=${text}
+      <textarea id="input" ref=${taRef} placeholder=${text || store.refs.value.length > 0 ? '' : '向 AI 提问（Ctrl+Enter 发送）'} value=${text}
         onInput=${(e: Event) => { store.text.value = (e.target as HTMLTextAreaElement).value; trigger.sync() }}
         onKeyDown=${inputKeyDown}
         onKeyUp=${trigger.sync}

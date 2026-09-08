@@ -393,6 +393,12 @@
     color: var(--vscode-foreground, #ddd);
     background: rgba(128, 128, 128, 0.25);
   }
+  /* 选中/悬停行：> 跟随行文字高对比色（浅色主题下默认灰看不清） */
+  #triggerPopup .opt.selected .trigger-drill,
+  #triggerPopup .opt:hover .trigger-drill {
+    color: inherit;
+    opacity: 1;
+  }
   #triggerPopup .trigger-desc {
     flex: 1 1 auto;
     min-width: 0;
