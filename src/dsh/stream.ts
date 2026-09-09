@@ -1,8 +1,9 @@
 // dsh 0.1.2-rc.1 流式对话：session/follow 驱动的 waitTurn 与 ask 系列。
 import { openMuxStream } from "./api";
 import { deriveTurnTokenUsage, deriveTurnFacts, type TurnLikeEvent } from "./official/turn-stats";
+import { parseExitStatus } from "./official/exit-status";
+import { contextForm, contextProvenance } from "./official/context-projection";
 import {
-    createSession,
     eventText,
     readFollowSnapshot,
     sendPrompt,
@@ -30,9 +31,43 @@ export interface DshReplyStats {
     ttftSec?: number;
 }
 export interface DshActivity {
-    type: 'step' | 'tool';
+    /** step=新模型调用开始；tool=发起一次工具调用；toolDone=该工具结果返回(成功或失败) */
+    type: 'step' | 'tool' | 'toolDone';
     step?: number;
+    /** 工具名（tool/call.data.name 回退 toolName 的原始名，如 pwsh/web_fetch/read） */
     tool?: string;
+    name?: string;
+    callId?: string;
+    /** 工具调用原始参数 JSON 串（tool/call.data.arguments，不解析） */
+    argsRaw?: string;
+    /** toolDone 的失败原因（tool/result.data.error.code） */
+    error?: string;
+    /** toolDone 的结果文本（tool/result message.content 文本；Terminal/Read 等卡展示输出） */
+    output?: string;
+    /** 退出码（输出末尾 marker 解析；Terminal 卡 Pill 展示；输出已剥 marker） */
+    exitCode?: number;
+    /** 终止信号名（[killed by signal: X]；优先于退出码） */
+    signal?: string;
+    /** tool/result.data.meta 原文透传（web_fetch 的 statusCode/截断、web_search 的 sources/answer 等卡数据源；未知形状原样带） */
+    meta?: unknown;
+}
+/** 过程折叠计数（对齐官方 turn-process：toolCallCount=非 subagent 工具调用数；messageCount=最终答复前带文本的中间 assistant 消息数） */
+export interface DshTurnCounts {
+    toolCallCount: number;
+    messageCount: number;
+}
+/** 一次上下文注入（非用户 source 的 user/message：系统提示词/技能目录/跨会话召回/插件…），供 UI 渲染成「上下文注入」折叠行。 */
+export interface DshContext {
+    seq: number;
+    time?: number;
+    /** 模型实际读到的 content blocks（原文透传） */
+    content: unknown[];
+    /** durable user/message source 原文 */
+    source: unknown;
+    /** 投影角色与生产者名（recall=跨会话召回，其余=上下文注入） */
+    provenance: { role: 'inject' | 'recall'; label: string | null };
+    /** 生产者声明的展示形态（opaque 用与官方一致），null = opaque */
+    form: string | null;
 }
 export interface DshApproval {
     approvalId?: string;
@@ -64,10 +99,12 @@ const CHUNK_REASONING = 'reasoning-delta';
 interface StreamingOpts {
     timeoutMs?: number;
     isCancelled?: () => boolean;
-    onReasoning?: (delta: string, step?: number) => void;
+    onReasoning?: (delta: string, step?: number, index?: number) => void;
     onActivity?: (a: DshActivity) => void;
     onApproval?: (a: DshApproval) => void;
     onQuestion?: (q: DshQuestionRequest) => void;
+    /** 上下文注入行（source.kind !== 'user' 的 user/message：系统提示词/技能/召回…） */
+    onContext?: (c: DshContext) => void;
 }
 interface TurnResult {
     text: string;
@@ -76,6 +113,8 @@ interface TurnResult {
     time?: number;
     /** turn/end 的非正常终止原因（error/aborted/interrupted/max-tokens/blocked…）；正常完成则无 */
     end?: { kind: string; message?: string };
+    /** 过程折叠计数（toolCallCount/messageCount，官方口径） */
+    counts?: DshTurnCounts;
 }
 function stringOf(v: unknown): string | null {
     return typeof v === 'string' && v.length > 0 ? v : null;
@@ -139,6 +178,9 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
     let endMarker: { kind: string; message?: string } | undefined;
     // 核心 per-turn（模块）入参：只收集本回合关键事件，结束时交 official/turn-stats.ts 计算，不再自行统计
     const officialEvents: TurnLikeEvent[] = [];
+    // 过程折叠计数（官方口径，见 DshTurnCounts）：本回合内累计，turn 结束取数
+    let toolCallCount = 0;
+    const replyTextSteps = new Set<number>(); // 出现过带文本 assistant/message 的 step
     await new Promise<void>((resolve, reject) => {
         let settled = false;
         let idleTimer: ReturnType<typeof setInterval> | undefined;
@@ -194,7 +236,9 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
                         onDelta(chunk.text);
                     } else if (chunk.type === CHUNK_REASONING && typeof chunk.text === 'string') {
                         const step = typeof d['step'] === 'number' ? d['step'] : undefined;
-                        opts.onReasoning?.(chunk.text, step);
+                        // 块 index（兼容模型一步内多段 reasoning；缺失则回落按 step 归并）
+                        const index = (chunk as { index?: unknown }).index;
+                        opts.onReasoning?.(chunk.text, step, typeof index === 'number' ? index : undefined);
                     }
                     break;
                 }
@@ -204,6 +248,10 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
                     const full = eventText(raw); // assistant/message 自带整条消息内容
                     if (full) {
                         text = full; // 以 API 整条消息为准，覆盖 text-delta 的本地拼接
+                        const st = d['step'];
+                        if (typeof st === 'number') {
+                            replyTextSteps.add(st); // 带可见文本的 assistant 消息（过程折叠 messageCount 用）
+                        }
                     }
                     const msgObj = d['message'] as { source?: { provider?: string; model?: string } } | undefined;
                     const usage = usageOf(d);
@@ -220,6 +268,26 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
                     });
                     break;
                 }
+                case 'user/message': {
+                    // 上下文注入（非用户 source）：系统提示词/技能目录/跨会话召回等，回 UI 渲染成折叠行。
+                    // 用官方投影逻辑判定（source.kind !== 'user'），把 content/source/provenance/form 透传。
+                    const source = d['source'];
+                    const record = source && typeof source === 'object' ? source as Record<string, unknown> : undefined;
+                    const kind = record?.['kind'];
+                    if (kind !== undefined && kind !== 'user') {
+                        const content = Array.isArray(d['content']) ? d['content'] : [];
+                        const provenance = contextProvenance(source);
+                        opts.onContext?.({
+                            seq: raw.seq,
+                            time: raw.time,
+                            content,
+                            source,
+                            provenance,
+                            form: contextForm(source),
+                        });
+                    }
+                    break;
+                }
                 case 'turn/start':
                     officialEvents.push({ type: 'turn/start', time: raw.time, data: { turn: d['turn'] as number | undefined } });
                     break;
@@ -227,13 +295,62 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
                     officialEvents.push({ type: 'step/start', time: raw.time, data: { step: d['step'] as number | undefined } });
                     opts.onActivity?.({ type: 'step', step: typeof d['step'] === 'number' ? d['step'] : undefined });
                     break;
-                case 'tool/call':
+                case 'tool/call': {
+                    const toolName = stringOf(d['name']) ?? stringOf(d['toolName']);
+                    if (process.env['DSH_RAWLOG'] && toolName && (toolName === 'web_search' || toolName === 'web_fetch' || toolName === 'search' || toolName === 'webFetch')) {
+                        console.log('[dsh-debug] web tool/call name=' + toolName + ' args=' + String(d['arguments']));
+                    }
+                    if (toolName && !(toolName === 'subagent' || toolName.startsWith('subagent_'))) {
+                        toolCallCount += 1; // 官方口径：非 subagent 工具调用才计入
+                    }
                     opts.onActivity?.({
                         type: 'tool',
                         step: typeof d['step'] === 'number' ? d['step'] : undefined,
-                        tool: stringOf(d['name']) ?? stringOf(d['toolName']) ?? undefined,
+                        tool: toolName ?? undefined,
+                        name: toolName ?? undefined,
+                        callId: stringOf(d['callId']) ?? undefined,
+                        argsRaw: stringOf(d['arguments']) ?? undefined,
                     });
                     break;
+                }
+                case 'tool/result': {
+                    // 结果文本（供 Terminal/Read 等卡展示输出）：message.content 的 text/tool-result 块或平铺字符串
+                    let output = ''
+                    const msg = d['message'] as { content?: unknown } | undefined
+                    const content = msg?.content
+                    if (Array.isArray(content)) {
+                        for (const b of content) {
+                            const bb = b as { type?: string; text?: unknown }
+                            if ((bb['type'] === 'text' || bb['type'] === 'tool-result') && typeof bb['text'] === 'string') {
+                                output += bb['text']
+                            }
+                        }
+                    } else if (typeof content === 'string') {
+                        output = content
+                    }
+                    // 退出状态：先于截断解析（marker 在输出末尾，截断会切掉）；再从展示输出剥掉 marker
+                    if (process.env['DSH_RAWLOG']) {
+                        console.log('[dsh-debug] tool/result callId=' + String(d['callId']) + ' meta=' + JSON.stringify(d['meta']).slice(0, 400) + ' content=' + JSON.stringify(d['message'] ?? '').slice(0, 200));
+                    }
+                    const status = parseExitStatus(output)
+                    output = status.output
+                    const exitCode = status.exitCode
+                    const signal = status.signal
+                    if (output.length > 8000) {
+                        output = output.slice(0, 8000) + '\n…(输出过长已截断)'
+                    }
+                    opts.onActivity?.({
+                        type: 'toolDone',
+                        step: typeof d['step'] === 'number' ? d['step'] : undefined,
+                        callId: stringOf(d['callId']) ?? undefined,
+                        error: (d['error'] as { code?: string } | undefined)?.code,
+                        output: output || undefined,
+                        exitCode,
+                        signal,
+                        meta: d['meta'],
+                    });
+                    break;
+                }
                 case 'turn/end': {
                     officialEvents.push({ type: 'turn/end', time: raw.time, data: { turn: d['turn'] as number | undefined, reason: d['reason'] as { kind?: string } | undefined } });
                     const reason = d['reason'] as { kind?: string; message?: string; error?: { message?: string } } | undefined;
@@ -339,7 +456,12 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
         }
         break; // 一次回合
     }
-    return { text, stats: lastStats, time: messageTime, end: endMarker };
+    // 过程折叠计数：messageCount = 带文本 assistant 消息数 - 1（去掉最终答复本身），最终答复单独展示
+    const counts: DshTurnCounts = {
+        toolCallCount,
+        messageCount: replyTextSteps.size > 0 ? replyTextSteps.size - 1 : 0,
+    };
+    return { text, stats: lastStats, time: messageTime, end: endMarker, counts };
 }
 /** 读取会话当前事件水位（发消息前的 baseline seq）。 */
 async function currentSeq(sessionId: string): Promise<number> {
@@ -370,16 +492,8 @@ export async function askInSessionStreaming(
     content: DshContentPart[],
     onDelta: (delta: string) => void,
     opts: StreamingOpts = {}
-): Promise<{ text: string; stats: DshReplyStats; time?: number; end?: { kind: string; message?: string } }> {
+): Promise<{ text: string; stats: DshReplyStats; time?: number; end?: { kind: string; message?: string }; counts?: DshTurnCounts }> {
     const baselineSeq = await currentSeq(sessionId);
     await sendPrompt(sessionId, content);
     return waitTurn(sessionId, baselineSeq, onDelta, opts);
-}
-/** 单轮会话：新建 + 提问 + 等回复。 */
-export async function ask(
-    text: string,
-    opts: { timeoutMs?: number; isCancelled?: () => boolean } = {}
-): Promise<string> {
-    const sessionId = await createSession();
-    return askInSession(sessionId, text, opts);
 }

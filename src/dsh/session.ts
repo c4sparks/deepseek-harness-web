@@ -3,6 +3,8 @@ import * as crypto from "node:crypto";
 import { openMuxStream, rpcCall } from "./api";
 import { deriveTurnTokenUsage, deriveTurnFacts, type TurnLikeEvent } from "./official/turn-stats";
 import { expandChunkRows } from "./official/chunk-rows";
+import { parseExitStatus } from "./official/exit-status";
+import { contextForm, contextProvenance, isContextMessage } from "./official/context-projection";
 // ---------- 会话事件模型（dsh v0.1.2-rc.1 follow 载荷形状） ----------
 export type DshContentPart =
     | { type: 'text'; text: string }
@@ -162,24 +164,42 @@ export async function readFollowSnapshot(sessionId: string, maxMessages = 5000, 
  * 每条消息附带该事件自带的原始时间戳 `time`（epoch 秒/毫秒，由上游给出），页面据此显示真实时刻；
  * assistant 消息再附上该消息自带的 usage 与 provider/model（用量/用时图标据此显示，与实时同源）。
  */
-export type SessionMessageItem = {
-    role: 'user' | 'assistant';
-    text: string;
-    time?: number;
-    provider?: string;
-    model?: string;
-    inputTokens?: number;
-    outputTokens?: number;
-    cacheReadTokens?: number;
-    cacheWriteTokens?: number;
-    reasoningTokens?: number;
-    /** 由快照事件时间算出的该消息指标（与实时同口径：turn/end−turn/start、step/start→首 token、解码 span） */
-    wallSec?: number;
-    ttftSec?: number;
-    tps?: number;
-    /** 停止状态展示文案（已停止 · Stopped），仅该回合被停止/中断/取消时给最后一条 assistant */
-    status?: string;
-};
+/** 恢复会话里 assistant 回复的“过程动作”（思考/工具），供 UI 折叠展开（与实时 chatActivity 链同语义） */
+export type HistoryChainItem =
+    | { kind: 'reasoning'; text: string }
+    | {
+        kind: 'context';
+        content: unknown[];
+        source: unknown;
+        provenance: { role: 'inject' | 'recall'; label: string | null };
+        form: string | null;
+    }
+    | { kind: 'tool'; name: string; callId?: string; argsRaw?: string; status: 'running' | 'ok' | 'error' | 'stopped'; error?: string; output?: string; exitCode?: number; signal?: string; meta?: unknown };
+/** 过程折叠计数（官方口径，见 stream.ts DshTurnCounts 注释） */
+export type HistoryCounts = { toolCallCount: number; messageCount: number };
+export type SessionMessageItem =
+    | { role: 'user'; text: string; time?: number }
+    | {
+        role: 'assistant';
+        text: string;
+        time?: number;
+        provider?: string;
+        model?: string;
+        inputTokens?: number;
+        outputTokens?: number;
+        cacheReadTokens?: number;
+        cacheWriteTokens?: number;
+        reasoningTokens?: number;
+        /** 由快照事件时间算出的该消息指标（与实时同口径：turn/end−turn/start、step/start→首 token、解码 span） */
+        wallSec?: number;
+        ttftSec?: number;
+        tps?: number;
+        /** 停止状态展示文案（已停止 · Stopped），仅该回合被停止/中断/取消时给最后一条 assistant */
+        status?: string;
+        /** 过程链：思考/工具（官方 content blocks 重建）；仅供 assistant 消息 */
+        chain?: HistoryChainItem[];
+        counts?: HistoryCounts;
+    };
 export async function getSessionMessages(sessionId: string): Promise<SessionMessageItem[]> {
     const snap = await readFollowSnapshot(sessionId);
     const out: SessionMessageItem[] = [];
@@ -187,6 +207,8 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
     // 核心 per-turn 统计委托 src/dsh/official/turn-stats.ts；本函数只做“拆消息 + 附加结果”，保持薄
     const lastAsst = new Map<number, number>(); // turn -> out 中最后一条 assistant 下标
     const endStatus = new Map<number, string>(); // 非 completed 的 turn -> 状态(回显 kind)
+    const turnContextItems = new Map<number, HistoryChainItem[]>(); // turn -> 该回合上下文注入项(并入链首)
+    let openTurn: number | undefined; // 当前打开的 turn(seq 游标；context 事件无 turn，按区间归属)
     const partialText = new Map<number, string>();
     const finalTextTurns = new Set<number>();
     const chunkPiece = (e: RawEvent): string => {
@@ -199,6 +221,9 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
     for (const e of snap.events) {
         const d = e.data ?? {};
         const turn = typeof d['turn'] === 'number' ? (d['turn'] as number) : undefined;
+        // seq 游标：上下文注入事件无 turn，落进当前打开的 turn(区间 [turn/start, turn/end])
+        if (e.type === 'turn/start' && turn !== undefined) { openTurn = turn; }
+        if (e.type === 'turn/end' && turn !== undefined) { openTurn = undefined; }
         // 累计该回合流式文本(半截终止但无最终 message 时用来合成回答行)
         if (turn !== undefined && e.type === 'assistant/chunk') {
             const piece = chunkPiece(e);
@@ -210,6 +235,26 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
             const text = textOfBlocks(e.data?.['content']);
             if (text) {
                 out.push({ role: 'user', text, time: e.time });
+            }
+            continue;
+        }
+        // 上下文注入（source.kind !== 'user' 的 user/message）：并入该回合的 assistant 链(链首)，
+        // 不单独作为时间线行。归属 turn = 事件自带 turn，否则落到当前打开的 turn(seq 游标)。
+        // 系统提示词(agent-instructions, form==='instructions')走左上角常驻入口，不入链（否则只含它的链展开为空）。
+        if (isContextMessage(e)) {
+            const source = e.data?.['source'];
+            if (contextForm(source) === 'instructions') { continue; }
+            const ctxTurn = typeof d['turn'] === 'number' ? d['turn'] as number : openTurn;
+            if (ctxTurn !== undefined) {
+                const arr = turnContextItems.get(ctxTurn) ?? [];
+                arr.push({
+                    kind: 'context',
+                    content: (Array.isArray(e.data?.['content']) ? e.data?.['content'] : []) as unknown[],
+                    source,
+                    provenance: contextProvenance(source),
+                    form: contextForm(source),
+                });
+                turnContextItems.set(ctxTurn, arr);
             }
             continue;
         }
@@ -317,9 +362,142 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
             );
         }
     }
+    // ---------- 过程链(思考/工具)重建（历史恢复可折叠展示） ----------
+    // durable assistant/message 自带 content blocks(reasoning / tool-call{id,name,arguments})，
+    // 按消息顺序重放成链；tool/result 依 callId 回填 ok/error。
+    const contentBlocksOf = (e: RawEvent): Array<Record<string, unknown>> | undefined => {
+        const msg = (e.data?.['message'] as { content?: unknown } | undefined)?.content;
+        return Array.isArray(msg) ? (msg as Array<Record<string, unknown>>) : undefined;
+    };
+    const turnChain = new Map<number, HistoryChainItem[]>();
+    const turnToolsByCall = new Map<number, Map<string, HistoryChainItem>>();
+    const turnReplyTexts = new Map<number, number>(); // 该回合 content 含文本块(回复正文)的 assistant/message 数
+    const finishTool = (turn: number, callId: string | undefined, status: 'ok' | 'error' | 'stopped', error?: string, output?: string, exitCode?: number, signal?: string, meta?: unknown): void => {
+        const byCall = turnToolsByCall.get(turn);
+        let item: HistoryChainItem | undefined = callId ? byCall?.get(callId) : undefined;
+        if (!item) {
+            const arr = turnChain.get(turn) ?? [];
+            for (let i = arr.length - 1; i >= 0; i--) {
+                const it = arr[i];
+                if (it.kind === 'tool' && it.status === 'running') { item = it; break; }
+            }
+        }
+        if (item && item.kind === 'tool') {
+            item.status = status;
+            if (error) { item.error = error; }
+            if (output) { item.output = output; }
+            if (exitCode !== undefined) { item.exitCode = exitCode; }
+            if (signal !== undefined) { item.signal = signal; }
+            if (meta !== undefined) { item.meta = meta; }
+        }
+    };
+    for (const e of snap.events) {
+        const d = e.data ?? {};
+        const turn = typeof d['turn'] === 'number' ? (d['turn'] as number) : undefined;
+        if (turn === undefined) { continue; }
+        const blocks = e.type === 'assistant/message' ? contentBlocksOf(e) : undefined;
+        if (blocks) {
+            let hasText = false;
+            for (const b of blocks) {
+                const bt = b['type'];
+                if (bt === 'reasoning') {
+                    const text = typeof b['text'] === 'string' ? b['text'] : '';
+                    if (text.trim()) {
+                        let arr = turnChain.get(turn);
+                        if (!arr) { arr = []; turnChain.set(turn, arr); }
+                        arr.push({ kind: 'reasoning', text });
+                    }
+                } else if (bt === 'text') {
+                    if (typeof b['text'] === 'string' && (b['text'] as string).trim()) { hasText = true; }
+                } else if (bt === 'tool-call') {
+                    const name = typeof b['name'] === 'string' ? b['name'] : '';
+                    if (name) {
+                        const argsRaw = typeof b['arguments'] === 'string' ? b['arguments'] : undefined;
+                        const callId = b['id'] !== undefined ? String(b['id']) : undefined;
+                        let arr = turnChain.get(turn);
+                        if (!arr) { arr = []; turnChain.set(turn, arr); }
+                        const item: HistoryChainItem = { kind: 'tool', name, argsRaw, callId, status: 'running' };
+                        arr.push(item);
+                        if (callId) {
+                            let byCall = turnToolsByCall.get(turn);
+                            if (!byCall) { byCall = new Map(); turnToolsByCall.set(turn, byCall); }
+                            byCall.set(callId, item);
+                        }
+                    }
+                }
+            }
+            if (hasText) { turnReplyTexts.set(turn, (turnReplyTexts.get(turn) ?? 0) + 1); }
+        } else if (e.type === 'tool/result') {
+            const callId = d['callId'] !== undefined ? String(d['callId']) : undefined;
+            const errCode = (d['error'] as { code?: string } | undefined)?.code;
+            // 结果文本（供 Terminal 卡展示输出）：message.content 文本块/字符串
+            let output = ''
+            const msgObj = d['message'] as { content?: unknown } | undefined
+            const content = msgObj?.content
+            if (Array.isArray(content)) {
+                for (const b of content) {
+                    const bb = b as { type?: string; text?: unknown }
+                    if ((bb['type'] === 'text' || bb['type'] === 'tool-result') && typeof bb['text'] === 'string') output += bb['text']
+                }
+            } else if (typeof content === 'string') {
+                output = content
+            }
+            // 退出状态：从输出末尾 marker 解析（Terminal 卡 Pill 展示），并从展示输出剥掉 marker
+            const status = parseExitStatus(output)
+            finishTool(turn, callId, errCode ? 'error' : 'ok', errCode, status.output || undefined, status.exitCode, status.signal, d['meta']);
+        }
+    }
+    // 兜底状态(running→ok/stopped) + 计数 + 挂到该回合最后一条 assistant
+    for (const [turn, items] of turnChain) {
+        let toolCallCount = 0;
+        for (const it of items) {
+            if (it.kind !== 'tool') { continue; }
+            if (!(it.name === 'subagent' || it.name.startsWith('subagent_'))) { toolCallCount += 1; }
+            if (it.status === 'running') {
+                const kind = endStatus.get(turn);
+                it.status = kind && kind !== 'completed' ? 'stopped' : 'ok';
+            }
+        }
+        const idx = lastAsst.get(turn);
+        const counts: HistoryCounts = {
+            toolCallCount,
+            messageCount: Math.max(0, (turnReplyTexts.get(turn) ?? 0) - (finalTextTurns.has(turn) ? 1 : 0)),
+        };
+        if (idx !== undefined) {
+            const item = out[idx];
+            if (item && item.role === 'assistant') {
+                // 链首并入该回合的上下文注入项(系统提示词等)，再排 reasoning/tool
+                const ctxItems = turnContextItems.get(turn) ?? [];
+                const chain = ctxItems.length > 0 ? [...ctxItems, ...items] : items;
+                if (chain.length > 0) { item.chain = chain; }
+                item.counts = counts;
+            }
+        }
+    }
     return out;
 }
 
+/**
+ * 当前会话的工作区指令（系统提示词，agent-instructions 上下文注入）。
+ * 扫 follow 快照 events，取最后一次 agent-instructions 注入的 content 与 label（工作区指令文件路径）。
+ * 无/无内容 → null（UI 左上角不显示）。
+ */
+export async function getSystemPrompt(sessionId: string): Promise<{ label: string | null; content: unknown[] } | null> {
+    const snap = await readFollowSnapshot(sessionId);
+    let latest: { label: string | null; content: unknown[] } | null = null;
+    for (const e of snap.events) {
+        if (!isContextMessage(e)) { continue; }
+        const source = e.data?.['source'];
+        const rec = source && typeof source === 'object' ? source as Record<string, unknown> : undefined;
+        if (rec?.['kind'] !== 'agent-instructions') { continue; }
+        const provenance = contextProvenance(source);
+        const content = (Array.isArray(e.data?.['content']) ? e.data?.['content'] : []) as unknown[];
+        if (content.length > 0) {
+            latest = { label: provenance.label, content };
+        }
+    }
+    return latest;
+}
 /**
  * 会话核心投影（适配 dsh v0.1.2-rc.1）。
  * 上游：无 `session.history` 投影；经 `session/follow` 快照的 projections.values 返回。

@@ -2,18 +2,19 @@
 // DOM 结构与旧 index.html 骨架、类名、图标逐一对应,沿用全局 VSCode 主题 CSS。
 // 顶部 ChatApp 不读信号 → 挂载后不整体重渲;#titlebar / #dshModal 等命令式子树因此不被 Preact 覆写。
 import { html } from 'htm/preact'
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
-import type { ChatStore, ChatRow, StepModel } from '../core/store/chat'
-import type { ImageAttachment, QuestionSpec } from '../core/protocol'
-import { renderMd } from '../core/markdown'
+import { useEffect, useRef, useState } from 'preact/hooks'
+import type { ChatStore } from '../core/store/chat'
+import type { ImageAttachment } from '../core/protocol'
 import { MODE_NAMES, DANGEROUS_PERMS } from '../core/format'
 import { showDialog } from '../modal'
-import { TurnStats } from './TurnStats'
 import { SearchPicker } from './SearchPicker'
 import { ModelPicker } from './ModelPicker'
 import { useTriggerMenu } from '../core/trigger/useTrigger'
 import { slashTrigger } from '../core/trigger/slash'
 import { atTrigger } from '../core/trigger/at'
+import { MessageList } from './message/MessageList'
+import { SystemPromptEntry } from './message/SystemPromptEntry'
+import { QuestionDialog } from './message/QuestionDialog'
 
 // goal chip 的阶段中文标签（与官方 GoalPhase 对应；complete 时不显示 chip）
 const GOAL_PHASE_LABEL: Record<string, string> = {
@@ -37,236 +38,6 @@ function Welcome({ store }: { store: ChatStore }) {
     <div class="suggestions">
       ${sugg.map(([label, p]) => html`<button class="suggestion" key=${p} onClick=${() => store.suggestion(p)}>${label}</button>`)}
     </div>
-  </div>`
-}
-
-// ---------------- 思维链 ----------------
-function Thinking({ row }: { row: Extract<ChatRow, { kind: 'assistant' }> }) {
-  if (row.done) {
-    if (row.stepCount === 0 && row.toolCount === 0) return null
-    const parts: string[] = []
-    if (row.stepCount > 0) parts.push(row.stepCount + ' 步')
-    if (row.toolCount > 0) parts.push(row.toolCount + ' 个工具')
-    return html`<div class="thinking"><div class="acts"><div class="summary">🤔 已思考 · ${parts.join(' · ')}</div></div></div>`
-  }
-  const steps = row.steps
-  if (!row.thinkingVisible && steps.length === 0 && !row.text) return null
-  return html`<div class="thinking"><div class="acts">
-    ${steps.length === 0
-      ? html`<div class="act thinking-dots">🧠 思考中…</div>`
-      : steps.map(
-          (s: StepModel) => html`<div class="step-box" key=${s.step}>
-              <div class="step-head">${s.step >= 1 ? `第 ${s.step} 步` : '思考'}</div>
-              ${s.reason ? html`<div class="step-reasoning">${s.reason}</div>` : null}
-              ${s.tools.length > 0
-                ? html`<div class="step-tools">${s.tools.map((n) => html`<span class="tool-chip" key=${n}>🛠 ${n}</span>`)}</div>`
-                : null}
-            </div>`
-        )}
-  </div></div>`
-}
-
-function RowMeta({
-  time,
-  onCopy,
-  onRegen,
-  copyable,
-  regenable,
-  hideRegen,
-  extraActions,
-}: {
-  time?: string
-  onCopy?: () => void
-  onRegen?: () => void
-  copyable: boolean
-  regenable: boolean
-  /** 隐藏“重新生成”（用户提问行只保留复制） */
-  hideRegen?: boolean
-  /** 追加在“重新生成”按钮之后的行内动作（assistant 用量/用时，顺序用量→用时） */
-  extraActions?: unknown
-}) {
-  return html`<div class="msg-meta"><span class="time">${time ?? ''}</span><span class="msg-actions">
-    <button data-act="copy" title="复制" disabled=${!copyable} onClick=${onCopy}>⧉</button>
-    ${hideRegen ? null : html`<button data-act="regenerate" title="重新生成" disabled=${!regenable} onClick=${onRegen}>⟳</button>`}
-    ${extraActions}
-  </span></div>`
-}
-
-function UserMessage({ row, store, latest }: { row: Extract<ChatRow, { kind: 'user' }>; store: ChatStore; latest?: boolean }) {
-  return html`<div class="msg user${latest ? ' latest' : ''}"><div class="col"><div class="name"></div><div class="body">
-    ${row.refs && row.refs.length > 0
-      ? html`<div class="user-refs">${row.refs.map(
-          (r) => html`<span class="msg-ref-chip" key=${r.label + r.kind}>
-            <span class="ficon codicon codicon-${r.kind === 'directory' ? 'folder-opened' : r.kind === 'session' ? 'comment-discussion' : 'file'}"></span>${r.label}</span>`
-        )}</div>`
-      : null}
-    ${row.text ? html`<div class="user-text">${row.text}</div>` : null}
-    ${row.images.map(
-      (img: ImageAttachment) =>
-        html`<div class="user-img" key=${img.name}><img src=${`data:${img.mediaType};base64,${img.data}`} alt=${img.name || '图片'} title=${img.name || ''} /></div>`
-    )}
-  </div>
-    ${RowMeta({
-      time: row.time,
-      copyable: !!row.text,
-      onCopy: () => store.copy(row.text),
-      regenable: !!row.text,
-      hideRegen: true, // 提问行只保留复制
-      onRegen: () => store.regenerate(row.text, row.images),
-    })}
-  </div></div>`
-}
-
-function AssistantMessage({ row, store, latest }: { row: Extract<ChatRow, { kind: 'assistant' }>; store: ChatStore; latest?: boolean }) {
-  const bodyHtml = useMemo(() => renderMd(row.text), [row.text])
-  return html`<div class="msg assistant${latest ? ' latest' : ''}"><div class="col"><div class="name"></div>
-    ${Thinking({ row })}
-    <div class="body" dangerouslySetInnerHTML=${{ __html: bodyHtml }}></div>
-    ${row.endMsg ? html`<div class="end-note">⚠ ${row.endMsg}</div>` : null}
-    ${row.status ? html`<div class="status-badge">${row.status}</div>` : null}
-    ${RowMeta({
-      time: row.time,
-      copyable: !!row.text,
-      onCopy: () => store.copy(row.text),
-      regenable: !!row.prompt && row.done,
-      onRegen: () => row.prompt && store.regenerate(row.prompt),
-      // 用量/用时图标排在“重新生成”按钮之后（顺序：用量 → 用时）
-      extraActions: row.usageRaw ? html`<${TurnStats} usage=${row.usageRaw} />` : undefined,
-    })}
-  </div></div>`
-}
-
-function ApprovalCard({ row, store }: { row: Extract<ChatRow, { kind: 'approval' }>; store: ChatStore }) {
-  return html`<div class="approval">
-    <div class="appr-info">
-      <span class="appr-title">⚠ 需要批准${row.toolName ? `：${row.toolName}` : ''}</span>
-      ${row.description && row.description !== '需要授权操作' ? html`<div class="appr-reason">${row.description}</div>` : null}
-    </div>
-    <button class="allow" onClick=${() => store.answerApproval(row.approvalId, true, row.key)}>允许</button>
-    <button class="reject" onClick=${() => store.answerApproval(row.approvalId, false, row.key)}>拒绝</button>
-  </div>`
-}
-
-interface AnswerEntry {
-  id: string
-  selected: string[]
-  custom?: string
-}
-
-function QuestionCard({ row, store }: { row: Extract<ChatRow, { kind: 'question' }>; store: ChatStore }) {
-  const init = (): AnswerEntry[] =>
-    row.questions.map((q) => ({ id: q.id, selected: [], custom: undefined }))
-  const [answers, setAnswers] = useState<AnswerEntry[]>(init)
-  const [free, setFree] = useState<Record<string, string>>({})
-  const update = (id: string, fn: (e: AnswerEntry) => AnswerEntry): void =>
-    setAnswers((prev) => prev.map((e) => (e.id === id ? fn(e) : e)))
-  const toggleOpt = (q: QuestionSpec, entry: AnswerEntry, label: string): void => {
-    if (q.multiSelect) {
-      update(entry.id, (e) => ({
-        ...e,
-        selected: e.selected.includes(label) ? e.selected.filter((s) => s !== label) : [...e.selected, label],
-      }))
-    } else {
-      update(entry.id, (e) => ({ ...e, selected: [label] }))
-    }
-  }
-  const inputChange = (id: string, value: string): void => {
-    setFree((prev) => ({ ...prev, [id]: value }))
-    update(id, (e) => ({ ...e, custom: value.trim() || undefined }))
-  }
-  const submit = (): void => store.submitQuestion(row.key, row.rpcId, row.sessionId, answers)
-  const cancel = (): void => store.cancelQuestion(row.key, row.rpcId, row.sessionId)
-  const disabled = row.disabled
-  return html`<div class="question">
-    <div class="q-title">❓ 需要你确认</div>
-    ${row.questions.map((q, qi) => {
-      const entry = answers[qi]
-      const isSelected = (label: string): boolean => entry?.selected.includes(label) ?? false
-      return html`<div class="q-block" key=${q.id}>
-        ${q.header ? html`<div class="q-header">${q.header}</div>` : null}
-        <div class="q-text">${q.question}</div>
-        ${q.detail ? html`<div class="q-detail">${q.detail}</div>` : null}
-        ${q.options && q.options.length > 0
-          ? html`<div class="q-options">${q.options.map((o) =>
-              html`<button class=${'q-option' + (isSelected(o.label) ? ' selected' : '')} key=${o.label}
-                onClick=${() => entry && toggleOpt(q, entry, o.label)}>
-                <span class="q-opt-label">${o.label}</span>
-                ${o.description ? html`<span class="q-opt-desc">${o.description}</span>` : null}
-              </button>`
-            )}</div>`
-          : html`<input class="q-input" value=${free[q.id] ?? ''} placeholder="输入回答…" disabled=${disabled}
-              onInput=${(e: Event) => inputChange(q.id, (e.target as HTMLInputElement).value)} />`}
-      </div>`
-    })}
-    <div class="q-bar">
-      <button class="q-submit" disabled=${disabled} onClick=${submit}>回答</button>
-      <button class="q-cancel" disabled=${disabled} onClick=${cancel}>取消</button>
-    </div>
-  </div>`
-}
-
-function Notice({ row }: { row: Extract<ChatRow, { kind: 'notice' }> }) {
-  // 对话内命令结果/错误行：失败红点+红字；成功正常色（对齐官方错误行；不走 VSCode 通知）
-  const tone = row.tone === 'ok' ? 'ok' : 'error'
-  return html`<div class="msg assistant"><div class="col"><div class="name"></div>
-    <div class="body"><div class=${'user-text notice-line notice-' + tone}><span class="notice-dot">●</span>
-      ${row.command ? html`<span class="notice-cmd">${row.command} · </span>` : null}<span class="notice-msg">${row.text}</span></div></div>
-  </div></div>`
-}
-
-function MessageList({ store }: { store: ChatStore }) {
-  const ref = useRef<HTMLDivElement | null>(null)
-  // 智能跟随滚动：是否粘在底部由「用户滚动手势」决定(stickRef)，而非每条新消息的瞬时距离。
-  //   - stickRef=true(初始/发送/滚回底部)：新消息/流式持续自动到底，大段内容也粘得住；
-  //   - stickRef=false(用户向上翻读旧内容)：不抢阅读位置，内容照常累积在下方；
-  //   - 主动发送/重新生成/恢复会话(store.scrollPend>0) 与手动滚回底部 → 恢复跟随。
-  const stickRef = useRef(true)
-  // 上次滚动位置：按“方向”判断用户是否在向上拖——一旦向上滚(哪怕 1px)立即解除跟随，
-  // 不等离开底部阈值，避免贴底跟随“抢手柄”；只有真正回到底部才恢复跟随。
-  const lastTopRef = useRef(0)
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    if (store.scrollPend.value > 0) {
-      el.scrollTop = el.scrollHeight
-      store.scrollPend.value = 0
-      stickRef.current = true
-      return
-    }
-    if (stickRef.current) {
-      el.scrollTop = el.scrollHeight
-    }
-  })
-  if (store.view.value !== 'chat') return null
-  const list = store.messages.value
-  return html`<div id="messages" ref=${ref}
-    onScroll=${() => {
-      const el = ref.current
-      if (!el) return
-      if (el.scrollTop < lastTopRef.current) {
-        // 用户正在向上拖 → 立即解除跟随（流式新内容照常累积在下方，不抢位置）
-        stickRef.current = false
-      } else if (el.scrollHeight - el.scrollTop - el.clientHeight < 24) {
-        // 已回到底部 → 恢复跟随
-        stickRef.current = true
-      }
-      lastTopRef.current = el.scrollTop
-    }}>
-    ${list.map((row, i) => {
-      const latest = i === list.length - 1
-      switch (row.kind) {
-        case 'user':
-          return html`<${UserMessage} key=${row.key} row=${row} store=${store} latest=${latest} />`
-        case 'assistant':
-          return html`<${AssistantMessage} key=${row.key} row=${row} store=${store} latest=${latest} />`
-        case 'approval':
-          return html`<${ApprovalCard} key=${row.key} row=${row} store=${store} />`
-        case 'question':
-          return html`<${QuestionCard} key=${row.key} row=${row} store=${store} />`
-        case 'notice':
-          return html`<${Notice} key=${row.key} row=${row} />`
-      }
-    })}
   </div>`
 }
 
@@ -390,7 +161,7 @@ function Popup({ store }: { store: ChatStore }) {
     }
     modelPopup = html`<div id="modelPopup" class="popup" style=${style('modelBtn', false)}>
       ${sel.modelFailures.length > 0
-        ? html`<div class="popup-fail" title=${JSON.stringify(sel.modelFailures)}>⚠ ${sel.modelFailures.length} 组模型加载失败</div>`
+        ? html`<div class="popup-fail" title=${JSON.stringify(sel.modelFailures)}><span class="codicon codicon-warning inline-ico"></span>${sel.modelFailures.length} 组模型加载失败</div>`
         : null}
       <${SearchPicker} title="模型" options=${modelOptions} currentId=${currentModelValue}
         onPick=${pickModel} onClose=${() => store.closePopups()} emptyText="没有可用的模型" />
@@ -421,6 +192,7 @@ function Popup({ store }: { store: ChatStore }) {
 function Composer({ store }: { store: ChatStore }) {
   const text = store.text.value
   const processing = store.processing.value
+  const busy = store.busy.value // 过渡态：恢复历史/切工作区时禁用输入
   const sel = store.sel.value
   const focusTick = store.focusTick.value
   const taRef = useRef<HTMLTextAreaElement | null>(null)
@@ -577,7 +349,7 @@ function Composer({ store }: { store: ChatStore }) {
   const plan = store.planState.value
   const goal = store.goalState.value
 
-  return html`<div id="composer"
+  return html`<div id="composer" class=${busy ? 'is-busy' : ''}
     onDragOver=${(e: Event) => e.preventDefault()}
     onDrop=${(e: DragEvent) => {
       e.preventDefault()
@@ -594,6 +366,12 @@ function Composer({ store }: { store: ChatStore }) {
     }}>
     <${Popup} store=${store} />
     ${trigger.popup}
+    ${busy
+      ? html`<div class="composer-busy" aria-hidden="true">
+          <span class="codicon codicon-loading codicon-modifier-spin"></span>
+          ${busy === 'switching' ? '正在切换…' : '正在加载会话…'}
+        </div>`
+      : null}
     <${AttachmentBar} store=${store} />
     <div id="inputbox">
       ${store.refs.value.length > 0
@@ -648,7 +426,7 @@ function Composer({ store }: { store: ChatStore }) {
           </button>
           <span id="modeLabel" class="sel-label">${modeName()}</span>
         </div>
-        <button id="send" title=${processing ? '终止' : '发送'} class=${processing ? 'stop' : ''} disabled=${!processing && !canSend}
+        <button id="send" title=${processing ? '终止' : busy ? '加载中…' : '发送'} class=${processing ? 'stop' : ''} disabled=${!processing && (!canSend || !!busy)}
           onClick=${() => (processing ? store.cancel() : store.send())}>
           <svg class="send-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 14V3"/><path d="M3.5 6.5 8 2l4.5 4.5"/></svg>
           <svg class="stop-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="3" y="3" width="10" height="10" rx="1"/></svg>
@@ -726,7 +504,9 @@ function TitlebarShell() {
 function ChatApp({ store }: { store: ChatStore }) {
   return html`${TitlebarShell()}
     <${Welcome} store=${store} />
+    <${SystemPromptEntry} store=${store} />
     <${MessageList} store=${store} />
+    <${QuestionDialog} key=${store.pendingQuestion.value?.rpcId ?? 'none'} store=${store} />
     <${Composer} store=${store} />
     <${Statsbar} store=${store} />
     ${ModalShell()}`

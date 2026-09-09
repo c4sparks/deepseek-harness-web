@@ -7,6 +7,8 @@ import { computed, signal, type Signal } from '@preact/signals'
 import type { ChatHost } from '../host'
 import type {
   HostToViewMessage,
+  ViewActivity,
+  HistoryMessage,
   ImageAttachment,
   PermissionOption,
   QuestionSpec,
@@ -16,20 +18,65 @@ import type {
   SlashSkillInfo,
   AtFileRef,
   AtSessionRef,
+  LiveContext,
 } from '../protocol'
-import { friendlyToolName, formatStatsLine, formatMsgClock, turnStatusBadge, MODE_NAMES } from '../format'
+import { toolTitle, deriveToolSummary, formatStatsLine, formatMsgClock, turnStatusBadge, MODE_NAMES } from '../format'
 
 export { MODE_NAMES }
 
 // ---------- 消息行模型(不可变替换,组件用 stable key) ----------
-export interface StepModel {
-  step: number
-  reason: string
-  tools: string[]
+
+/** 一条 assistant 回合的过程动作（官方"过程折叠窗口"里的成员；reasoning 或 tool 各一条，按发生顺序）。 */
+export type ChainItem =
+  | { kind: 'reasoning'; key: number; step?: number; index?: number; text: string }
+  | {
+      kind: 'tool'
+      key: number
+      step?: number
+      callId?: string
+      name: string
+      title?: string
+      summary?: string
+      argsRaw?: string
+      status: 'running' | 'ok' | 'error' | 'stopped'
+      error?: string
+      /** tool/result 的结果文本（Terminal/Read 等展开卡展示输出） */
+      output?: string
+      /** 退出码（输出末尾 marker 解析；Terminal 卡 Pill 展示；输出已剥 marker） */
+      exitCode?: number
+      /** 终止信号名（[killed by signal: X]；优先于退出码） */
+      signal?: string
+      /** tool/result.data.meta 原文透传（web_fetch statusCode / web_search sources/answer 等卡数据源） */
+      meta?: unknown
+      /** ask_user_question 的 RPC 交互数据（chatQuestion 配对挂到该工具行：rpcId/sessionId/带选项的 questions） */
+      question?: { rpcId?: string; sessionId?: string; questions?: QuestionSpec[] }
+    }
+  | {
+      kind: 'context'
+      key: number
+      content: unknown[]
+      source: unknown
+      provenance: { role: 'inject' | 'recall'; label: string | null }
+      form: string | null
+    }
+
+/** 过程折叠计数（官方口径：toolCallCount=非 subagent 工具调用数；messageCount=最终答复前带文本的中间 assistant 消息数） */
+export interface TurnCounts {
+  toolCallCount: number
+  messageCount: number
 }
 
 export type ChatRow =
   | { kind: 'user'; key: number; text: string; images: ImageAttachment[]; time: string; refs?: Array<{ kind: RefChip['kind']; label: string }> }
+  | {
+      kind: 'context'
+      key: number
+      time?: string
+      content: unknown[]
+      source: unknown
+      provenance: { role: 'inject' | 'recall'; label: string | null }
+      form: string | null
+    }
   | {
       kind: 'assistant'
       key: number
@@ -44,12 +91,12 @@ export type ChatRow =
       endMsg?: string
       /** 停止状态展示文案（已停止 · Stopped），仅被停止/中断/取消的回答有 */
       status?: string
-      thinkingVisible: boolean
-      collapsed: boolean
-      stepCount: number
-      toolCount: number
-      currentOpenStep: number
-      steps: StepModel[]
+      /** 过程链：思考/工具按发生顺序排列（折叠窗口成员） */
+      chain: ChainItem[]
+      /** 过程折叠计数（官方口径）；定稿前为 0，chatDone 附 counts 后回填 */
+      counts: TurnCounts
+      /** 正文首 chunk 是否已到达（正文开始 = 过程定稿，链可收起） */
+      bodyStarted: boolean
     }
   | { kind: 'approval'; key: number; approvalId: string; description: string; toolName?: string }
   | { kind: 'question'; key: number; rpcId: string; sessionId?: string; questions: QuestionSpec[]; disabled: boolean }
@@ -84,6 +131,8 @@ export interface ChatStore {
   messages: Signal<ChatRow[]>
   view: Signal<'welcome' | 'chat'>
   processing: Signal<boolean>
+  /** 过渡态：恢复历史/切工作区等无明确进度等待（驱动 composer 禁用 + 占位/骨架）。null=空闲 */
+  busy: Signal<'loading' | 'switching' | null>
   text: Signal<string>
   attachments: Signal<string[]>
   images: Signal<ImageAttachment[]>
@@ -101,6 +150,10 @@ export interface ChatStore {
   planState: Signal<{ active: boolean; pending: boolean } | null>
   /** 会话目标(投影 goal)；null=无目标/能力缺失。goal bar 常驻条数据源（形状按官方 GoalProjection） */
   goalState: Signal<{ objective: string; phase: string } | null>
+  /** 当前会话的系统提示词（工作区指令 agent-instructions），左上角常驻入口数据源；null=无 */
+  systemPrompt: Signal<{ label: string | null; content: unknown[] } | null>
+  /** 官方 waterfall 提问弹窗（输入框上方）：pending 时让用户选择/提交/取消/关闭；null=无 */
+  pendingQuestion: Signal<{ rpcId?: string; sessionId?: string; questions: QuestionSpec[] } | null>
   /** 主动触底请求计数：用户发送/重新生成/恢复会话时 +1（MessageList 消费后清零并强制滚到底） */
   scrollPend: Signal<number>
   permNameOf: Map<string, string>
@@ -148,6 +201,7 @@ export function createChatStore(host: ChatHost): ChatStore {
   const messages = signal<ChatRow[]>([])
   const view = computed<'welcome' | 'chat'>(() => (messages.value.length === 0 ? 'welcome' : 'chat'))
   const processing = signal(false)
+  const busy = signal<'loading' | 'switching' | null>(null)
   const text = signal('')
   const attachments = signal<string[]>([])
   const images = signal<ImageAttachment[]>([])
@@ -160,6 +214,8 @@ export function createChatStore(host: ChatHost): ChatStore {
   const atCatalog = signal<{ query: string; files: AtFileRef[]; sessions: AtSessionRef[] } | null>(null)
   const planState = signal<{ active: boolean; pending: boolean } | null>(null)
   const goalState = signal<{ objective: string; phase: string } | null>(null)
+  const systemPrompt = signal<{ label: string | null; content: unknown[] } | null>(null)
+  const pendingQuestion = signal<{ rpcId?: string; sessionId?: string; questions: QuestionSpec[] } | null>(null)
   const scrollPend = signal(0)
   let slashListInflight = false
   // 「@」候选拉取：单飞行 + 最新查询 wins（输入中不断打 @ 只保留最后查询）
@@ -200,6 +256,7 @@ export function createChatStore(host: ChatHost): ChatStore {
     refs.value = []
     text.value = ''
     processing.value = false
+    busy.value = null
     statsLine.value = { text: '', title: '' }
     openPopup.value = null
     // 新会话后 slash 目录需重新拉取(会话内命令/技能可能不同)
@@ -207,6 +264,8 @@ export function createChatStore(host: ChatHost): ChatStore {
     atCatalog.value = null
     planState.value = null
     goalState.value = null
+    systemPrompt.value = null
+    pendingQuestion.value = null
     slashListInflight = false
     atInflight = false
     atPendingQuery = null
@@ -228,12 +287,9 @@ export function createChatStore(host: ChatHost): ChatStore {
         prompt,
         text: '',
         stats: '',
-        thinkingVisible: true,
-        collapsed: false,
-        stepCount: 0,
-        toolCount: 0,
-        currentOpenStep: 1,
-        steps: [],
+        chain: [],
+        counts: { toolCallCount: 0, messageCount: 0 },
+        bodyStarted: false,
       })
       idx = messages.value.length - 1
     } else if (prompt) {
@@ -253,33 +309,89 @@ export function createChatStore(host: ChatHost): ChatStore {
   function beginAssistant(prompt = ''): void {
     ensureAssistant(prompt)
   }
-  function activity(a: { type?: string; step?: number; tool?: string } | undefined): void {
+  /** 追加一条过程动作到当前 assistant 行链尾。 */
+  const pushChain = (row: Extract<ChatRow, { kind: 'assistant' }>, item: ChainItem): void => {
+    replace(row.key, { ...row, chain: [...row.chain, item] })
+  }
+  function activity(a: ViewActivity | undefined): void {
     if (!a) return
     const row = ensureAssistant()
     if (!row || row.kind !== 'assistant') return
-    if (a.type === 'step') {
-      const step = a.step ?? row.stepCount + 1
-      const next = {
-        ...row,
-        stepCount: row.stepCount + 1,
-        currentOpenStep: step,
-        thinkingVisible: true,
-        steps: upsertStep(row.steps, step),
-      }
-      replace(row.key, next)
-    } else if (a.type === 'tool') {
-      const step = a.step ?? row.currentOpenStep
-      const name = friendlyToolName(a.tool ?? '')
-      const steps = upsertTool(row.steps, step, name)
-      replace(row.key, { ...row, toolCount: row.toolCount + 1, thinkingVisible: true, steps })
+    if (a.type === 'tool') {
+      // 追加一条工具调用：raw name + 标题 + 参数摘要；流式中 status running，toolDone 到达后置 ok/error
+      const name = a.tool ?? a.name ?? ''
+      if (!name) return
+      pushChain(row, {
+        kind: 'tool',
+        key: rowKey++,
+        step: a.step,
+        callId: a.callId,
+        name,
+        title: toolTitle(name),
+        summary: deriveToolSummary(a.argsRaw, name),
+        argsRaw: a.argsRaw,
+        status: 'running',
+      })
+    } else if (a.type === 'toolDone') {
+      // 按 callId 精确落位；无 callId 时回落标记该 step 的最后一个 running（官方每步工具收敛）
+      let matched = false
+      const chain = row.chain.map((c): ChainItem => {
+        if (c.kind !== 'tool' || c.status !== 'running') return c
+        if (matched) return c
+        const hit = (a.callId && c.callId === a.callId) || (!a.callId && !c.callId && c.step === a.step)
+        if (!hit) return c
+        matched = true
+        return {
+          ...c,
+          status: (a.error ? 'error' : 'ok') as 'ok' | 'error',
+          error: a.error,
+          output: a.output ?? c.output,
+          exitCode: a.exitCode ?? c.exitCode,
+          signal: a.signal ?? c.signal,
+          meta: a.meta ?? c.meta,
+        }
+      })
+      replace(row.key, { ...row, chain })
     }
+    // type 'step'：无需额外动作——reasoning/tool 已按事件顺序落链
   }
-  function reasoning(rText: string, step?: number): void {
+  /** 官方 waterfall 提问弹窗（输入框上方）：pending 时置为弹窗数据；回答/取消/关闭后清空。 */
+  function openQuestionDialog(rpcId: string | undefined, sessionId: string | undefined, questions: QuestionSpec[]): void {
+    pendingQuestion.value = { rpcId, sessionId, questions }
+  }
+  /** 把一次上下文注入并入当前 assistant 的 process 链（与思考/工具同一行链，折叠时仅在展开可见）。
+   *  系统提示词(agent-instructions, form==='instructions')走左上角常驻入口，不入链（否则只含它的链展开为空）。 */
+  function contextRow(c: LiveContext | undefined, time?: number): void {
+    void time
+    if (!c) return
+    if (c.form === 'instructions') return
     const row = ensureAssistant()
     if (!row || row.kind !== 'assistant') return
-    const at = step ?? row.currentOpenStep
-    const steps = row.steps.map((s) => (s.step === at ? { ...s, reason: s.reason + rText } : s))
-    replace(row.key, { ...row, steps, thinkingVisible: true })
+    pushChain(row, {
+      kind: 'context',
+      key: rowKey++,
+      content: c.content,
+      source: c.source,
+      provenance: c.provenance,
+      form: c.form,
+    })
+  }
+  function reasoning(rText: string, step?: number, index?: number): void {
+    if (!rText) return
+    const row = ensureAssistant()
+    if (!row || row.kind !== 'assistant') return
+    const chain = row.chain
+    const tail = chain[chain.length - 1]
+    // 同一段(step+index)持续追加；否则开新的 reasoning 段（每段=一次模型推理，官方按块分行）
+    const same =
+      tail !== undefined &&
+      tail.kind === 'reasoning' &&
+      tail.step === step &&
+      (index === undefined || tail.index === index || tail.index === undefined)
+    const next = same
+      ? chain.map((c, i): ChainItem => (i === chain.length - 1 && c.kind === 'reasoning' ? { ...c, text: c.text + rText } : c))
+      : [...chain, { kind: 'reasoning' as const, key: rowKey++, step, index, text: rText }]
+    replace(row.key, { ...row, chain: next })
   }
   function chunk(delta: string): void {
     const idx = activeAssistantIndex()
@@ -292,25 +404,24 @@ export function createChatStore(host: ChatHost): ChatStore {
         prompt: '',
         text: delta,
         stats: '',
-        thinkingVisible: true,
-        collapsed: false,
-        stepCount: 0,
-        toolCount: 0,
-        currentOpenStep: 1,
-        steps: [],
+        chain: [],
+        counts: { toolCallCount: 0, messageCount: 0 },
+        bodyStarted: delta !== '',
       })
       return
     }
     const row = messages.value[idx]
     if (row.kind === 'assistant') {
-      replace(row.key, { ...row, text: row.text + delta })
+      // 正文开始 = 过程定稿：链允许自动收起（组件据 bodyStarted/done 决定折叠）
+      replace(row.key, { ...row, text: row.text + delta, bodyStarted: row.bodyStarted || delta !== '' })
     }
   }
   function finish(
     stats?: Record<string, unknown>,
     time?: number,
     text?: string,
-    end?: { kind?: string; message?: string }
+    end?: { kind?: string; message?: string },
+    counts?: { toolCallCount?: number; messageCount?: number }
   ): void {
     const idx = activeAssistantIndex()
     if (idx === -1) return
@@ -325,8 +436,16 @@ export function createChatStore(host: ChatHost): ChatStore {
     const status = turnStatusBadge(end?.kind) || undefined
     // error 时把服务端返回的原始错误消息附上（不翻译）
     const endMsg = end?.kind === 'error' && end?.message ? end.message : ''
+    // 收敛仍 running 的工具：正常完成但缺 result → ok；被打断/出错 → stopped（模型通用兜底）
+    const abnormal = !!end?.kind && end.kind !== 'completed'
+    const chain = row.chain.map((c): ChainItem =>
+      c.kind === 'tool' && c.status === 'running'
+        ? { ...c, status: (abnormal ? 'stopped' : 'ok') as 'ok' | 'stopped', error: c.error }
+        : c
+    )
     replace(row.key, {
       ...row,
+      chain,
       done: true,
       time: rowTime,
       text: rowText,
@@ -334,22 +453,13 @@ export function createChatStore(host: ChatHost): ChatStore {
       status,
       stats: '', // 用量/用时已由图标+弹窗呈现，不再生成独立脚注文本
       usageRaw: stats ? { ...stats } : undefined,
-      collapsed: true,
-      thinkingVisible: false,
+      counts: {
+        toolCallCount: counts?.toolCallCount ?? row.counts.toolCallCount,
+        messageCount: counts?.messageCount ?? row.counts.messageCount,
+      },
+      bodyStarted: true,
     })
     processing.value = false
-  }
-
-  // ---------- 思维链小工具 ----------
-  function upsertStep(steps: StepModel[], step: number): StepModel[] {
-    if (steps.some((s) => s.step === step)) return steps
-    const next = [...steps, { step, reason: '', tools: [] as string[] }]
-    next.sort((a, b) => a.step - b.step)
-    return next
-  }
-  function upsertTool(steps: StepModel[], step: number, name: string): StepModel[] {
-    const base = upsertStep(steps, step)
-    return base.map((s) => (s.step === step && !s.tools.includes(name) ? { ...s, tools: [...s.tools, name] } : s))
   }
 
   // ---------- 发送 / 停止 ----------
@@ -614,16 +724,19 @@ export function createChatStore(host: ChatHost): ChatStore {
     sessionId: string | undefined,
     answers: Array<{ id: string; selected: string[]; custom?: string }>
   ): void {
-    removeWhere((r) => r.kind === 'question' && r.key === key)
+    void key
+    pendingQuestion.value = null // 回答后关闭弹窗
     host.post({ type: 'questionResponse', rpcId, sessionId, answers })
   }
   function cancelQuestion(key: number, rpcId: string | undefined, sessionId: string | undefined): void {
-    // 先禁用按钮、不删卡;host 确认(questionClosed)后再移除
-    messages.value = messages.value.map((r) => (r.kind === 'question' && r.key === key ? { ...r, disabled: true } : r))
+    void key
+    pendingQuestion.value = null // 取消/关闭后收起弹窗
     host.post({ type: 'questionCancel', rpcId, sessionId })
   }
   function closeQuestion(rpcId: string | undefined): void {
-    removeWhere((r) => r.kind === 'question' && r.rpcId === (rpcId ?? ''))
+    // waterfall 提问确认后关闭（清除历史独立 question 行兜底 + 弹窗）
+    void rpcId
+    pendingQuestion.value = null
   }
 
   const showNotice = (msgText: string, command?: string, tone: 'error' | 'ok' = 'error'): void => {
@@ -631,25 +744,7 @@ export function createChatStore(host: ChatHost): ChatStore {
   }
 
   // ---------- 历史恢复 ----------
-  function renderHistory(
-    list: Array<{
-      role: string
-      text: string
-      time?: number
-      provider?: string
-      model?: string
-      inputTokens?: number
-      outputTokens?: number
-      cacheReadTokens?: number
-      cacheWriteTokens?: number
-      reasoningTokens?: number
-      wallSec?: number
-      ttftSec?: number
-      tps?: number
-      status?: string
-    }>,
-    sessionId: string | undefined
-  ): void {
+  function renderHistory(list: HistoryMessage[], sessionId: string | undefined): void {
     reset()
     void sessionId
     let lastUser = ''
@@ -657,6 +752,9 @@ export function createChatStore(host: ChatHost): ChatStore {
       if (item.role === 'user') {
         lastUser = item.text
         addUser(item.text, [], item.time) // 恢复历史:显示 dsh 快照里该消息的原时刻
+      } else if (item.role === 'context') {
+        // 上下文注入并入 assistant 链（session 已归并），不再作为独立行
+        continue
       } else if (item.role === 'assistant') {
         // 该条消息自带 usage/provider/model → 用量图标可显示（计时缺回合事件，历史无 TPS/TTFT）
         const u: Record<string, unknown> = {}
@@ -686,12 +784,41 @@ export function createChatStore(host: ChatHost): ChatStore {
           stats: '',
           usageRaw: hasUsage ? u : undefined,
           status: item.status,
-          thinkingVisible: false,
-          collapsed: true,
-          stepCount: 0,
-          toolCount: 0,
-          currentOpenStep: 1,
-          steps: [],
+          // 历史链：宿主快照重放出 reasoning/context/tool，恢复后可折叠展开
+          chain: (item.chain ?? []).map(
+            (h): ChainItem =>
+              h.kind === 'reasoning'
+                ? { kind: 'reasoning', key: rowKey++, text: h.text }
+                : h.kind === 'context'
+                  ? {
+                      kind: 'context',
+                      key: rowKey++,
+                      content: h.content,
+                      source: h.source,
+                      provenance: h.provenance,
+                      form: h.form,
+                    }
+                  : {
+                      kind: 'tool',
+                      key: rowKey++,
+                      callId: h.callId,
+                      name: h.name,
+                      title: h.title ?? toolTitle(h.name),
+                      summary: h.summary ?? deriveToolSummary(h.argsRaw, h.name),
+                      argsRaw: h.argsRaw,
+                      status: h.status,
+                      error: h.error,
+                      output: h.output,
+                      exitCode: h.exitCode,
+                      signal: h.signal,
+                      meta: h.meta,
+                    }
+          ),
+          counts: {
+            toolCallCount: item.counts?.toolCallCount ?? 0,
+            messageCount: item.counts?.messageCount ?? 0,
+          },
+          bodyStarted: true,
         })
       }
     }
@@ -709,7 +836,10 @@ export function createChatStore(host: ChatHost): ChatStore {
         activity(m.activity)
         break
       case 'chatReasoning':
-        reasoning(m.text ?? '', m.step)
+        reasoning(m.text ?? '', m.step, m.index)
+        break
+      case 'chatContext':
+        contextRow(m.context, m.context?.time)
         break
       case 'chatApproval':
         push({
@@ -721,14 +851,8 @@ export function createChatStore(host: ChatHost): ChatStore {
         })
         break
       case 'chatQuestion':
-        push({
-          kind: 'question',
-          key: rowKey++,
-          rpcId: m.rpcId ?? '',
-          sessionId: m.sessionId,
-          questions: m.questions ?? [],
-          disabled: false,
-        })
+        // 官方 waterfall 提问弹窗（输入框上方）：pending 时置弹窗数据，用户选择/提交/取消/关闭。
+        openQuestionDialog(m.rpcId, m.sessionId, m.questions ?? [])
         break
       case 'questionClosed':
         closeQuestion(m.rpcId)
@@ -737,7 +861,7 @@ export function createChatStore(host: ChatHost): ChatStore {
         chunk(m.text ?? '')
         break
       case 'chatDone':
-        finish(m.stats, m.time, m.text, m.end)
+        finish(m.stats, m.time, m.text, m.end, m.counts)
         break
       case 'filePicked':
         if (m.path) addAttachment(m.path)
@@ -784,8 +908,14 @@ export function createChatStore(host: ChatHost): ChatStore {
       case 'chatHistory':
         renderHistory(m.messages ?? [], m.sessionId)
         break
+      case 'chatSystemPrompt':
+        systemPrompt.value = m.systemPrompt ?? null
+        break
       case 'clear':
         reset()
+        break
+      case 'busy':
+        busy.value = m.kind ?? null
         break
       case 'slashCatalog':
         slashCatalog.value = { commands: m.commands ?? [], skills: m.skills ?? [] }
@@ -827,6 +957,7 @@ export function createChatStore(host: ChatHost): ChatStore {
     messages,
     view,
     processing,
+    busy,
     text,
     attachments,
     images,
@@ -839,6 +970,8 @@ export function createChatStore(host: ChatHost): ChatStore {
     atCatalog,
     planState,
     goalState,
+    systemPrompt,
+    pendingQuestion,
     scrollPend,
     permNameOf,
     send,

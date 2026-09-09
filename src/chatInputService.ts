@@ -90,7 +90,13 @@ export class ChatInputService {
         if (!(await this.session.ensureRunning())) {
             return { ok: false, text: 'DSH 服务不可用，无法执行命令' };
         }
-        const sid = await this.session.getSession();
+        let sid: string;
+        try {
+            sid = await this.session.getSession();
+        } catch {
+            // 尚无工作区（服务无法建带归属的会话）：不向上抛，返回可读提示
+            return { ok: false, text: '请先选择工作区，再执行命令' };
+        }
         try {
             const exec = await runSessionCommand(sid, line);
             if (!exec || exec.result?.kind === 'error') {
@@ -113,7 +119,13 @@ export class ChatInputService {
         if (!(await this.session.ensureRunning())) {
             return { ok: false, unsupported: false, text: 'DSH 服务不可用，无法导出会话日志' };
         }
-        const sid = await this.session.getSession();
+        let sid: string;
+        try {
+            sid = await this.session.getSession();
+        } catch {
+            // 尚无工作区：不向上抛，返回可读提示（与上面 runCommand 一致）
+            return { ok: false, unsupported: false, text: '请先选择工作区，再导出会话日志' };
+        }
         try {
             const zip = await fetchSessionLogZipRpc(sid);
             return { ok: true, zip };

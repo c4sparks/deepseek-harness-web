@@ -1,0 +1,328 @@
+  /* 工具链（过程折叠：头部 + 明细；思考/工具行各自样式见文末追加段） */
+  .chain { font-size: 11.5px; color: var(--vscode-descriptionForeground, #888); margin: 2px 0 6px; }
+  .chain-summary {
+    display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+    border: none; background: none; color: inherit; padding: 2px 6px;
+    border-radius: 6px; cursor: pointer; font: inherit; font-size: 11.5px; text-align: left;
+  }
+  .chain-summary:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.22)); }
+  .chain-summary-ico { font-size: 12px; flex: none; color: var(--vscode-charts-blue, #4daafc); }
+  .chain-summary-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .chain-summary-chev { font-size: 12px; flex: none; opacity: 0.7; transition: transform 0.12s ease; }
+  .chain-detail { margin-top: 3px; display: flex; flex-direction: column; gap: 4px; }
+  /* 思考全文框：全文保留，截断只用 max-height+渐隐遮罩（peek/live/open，不删 DOM 文本） */
+  .chain-reason {
+    position: relative; margin: 1px 2px 2px; padding: 2px 8px;
+    white-space: pre-wrap; word-break: break-word; line-height: 1.55;
+    font-size: 11.5px; color: var(--vscode-descriptionForeground, #999);
+    border-radius: 5px; background: rgba(128,128,128,0.05);
+  }
+  .chain-reason.is-peek { max-height: 84px; overflow: hidden; cursor: pointer; }
+  .chain-reason.is-peek::after {
+    content: ''; position: absolute; inset: auto 0 0 0; height: 40px;
+    background: linear-gradient(transparent, var(--vscode-editor-background, #1e1e1e));
+    pointer-events: none;
+  }
+  .chain-reason.is-live { max-height: 160px; overflow-y: auto; }
+  .chain-reason.is-open { max-height: none; overflow: visible; cursor: pointer; }
+
+  /* 过程链（官方 turn-process 折叠）行内新件 */
+  .chain-live .chain-summary { cursor: default; }
+  .chain-reason-row { margin-top: 3px; }
+  .chain-item-title {
+    display: flex; align-items: center; gap: 5px; margin: 2px 0 1px;
+    font-size: 11.5px; font-weight: 600;
+    color: var(--vscode-descriptionForeground, #999);
+  }
+  .chain-item-title .codicon { font-size: 12px; }
+  .chain-tool-row {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px 7px; min-width: 0;
+    margin: 3px 0; padding: 3px 8px;
+    background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2)));
+    border: 1px solid transparent; border-radius: 6px;
+  }
+  .chain-tool-row.is-running { border-color: rgba(77, 170, 252, 0.45); }
+  .chain-tool-ico { font-size: 12px; color: var(--vscode-descriptionForeground, #999); flex: none; }
+  .chain-tool-title { font-size: 11.5px; font-weight: 600; color: var(--vscode-foreground, #ddd); }
+  .chain-tool-err { font-size: 11px; color: var(--vscode-errorForeground, #f14c4c); }
+  .chain-tool-status { font-size: 12px; margin-left: auto; flex: none; }
+  .chain-tool-status.is-ok { color: var(--vscode-charts-green, #89d185); }
+  .chain-tool-status.is-error { color: var(--vscode-errorForeground, #f14c4c); }
+  .chain-tool-status.is-running { color: var(--vscode-charts-blue, #4daafc); }
+  .chain-tool-status.is-stopped { color: var(--vscode-descriptionForeground, #999); opacity: 0.7; }
+  .chain-tool-sum {
+    flex-basis: 100%; min-width: 0;
+    color: var(--vscode-descriptionForeground, #999); font-size: 11px; line-height: 1.5;
+    white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
+    font-family: var(--vscode-editor-font-family, monospace);
+  }
+  /* Disclosure 行（思考/工具统一：头部 chevron 展开收起） */
+  .chain-disclosure { margin: 3px 0; }
+  .chain-row-head {
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    border: none; background: none; color: inherit; cursor: pointer;
+    font: inherit; font-size: 11.5px; padding: 2px 3px; border-radius: 5px; text-align: left;
+  }
+  .chain-row-head:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.22)); }
+  .chain-chev { font-size: 12px; flex: none; opacity: 0.7; transition: transform 0.12s ease; }
+  .chain-kind-ico { font-size: 12px; flex: none; color: var(--vscode-descriptionForeground, #999); }
+  .chain-row-title { font-weight: 600; color: var(--vscode-foreground, #ddd); }
+  .chain-disclosure-body { margin: 1px 0 2px; }
+  .chain-tool-json {
+    margin: 3px 2px; padding: 6px 8px; overflow-x: auto;
+    background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.3));
+    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
+    border-radius: 6px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11px; line-height: 1.5; white-space: pre;
+    color: var(--vscode-descriptionForeground, #bbb);
+  }
+
+  /* 标签后的正文预览：收起态单行——占满剩余宽度，宽度不足才省略；不整段折行(全文靠展开) */
+  .chain-row-preview {
+    flex: 1 1 auto; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 11px; line-height: 1.5;
+    color: var(--vscode-descriptionForeground, #999);
+  }
+  /* 展开且仍在流式：独立内滚容器(靠后覆盖 is-open 的 full 高) */
+  .chain-reason.is-live { max-height: 160px; overflow-y: auto; }
+
+  /* 工具真实输出（tool/result，Terminal 等卡）：原样展示，不翻译不装饰 */
+  .chain-tool-out {
+    margin: 3px 2px; padding: 6px 8px; overflow-x: auto;
+    background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.3));
+    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
+    border-radius: 6px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+    color: var(--vscode-foreground, #ddd);
+  }
+
+  /* 侧栏再窄也不换行：链/思考/工具收起行的文字一律单行省略 */
+  .chain-row-head { min-width: 0; white-space: nowrap; overflow: hidden; }
+  .chain-row-head > * { flex-shrink: 0; min-width: 0; }
+  .chain-row-head .chain-row-preview { flex: 1 1 auto; }
+  .chain-row-title, .chain-tool-title {
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .chain-tool-err {
+    max-width: 40%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .chain-summary { min-width: 0; }
+
+  /* 短标签/词语永不被拆行：中文按词 keep-all，整行 nowrap（UI 规范：思考/工具标题/折叠文案等） */
+  .chain-row-head,
+  .chain-row-title,
+  .chain-tool-title,
+  .chain-summary,
+  .chain-summary-text {
+    white-space: nowrap;
+    word-break: keep-all;
+  }
+
+  /* 标签固定不换行；标签后的正文(预览/摘要)自适应侧栏宽：占满剩余，窄则省略 */
+  .chain-row-head { gap: 6px; }
+  .chain-row-head .chain-row-preview { flex: 1 1 auto; min-width: 0; }
+  .chain-row-head .chain-tool-status { flex: 0 0 auto; margin-left: auto; }
+  .chain-row-head .chain-tool-err { flex: 0 1 auto; max-width: 45%; }
+
+  /* ===== Terminal 卡（官方 TerminalBlock.module.css 复刻）=====
+     值取自官方：radius 12、line-height 22、gutter 30、块 padding 9/14/输出 12/14、输出帽 224；
+     深浅主题用 --vscode-* / --vscode-* 语义变量。 */
+  .term {
+    position: relative;
+    margin: 4px 0 4px 4px;            /* 官方 bash-sample .terminal 的 4px 缩进（代替原语独立 margin） */
+    padding-left: 30px;               /* --dsl-terminal-gutter：状态点独立列 */
+    border: 0.5px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
+    border-radius: 12px;
+    background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.3));
+    color: var(--vscode-foreground, #ddd);
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 12px;
+    overflow: hidden;
+  }
+  /* l2 分隔线：定稿才有（命令横幅 ↔ 输出体）；running 只横幅无分隔 */
+  .term:not([data-running]) .term-head { border-bottom: 0.5px solid var(--vscode-panel-border, rgba(255,255,255,0.12)); }
+  .term-head {
+    display: flex; align-items: flex-start; gap: 12px;
+    margin-left: -30px; padding: 9px 14px 9px 30px;
+    max-height: 150px; overflow-y: auto;  /* 超长多行命令在此内滚 */
+  }
+  .term-prompt { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+  .term-prompt-line { position: relative; display: flex; align-items: baseline; gap: 8px; min-width: 0; line-height: 22px; }
+  /* 状态点：out-of-flow 在 gutter 内，垂直居中于行盒；ongoing 蓝 / done 绿 / error 红（带同色 halo） */
+  .term-dot {
+    position: absolute; left: -22px; top: 50%; transform: translateY(-50%);
+    width: 10px; height: 10px; border-radius: 50%; flex: none;
+  }
+  .term-dot[data-state='ongoing'] { background: var(--vscode-charts-blue, #4daafc); box-shadow: 0 0 0 3px rgba(77,170,252,0.18); }
+  .term-dot[data-state='done']   { background: var(--vscode-charts-green, #89d185); box-shadow: 0 0 0 3px rgba(137,209,133,0.15); }
+  .term-dot[data-state='error']  { background: var(--vscode-errorForeground, #f14c4c); box-shadow: 0 0 0 3px rgba(241,76,76,0.15); }
+  /* 运行态文本标签（aria-hidden 的点 + 供 AT 的文字标签） */
+  .term-state { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .term-cwd { flex: none; color: var(--vscode-descriptionForeground, #999); }
+  /* 命令原文：官方 .command 为单行 pre + ellipsis（超长省略，复制按钮 sticky 右）。不换行/不横滚/不省略都不对。 */
+  .term-cmd { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; color: var(--vscode-foreground, #ddd); }
+  /* 退出码/信号 Pill：贴定到横幅顶部，错误色 */
+  .term-status { flex: none; position: sticky; top: 0; height: 22px; line-height: 22px; color: var(--vscode-errorForeground, #f14c4c); }
+  .term-copy {
+    flex: none; position: sticky; top: 0; border: none; background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.3));
+    padding: 0; margin: 0; color: var(--vscode-descriptionForeground, #999); cursor: pointer; font: inherit;
+    line-height: 22px;
+  }
+  .term-empty { padding: 12px 14px 12px 0; color: var(--vscode-descriptionForeground, #999); }
+  /* 垂直滚动在输出体（横幅固定）；横向 pre 溢出也在此滚 */
+  .term-output { max-height: 224px; padding: 12px 14px 12px 0; overflow-x: auto; overflow-y: auto; }
+  .term-output::-webkit-scrollbar-thumb { border: 2px solid transparent; background-clip: padding-box; border-radius: 6px; }
+  .term-output::-webkit-scrollbar-track { margin: 6px; }
+  .term-line { min-height: 22px; white-space: pre; }
+  /* 长输出折叠：… 其余 n 行（点击展开全部/收起） */
+  .term-expand { display: block; width: 100%; padding: 0; border: none; background: transparent; color: var(--vscode-descriptionForeground, #999); cursor: pointer; font: inherit; text-align: left; }
+  .term-expand:hover { color: var(--vscode-foreground, #ddd); }
+
+  /* ===== 上下文注入/召回行（官方 ui-chat ContextInjectionRow.module.css + ContextBody.module.css 复刻）=====
+     收起=一行：图标(recall/inject) + 角色标题「上下文注入/跨会话召回」 + 来源标签 + notice 单行说明；
+     展开=表单化 body（instructions/catalog/snapshot/notice/relay/recall/opaque），统一承载在代码块面里。
+     深浅主题用 --vscode-* 语义变量映射官方 --dsw-alias-*。 */
+  .ctx { min-width: 0; margin: 2px 0; }
+  .ctx.is-open { padding-bottom: 4px; }
+  .ctx-head {
+    display: flex; align-items: center; gap: 6px; width: 100%;
+    border: none; background: none; color: inherit; cursor: pointer;
+    font: inherit; padding: 2px 3px; border-radius: 5px; text-align: left;
+    min-width: 0; white-space: nowrap; word-break: keep-all;
+  }
+  .ctx-head:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.22)); }
+  .ctx-chev, .ctx-ico { font-size: 12px; flex: none; color: var(--vscode-descriptionForeground, #999); }
+  .ctx-chev { opacity: 0.7; transition: transform 0.12s ease; }
+  .ctx-title { font-weight: 600; color: var(--vscode-foreground, #ddd); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* 来源标签：flex none 单行；summary 占满剩余，窄则省略 */
+  .ctx-sep { flex: none; width: 2px; height: 2px; margin: 0 8px; border-radius: 1px; background: var(--vscode-descriptionForeground, #999); }
+  .ctx-source {
+    flex: none; min-width: 0; overflow: hidden;
+    color: var(--vscode-descriptionForeground, #888);
+    font-size: 11.5px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .ctx-summary {
+    flex: 1 1 auto; min-width: 0; overflow: hidden;
+    color: var(--vscode-descriptionForeground, #888);
+    font-size: 11.5px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* 展开体：统一代码块面（官方 geometry：缩进 22，帽 141，pad 10/16/12/12，radius 8） */
+  .ctx-body {
+    box-sizing: border-box;
+    width: calc(100% - 22px);
+    max-height: 141px; margin: 4px 0 0 22px;
+    overflow: auto; padding: 10px 16px 12px 12px;
+    border: none; border-radius: 8px;
+    background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.3));
+    color: var(--vscode-descriptionForeground, #888);
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11px; line-height: 1.45;
+  }
+  .ctx-text { margin: 0; color: var(--vscode-foreground, #ccc); font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .ctx-unknown { margin: 6px 0; }
+  .ctx-unknown-label { color: var(--vscode-descriptionForeground, #999); font-family: var(--vscode-font-family); font-size: 11px; margin-bottom: 2px; }
+  .ctx-unknown-json { margin: 0; color: var(--vscode-foreground, #ccc); font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .ctx-fields { display: flex; flex-direction: column; gap: 2px; margin: 8px 0 0; padding-top: 8px; border-top: 0.5px solid var(--vscode-panel-border, rgba(255,255,255,0.12)); }
+  .ctx-field { display: flex; gap: 8px; min-width: 0; }
+  .ctx-field-key { flex: none; min-width: 96px; color: var(--vscode-descriptionForeground, #999); }
+  .ctx-field-value { flex: 1 1 auto; min-width: 0; margin: 0; color: var(--vscode-descriptionForeground, #888); overflow-wrap: anywhere; }
+  /* instructions：已协调文件列表（flex wrap） */
+  .ctx-files { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0 0 8px; padding: 0; list-style: none; }
+  .ctx-file { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+  .ctx-file-path { color: var(--vscode-foreground, #ccc); overflow-wrap: anywhere; }
+  .ctx-file-action { color: var(--vscode-descriptionForeground, #999); }
+  /* catalog：替换提示 + 每条目一行 */
+  .ctx-notice { margin: 0 0 6px; color: var(--vscode-descriptionForeground, #999); }
+  .ctx-entries { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+  .ctx-entry { display: flex; gap: 8px; min-width: 0; }
+  .ctx-entry-name { flex: none; color: var(--vscode-foreground, #ccc); }
+  .ctx-entry-description { flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--vscode-descriptionForeground, #888); text-overflow: ellipsis; white-space: nowrap; }
+  /* snapshot：每子系统一个有题块 */
+  .ctx-sections { display: flex; flex-direction: column; gap: 8px; margin: 0; }
+  .ctx-section { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .ctx-section-name { color: var(--vscode-descriptionForeground, #999); }
+  .ctx-section-text { margin: 0; color: var(--vscode-foreground, #ccc); white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* recall：每条源会话一行 + 存活计数 */
+  .ctx-recalls { display: flex; flex-direction: column; gap: 2px; margin: 0 0 8px; padding: 0; list-style: none; }
+  .ctx-recall { display: flex; gap: 8px; min-width: 0; }
+  .ctx-recall-label { color: var(--vscode-foreground, #ccc); overflow-wrap: anywhere; }
+  .ctx-recall-counts { flex: none; color: var(--vscode-descriptionForeground, #999); }
+
+  /* ===== Web 卡（官方 ui-primitives WebBlock.module.css 复刻）=====
+     fetch：最左 HTTP 状态徽标 + 协议 + URL 超链接；search：answer + 序号来源列表。 */
+  .web {
+    margin: 4px 0 4px 4px; padding: 12px 14px;
+    color: var(--vscode-foreground, #ddd);
+    background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.3));
+    border-radius: 12px;
+    font-size: 13px;
+  }
+  .web-fetch { display: flex; flex-direction: column; gap: 6px; }
+  .web-fetch-row { display: flex; align-items: baseline; gap: 12px; min-width: 0; flex-wrap: wrap; }
+  /* HTTP 状态：最左侧开头（用户指定布局，官方为 URL 上、状态下） */
+  .web-status { flex: none; color: var(--vscode-descriptionForeground, #999); font: 400 13px/19px var(--vscode-font-family); font-weight: 600; }
+  .web-link {
+    flex: 1 1 auto; min-width: 0; color: var(--vscode-textLink-foreground, #3794ff);
+    font-family: var(--vscode-editor-font-family, monospace); font-size: 13px; font-weight: 500;
+    line-height: 19px; word-break: break-all; text-decoration: none;
+  }
+  .web-link:hover, .web-link:focus-visible { text-decoration: underline dotted; text-underline-offset: 3px; }
+  .web-link-plain { color: var(--vscode-foreground, #ddd); }
+  .web-link-ico { font-size: 13px; vertical-align: -2px; margin-right: 5px; }
+  .web-truncated { margin-top: 8px; color: var(--vscode-descriptionForeground, #999); font-size: 12px; }
+  .web-fetch .web-truncated { margin-top: 0; }
+  /* search：answer + 有序来源列表 */
+  .web-answer { margin-bottom: 8px; color: var(--vscode-foreground, #ddd); line-height: 1.6; }
+  .web-empty { color: var(--vscode-descriptionForeground, #888); font-size: 12px; }
+  .web-sources {
+    margin: 0; padding-left: 2.5em; display: flex; flex-direction: column; gap: 10px;
+    max-height: 320px; overflow-y: auto;
+  }
+  .web-source { min-width: 0; }
+  .web-source-link { color: var(--vscode-textLink-foreground, #3794ff); font-size: 14px; font-weight: 500; line-height: 20px; word-break: break-word; text-decoration: none; }
+  .web-source-link:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
+  .web-snippet { margin-top: 2px; color: var(--vscode-descriptionForeground, #888); font-size: 13px; line-height: 19px; word-break: break-word; }
+  .web-published { margin-top: 2px; color: var(--vscode-descriptionForeground, #999); font-size: 12px; }
+
+  /* ===== 提问卡（官方 ui-tool AskQuestionCard.module.css 复刻 + 待答交互）===== */
+  .ask-card { display: flex; flex-direction: column; gap: 16px; max-height: 360px; margin: 4px 0 4px 4px; padding: 16px 20px; overflow-y: auto; border: 0.5px solid var(--vscode-panel-border, rgba(255,255,255,0.12)); border-radius: 12px; background: var(--vscode-editorWidget-background, rgba(0,0,0,0.2)); }
+  .ask-item { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .ask-question, .ask-answer, .ask-verdict, .ask-q-unanswered { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.6; }
+  .ask-question, .ask-q-unanswered { color: var(--vscode-descriptionForeground, #888); }
+  .ask-answer { color: var(--vscode-foreground, #ddd); }
+  .ask-answer-line { display: block; }
+  .ask-skipped { color: var(--vscode-descriptionForeground, #888); }
+  .ask-verdict { color: var(--vscode-foreground, #ddd); }
+  .ask-question-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding-left: 20px; }
+  /* 待答交互（官方问答对话卡观感） */
+  .ask-pending { display: flex; flex-direction: column; gap: 8px; margin: 4px 0 4px 4px; padding: 16px 20px; border: 0.5px solid var(--vscode-panel-border, rgba(255,255,255,0.12)); border-radius: 12px; background: var(--vscode-editorWidget-background, rgba(0,0,0,0.2)); }
+  .ask-block { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .ask-q-text { color: var(--vscode-foreground, #ddd); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .ask-options { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ask-option {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 6px;
+    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.12)); background: transparent;
+    color: var(--vscode-foreground, #ddd); cursor: pointer; font: inherit; font-size: 12px;
+  }
+  .ask-option:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.22)); }
+  .ask-option.selected { border-color: var(--vscode-focusBorder, #3794ff); background: var(--vscode-button-secondaryBackground, rgba(128,128,128,0.3)); }
+  .ask-opt-desc { color: var(--vscode-descriptionForeground, #888); }
+  .ask-input {
+    width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 6px;
+    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.12)); background: var(--vscode-input-background, rgba(0,0,0,0.2));
+    color: var(--vscode-input-foreground, #ddd); font: inherit; font-size: 12px;
+  }
+  .ask-input:disabled { opacity: 0.6; }
+  .ask-bar { display: flex; gap: 8px; margin-top: 4px; }
+  .ask-submit, .ask-cancel {
+    padding: 4px 14px; border: none; border-radius: 6px; cursor: pointer; font: inherit; font-size: 12px;
+  }
+  .ask-submit { background: var(--vscode-button-background, #0e7ad3); color: var(--vscode-button-foreground, #fff); }
+  .ask-submit:disabled, .ask-cancel:disabled { opacity: 0.5; cursor: default; }
+  .ask-cancel { background: transparent; color: var(--vscode-descriptionForeground, #999); }
+
+  /* 收起行「标题 · 摘要」之间的分隔点（官方 sep 圆点） */
+  .chain-sep { flex: none; width: 2px; height: 2px; margin: 0 3px; border-radius: 1px; background: var(--vscode-descriptionForeground, #999); }

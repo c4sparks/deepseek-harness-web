@@ -17,12 +17,16 @@ import {
     askInSessionStreaming,
     getSessionProjections,
     getSessionMessages,
+    getSystemPrompt,
     type DshEndpoint,
     type DshReplyStats,
+    type DshTurnCounts,
     type DshActivity,
     type DshApproval,
     type DshContentPart,
     type DshQuestionRequest,
+    type DshContext,
+    type SessionMessageItem,
     rpcCall,
     runSessionCommand,
     modelCatalog,
@@ -74,6 +78,29 @@ function parseWebUrlLine(text: string): DshEndpoint | undefined {
 /** 工作区路径归一化（分隔符统一 /、去尾斜杠、小写）用于匹配 */
 function normalizePath(p?: string): string {
     return (p ?? '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+/** 官方 session.list 列表 item 的 durable title：优先顶层 title，回退 projectionValues / projections.values 里的 title。
+ *  空/缺返回 undefined（交 sessionDisplayTitle 走 cwd basename / sessionId 兜底）。 */
+function durableTitleOf(s: {
+    title?: string;
+    projectionValues?: Record<string, unknown>;
+    projections?: { values?: Record<string, unknown> };
+}): string | undefined {
+    if (typeof s.title === 'string' && s.title.trim() !== '') return s.title;
+    const pv = s.projectionValues ?? (s.projections?.values as Record<string, unknown> | undefined);
+    const t = pv?.['title'];
+    return typeof t === 'string' && t.trim() !== '' ? t : undefined;
+}
+
+/** 建会话需要工作区却没有（无任何 dsh 工作区、且没有可映射的 VS Code 文件夹时抛出）。
+ *  上层据此提示“请先选择/创建工作区”，而不是静默建出“未分组”会话。 */
+export class DshNoWorkspaceError extends Error {
+    readonly code = 'NO_WORKSPACE';
+    constructor() {
+        super('请先选择或创建工作区，再开启会话');
+        this.name = 'DshNoWorkspaceError';
+    }
 }
 
 export class DshService {
@@ -434,19 +461,16 @@ export class DshService {
             const rows = (sessionList.items ?? []).filter(
                 (s) => !!s.sessionId && s.blank && s.origin !== 'subagent' && !archived.has(s.sessionId!)
             );
-            // 优先复用当前正在用的那个（若仍属该工作区且未归档），避免反复点“新建”跳去更旧的空会话
-            const currentFirst = rows.find((s) => s.sessionId === this.currentSessionId);
-            if (currentFirst) {
-                return currentFirst.sessionId;
-            }
-            for (const s of rows) {
-                const belongs =
+            // 仅复用**属于目标工作区**的空白会话：既优先当前正在用的(避免反复“新建”跳去更旧的空会话)，
+            // 也绝不跨工作区复用——否则切到新工作区后“新建”会复用旧工作区的当前空白，导致新会话没归对该工作区。
+            // （rc1 新建会话必 attach 到目标工作区，故 belongs 对真正的新建空白恒真。）
+            const members = rows.filter(
+                (s) =>
                     memberIds.has(s.sessionId!) ||
-                    (wsPath !== undefined && typeof s.cwd === 'string' && normalizePath(s.cwd) === wsPath);
-                if (belongs) {
-                    return s.sessionId;
-                }
-            }
+                    (wsPath !== undefined && typeof s.cwd === 'string' && normalizePath(s.cwd) === wsPath)
+            );
+            const currentFirst = members.find((s) => s.sessionId === this.currentSessionId);
+            return currentFirst ? currentFirst.sessionId : members[0]?.sessionId;
         } catch {
             // 列表拉取失败不阻塞：照常新建
         }
@@ -458,16 +482,22 @@ export class DshService {
      * 对齐 dsh 官方：同一工作区已存在空白“新会话”时先复用它，不重复创建 → 反复点“新建会话”不会越积越多。
      */
     async newSession(workspaceId?: string): Promise<string> {
-        const wsId = workspaceId ?? this.currentWorkspaceId;
-        if (wsId) {
-            this.currentWorkspaceId = wsId;
-            const reusable = await this.findReusableBlank(wsId);
-            if (reusable) {
-                this.currentSessionId = reusable;
-                return reusable;
-            }
+        // 工作区优先取显式指定 → 当前 → 自动默认（dsh 里最新 / 当前 VS Code 文件夹）。
+        // 三者皆无时不再回退到不带 workspaceId 的 createSession（会落“未分组”），而是抛错让上层引导选工作区。
+        let wsId = workspaceId ?? this.currentWorkspaceId;
+        if (!wsId) {
+            wsId = await this.ensureCurrentWorkspace();
         }
-        const sid = await createSession(wsId ? { workspaceId: wsId } : {});
+        if (!wsId) {
+            throw new DshNoWorkspaceError();
+        }
+        this.currentWorkspaceId = wsId;
+        const reusable = await this.findReusableBlank(wsId);
+        if (reusable) {
+            this.currentSessionId = reusable;
+            return reusable;
+        }
+        const sid = await createSession({ workspaceId: wsId });
         this.currentSessionId = sid;
         return sid;
     }
@@ -577,7 +607,18 @@ export class DshService {
             return [];
         }
         const sessionList = await this.call<{
-            items?: Array<{ sessionId?: string; running?: boolean; blank?: boolean; origin?: string; cwd?: string; projections?: { values?: Record<string, unknown> } }>;
+            items?: Array<{
+                sessionId?: string;
+                running?: boolean;
+                blank?: boolean;
+                origin?: string;
+                cwd?: string;
+                /** 官方列表 item：durable title 投影在顶层 title 字段（非空字符串才设置） */
+                title?: string;
+                /** 官方列表 item：当前 host 计算的投影值包（键含 title 等） */
+                projectionValues?: Record<string, unknown>;
+                projections?: { values?: Record<string, unknown> };
+            }>;
         }>('session.list', {});
         const out: Array<{ sessionId: string; title: string; running: boolean; blank: boolean; current: boolean }> = [];
         for (const s of sessionList.items ?? []) {
@@ -599,11 +640,12 @@ export class DshService {
             out.push({
                 sessionId: s.sessionId,
                 // 官方三层 fallback：title → cwd basename → sessionId（blank 由 UI 显示“新会话”）
+                // durable title 读官方列表 item 顶层 title；兼容旧/变体形状回退 projectionValues / projections.values.title。
                 title:
                     s.blank
                         ? '新会话'
                         : sessionDisplayTitle({
-                              title: (s.projections?.values as Record<string, unknown> | undefined)?.['title'] as string | undefined,
+                              title: durableTitleOf(s),
                               cwd: s.cwd,
                               sessionId: s.sessionId ?? '',
                           }),
@@ -623,11 +665,14 @@ export class DshService {
     }
 
     /** 恢复会话：设为当前共享会话并返回消息历史（供 UI 渲染，协议解析复用事件投影） */
-    async restoreSession(
-        sessionId: string
-    ): Promise<Array<{ role: 'user' | 'assistant'; text: string; time?: number; provider?: string; model?: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; reasoningTokens?: number; wallSec?: number; ttftSec?: number; tps?: number; status?: string }>> {
+    async restoreSession(sessionId: string): Promise<SessionMessageItem[]> {
         this.currentSessionId = sessionId;
         return getSessionMessages(sessionId);
+    }
+
+    /** 当前会话的工作区指令（系统提示词，agent-instructions 注入）；无则 null。 */
+    async getSystemPrompt(sessionId: string): Promise<{ label: string | null; content: unknown[] } | null> {
+        return getSystemPrompt(sessionId);
     }
 
     // ---------- 官方投影 / 模型 / 权限 ----------
@@ -648,17 +693,21 @@ export class DshService {
         /** 上游对加载失败 provider/组的提示（原样透传；UI 只显示组数） */
         failures?: unknown[];
     }> {
-        const sid = await this.getSession();
         const catalog = await modelCatalog();
         let current: { provider?: string; model?: string; reasoningEffort?: string } | undefined;
-        try {
-            const proj = await getSessionProjections(sid);
-            const sel = proj['modelSelection'] as
-                | { next?: { provider?: string; model?: string; reasoningEffort?: string } | null; lastUsed?: { provider?: string; model?: string; reasoningEffort?: string } | null }
-                | undefined;
-            current = sel?.next ?? sel?.lastUsed ?? undefined;
-        } catch {
-            // 投影读不到不阻塞
+        // 有当前会话 → 读它的 modelSelection 投影；无会话但已有当前工作区 → 先挂一个（已带工作区，不会落未分组）；
+        // 两者皆无（尚未选工作区）→ 只返回全局模型目录、当前选择留空，绝不静默建“未分组”会话。
+        const sid = this.currentSessionId ?? (this.currentWorkspaceId ? await this.getSession() : undefined);
+        if (sid) {
+            try {
+                const proj = await getSessionProjections(sid);
+                const sel = proj['modelSelection'] as
+                    | { next?: { provider?: string; model?: string; reasoningEffort?: string } | null; lastUsed?: { provider?: string; model?: string; reasoningEffort?: string } | null }
+                    | undefined;
+                current = sel?.next ?? sel?.lastUsed ?? undefined;
+            } catch {
+                // 投影读不到不阻塞
+            }
         }
         return {
             current: current ?? catalog.default,
@@ -726,13 +775,14 @@ export class DshService {
         content: DshContentPart[],
         onDelta: (delta: string) => void,
         opts: {
-            onReasoning?: (delta: string, step?: number) => void;
+            onReasoning?: (delta: string, step?: number, index?: number) => void;
             onActivity?: (a: DshActivity) => void;
             onApproval?: (a: DshApproval) => void;
             onQuestion?: (q: DshQuestionRequest) => void;
+            onContext?: (c: DshContext) => void;
             isCancelled?: () => boolean;
         } = {}
-    ): Promise<{ text: string; stats: DshReplyStats; time?: number; end?: { kind: string; message?: string } }> {
+    ): Promise<{ text: string; stats: DshReplyStats; time?: number; end?: { kind: string; message?: string }; counts?: DshTurnCounts }> {
         if (!(await this.ensureRunning())) {
             throw new Error('DSH 服务不可用，无法对话');
         }

@@ -12,7 +12,7 @@ export function ModelPicker({ store }: { store: ChatStore }) {
   return html`<div class="modelpicker">
     <div class="popup-title">模型</div>
     ${sel.modelFailures.length > 0
-      ? html`<div class="popup-fail" title=${JSON.stringify(sel.modelFailures)}>⚠ ${sel.modelFailures.length} 组模型加载失败</div>`
+      ? html`<div class="popup-fail" title=${JSON.stringify(sel.modelFailures)}><span class="codicon codicon-warning inline-ico"></span>${sel.modelFailures.length} 组模型加载失败</div>`
       : null}
     ${(sel.modelGroups ?? []).map(
       (g) =>

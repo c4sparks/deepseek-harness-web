@@ -5,7 +5,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
-import { DshService } from './api/dshService';
+import { DshService, DshNoWorkspaceError } from './api/dshService';
 import { ChatInputService } from './chatInputService';
 import { type DshContentPart, type DshReplyStats } from './dsh';
 import { DshPanel } from './dshPanel';
@@ -474,6 +474,21 @@ async function postChatInfo(webview: vscode.Webview): Promise<void> {
     }
 }
 
+/** 下发当前会话的工作区指令（系统提示词）到页面左上角常驻入口；无则发 null（隐藏入口）。 */
+async function postSystemPrompt(webview: vscode.Webview): Promise<void> {
+    try {
+        const sid = dsh.getSessionId();
+        if (!sid) {
+            void webview.postMessage({ type: 'chatSystemPrompt', systemPrompt: null });
+            return;
+        }
+        const sp = await dsh.getSystemPrompt(sid);
+        void webview.postMessage({ type: 'chatSystemPrompt', systemPrompt: sp });
+    } catch {
+        void webview.postMessage({ type: 'chatSystemPrompt', systemPrompt: null });
+    }
+}
+
 /**
  * 状态类斜杠命令(/plan /goal…)执行后的投影刷新。dsh 把 plan/goal 选择按会话事件 fold 成投影：
  * 空闲时立即落定(committed)，有 open turn 时排到下一个 accepted pre-step 边界才写(queued)。
@@ -635,9 +650,9 @@ function setupChatWebview(
                             }
                         },
                         {
-                            onReasoning: (r, step) => {
+                            onReasoning: (r, step, index) => {
                                 if (g === gen.n) {
-                                    post({ type: 'chatReasoning', text: r, step });
+                                    post({ type: 'chatReasoning', text: r, step, index });
                                 }
                             },
                             onActivity: (a) => {
@@ -665,6 +680,11 @@ function setupChatWebview(
                                     });
                                 }
                             },
+                            onContext: (c) => {
+                                if (g === gen.n) {
+                                    post({ type: 'chatContext', context: c });
+                                }
+                            },
                         }
                     );
                     if (g !== gen.n) {
@@ -673,11 +693,17 @@ function setupChatWebview(
                         return;
                     }
                     // 本轮 usage/计时已在 stream.ts 用官方模块(official/turn-stats.ts)算好，直接下发
-                    post({ type: 'chatDone', text: result.text, stats: result.stats, time: result.time, end: result.end });
+                    post({ type: 'chatDone', text: result.text, stats: result.stats, time: result.time, end: result.end, counts: result.counts });
                     await recordUsage(globalState, result.stats, result.time);
                     void postChatInfo(webview); // 刷新官方统计/权限
                 } catch (e) {
                     if (g !== gen.n) {
+                        return;
+                    }
+                    if (isNoWorkspace(e)) {
+                        // 没有工作区：收尾本轮（error note）+ 引导选工作区，绝不静默建“未分组”会话
+                        post({ type: 'chatDone', end: { kind: 'error', message: '请先选择工作区，再开始对话' } });
+                        void promptWorkspaceFirst('当前没有工作区，请先选择工作区再发送消息');
                         return;
                     }
                     // 错误以“回合终止原因”呈现(end-note)，不把 '⚠ …' 塞进正文当内容
@@ -739,6 +765,10 @@ function setupChatWebview(
                     await postChatInfo(webview);
                     vscode.window.showInformationMessage('已切换模型');
                 } catch (e) {
+                    if (isNoWorkspace(e)) {
+                        void promptWorkspaceFirst('请先选择工作区，再切换模型');
+                        return;
+                    }
                     vscode.window.showErrorMessage((e as Error).message);
                 }
             })();
@@ -749,6 +779,10 @@ function setupChatWebview(
                     await postChatInfo(webview);
                     vscode.window.showInformationMessage(`已切换到模式：${applied}`);
                 } catch (e) {
+                    if (isNoWorkspace(e)) {
+                        void promptWorkspaceFirst('请先选择工作区，再切换模式');
+                        return;
+                    }
                     vscode.window.showErrorMessage((e as Error).message);
                 }
             })();
@@ -762,6 +796,10 @@ function setupChatWebview(
                     await postChatInfo(webview);
                     vscode.window.showInformationMessage(`切换至: ${msg.preset}`);
                 } catch (e) {
+                    if (isNoWorkspace(e)) {
+                        void promptWorkspaceFirst('请先选择工作区，再切换权限');
+                        return;
+                    }
                     vscode.window.showErrorMessage((e as Error).message);
                 }
             })();
@@ -1027,6 +1065,7 @@ async function wsSwitchNew(wsId: string): Promise<void> {
     postToChats({ type: 'clear' });
     for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
         void postChatInfo(w);
+        void postSystemPrompt(w);
     }
     vscode.window.showInformationMessage('已切换工作区');
 }
@@ -1041,6 +1080,7 @@ async function wsRestore(wsId: string, sessionId: string, blank: boolean): Promi
         throw new Error('聊天页面尚未就绪，请稍后重试');
     }
     dsh.setCurrentWorkspace(wsId);
+    postToChats({ type: 'busy', kind: 'loading' }); // 恢复历史期间：composer 禁用 + 轻量占位
     const messages = await dsh.restoreSession(sessionId);
     console.warn(`[dsh-restore] session=${sessionId} messages=${messages.length}`);
     if (process.env['DSH_RAWLOG']) {
@@ -1063,7 +1103,9 @@ async function wsRestore(wsId: string, sessionId: string, blank: boolean): Promi
     postToChats({ type: 'chatHistory', messages, sessionId });
     for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
         void postChatInfo(w);
+        void postSystemPrompt(w);
     }
+    postToChats({ type: 'busy', kind: null });
 }
 
 /** 新建工作区（弹目录选择；供 QuickPick / webview dropdown 共用） */
@@ -1082,6 +1124,7 @@ async function wsCreateNew(): Promise<boolean> {
     postToChats({ type: 'clear' });
     for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
         void postChatInfo(w);
+        void postSystemPrompt(w);
     }
     vscode.window.showInformationMessage(`已新建并切换到工作区：${created.workspace.title || path.basename(dir)}`);
     return true;
@@ -1254,6 +1297,19 @@ async function showWorkspacePicker(): Promise<void> {
     pick.show();
 }
 
+// ---------- 缺工作区引导（建会话必须有工作区，杜绝“未分组”） ----------
+
+/** 是否“需要工作区但取不到默认”的错误（见 dshService.DshNoWorkspaceError）。 */
+function isNoWorkspace(e: unknown): boolean {
+    return e instanceof DshNoWorkspaceError || ((e as { code?: string } | undefined)?.code === 'NO_WORKSPACE');
+}
+
+/** 无工作区时的统一引导：提示 + 打开工作区面板（选已有 / 新建）。调用方负责不再继续建会话。 */
+async function promptWorkspaceFirst(message: string): Promise<void> {
+    vscode.window.showWarningMessage(message);
+    await showWorkspacePicker();
+}
+
 // ---------- 激活入口（薄装配） ----------
 
 export function activate(context: vscode.ExtensionContext) {
@@ -1342,9 +1398,10 @@ export function activate(context: vscode.ExtensionContext) {
             if (!(await dsh.ensureRunning())) {
                 return;
             }
+            // 先尝试取默认工作区（dsh 最新 / 当前文件夹）；取不到才提示选工作区（绝不建“未分组”会话）
+            await dsh.ensureCurrentWorkspace();
             if (!dsh.getCurrentWorkspaceId()) {
-                // 未选工作区：先进入工作区面板选择
-                await showWorkspacePicker();
+                await promptWorkspaceFirst('请先选择工作区，再开启新会话');
                 return;
             }
             await dsh.newSession();
@@ -1411,6 +1468,7 @@ export function activate(context: vscode.ExtensionContext) {
                     return;
                 }
                 try {
+                    postToChats({ type: 'busy', kind: 'loading' });
                     const messages = await dsh.restoreSession(sessionId);
                     console.warn(`[dsh-move] session=${sessionId} messages=${messages.length}`);
                     postToChats({ type: 'clear' });
@@ -1418,6 +1476,7 @@ export function activate(context: vscode.ExtensionContext) {
                     for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
                         void postChatInfo(w);
                     }
+                    postToChats({ type: 'busy', kind: null });
                 } catch (e) {
                     vscode.window.showErrorMessage((e as Error).message);
                 }

@@ -2,7 +2,7 @@
 // 独立成组件，后续要改字段文案/布局/触发方式只动这里。
 import { html } from 'htm/preact'
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
-import { compactTokens } from '../core/format'
+import { compactTokens, cacheHitPercent } from '../core/format'
 
 // 全局单实例弹窗：任意一行打开用量/用时弹窗时，关闭其它行已打开的弹窗（最新点击胜出）
 const closeOthers = new Set<() => void>()
@@ -66,10 +66,12 @@ export function TurnStats({ usage }: { usage: Record<string, unknown> }) {
   const out = num('outputTokens')
   const cache = num('cacheReadTokens')
   const reason = num('reasoningTokens')
+  const cacheWrite = num('cacheWriteTokens')
   const provider = usage['provider']
   const model = usage['model']
+  // 缓存命中率对齐官方 formatCacheHitPercent(cacheRead, totalTokens−outputTokens, 1)：1 位小数，分母含 cacheWrite
   const hit =
-    typeof inp === 'number' && typeof cache === 'number' && inp + cache > 0 ? Math.round((cache / (inp + cache)) * 100) : undefined
+    typeof cache === 'number' ? cacheHitPercent(cache, (inp ?? 0) + cache + (cacheWrite ?? 0)) : undefined
   const total = (inp && inp > 0 ? inp : 0) + (cache && cache > 0 ? cache : 0) + (out && out > 0 ? out : 0)
   const wall = num('wallSec')
   const tps = num('tps')

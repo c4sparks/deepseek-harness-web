@@ -52,6 +52,129 @@ export function friendlyToolName(name: string): string {
   return map[name] ?? name
 }
 
+/**
+ * 工具友好名 → codicon 图标类名（无 codicon- 前缀）。steps[].tools 存的是友好名，故按友好名映射；
+ * bash/pwsh/shell 已被 friendlyToolName 并成"执行命令"，壳细分在下游丢失，此处接受。未知原名兜底 wrench。
+ */
+export function toolIcon(friendly: string): string {
+  const map: Record<string, string> = {
+    执行命令: 'terminal', // bash / pwsh / shell / powershell
+    读取文件: 'file-text', // read / readTextFile
+    写文件: 'save', // write
+    编辑文件: 'edit', // edit / str_replace_editor
+    应用补丁: 'diff-added', // apply_patch
+    查找文件: 'files', // glob
+    搜索: 'search', // grep / search
+    思考: 'lightbulb', // think
+    分析: 'graph-line', // findings
+  }
+  return map[friendly] ?? 'wrench'
+}
+
+/**
+ * raw 工具名 → 展示标题（对齐官方 conversation 命名空间 tool.title.* 的中文观感：
+ * Pwsh/网页获取/搜索…）。官方标题是 UI 层 i18n，不是模型吐出；未收录回显原名。
+ */
+export function toolTitle(name: string): string {
+  const map: Record<string, string> = {
+    bash: 'Bash',
+    pwsh: 'Pwsh',
+    powershell: 'PowerShell',
+    shell: 'Shell',
+    read: '读取',
+    read_image: '读取图片',
+    readTextFile: '读取',
+    write: '写入',
+    edit: '编辑',
+    str_replace_editor: '编辑',
+    apply_patch: '应用补丁',
+    glob: '查找文件',
+    grep: 'Grep',
+    search: '网页搜索',
+    web_search: '网页搜索',
+    web_fetch: '网页获取',
+    webFetch: '网页获取',
+    think: '思考',
+    findings: '分析',
+    plan: 'plan',
+    subagent: 'subagent',
+    ask_user_question: '提问',
+  }
+  return map[name] ?? name
+}
+
+/** raw 工具名 → 展示图标 codicon（无 codicon- 前缀；按官方 variant 归类，未知兜底 wrench）。 */
+export function toolIconOfTool(name: string): string {
+  const map: Record<string, string> = {
+    bash: 'terminal',
+    pwsh: 'terminal',
+    shell: 'terminal',
+    powershell: 'terminal',
+    read: 'file-text',
+    read_image: 'file-text',
+    readTextFile: 'file-text',
+    write: 'save',
+    edit: 'edit',
+    str_replace_editor: 'edit',
+    apply_patch: 'diff-added',
+    glob: 'files',
+    grep: 'search',
+    search: 'search',
+    web_search: 'search',
+    web_fetch: 'globe',
+    webFetch: 'globe',
+    think: 'lightbulb',
+    findings: 'graph-line',
+    plan: 'list-unordered',
+    ask_user_question: 'question',
+  }
+  return map[name] ?? 'wrench'
+}
+
+/** 工具调用原始参数(JSON 串) → 摘要一行（对齐官方 SUMMARY_KEYS：
+ *  bash 类取 description/command；read/web_fetch 类取 path/file_path/url；search 类取 query/pattern。
+ *  取首个命中字符串的首行，超长截断）。无/解析失败返回 ''。 */
+export function deriveToolSummary(argsRaw: string | undefined, name?: string): string {
+  if (!argsRaw) return ''
+  let obj: unknown
+  try {
+    obj = JSON.parse(argsRaw)
+  } catch {
+    return ''
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return ''
+  const rec = obj as Record<string, unknown>
+  const lower = (name ?? '').toLowerCase()
+  const isCmd = lower === 'bash' || lower === 'pwsh' || lower === 'powershell' || lower === 'shell' || lower === 'python' || lower === 'code' || lower.endsWith('exec')
+  const isRead = lower === 'read' || lower === 'read_image' || lower === 'readtextfile' || lower === 'glob' || lower.includes('fetch') || lower.includes('http')
+  const keys = isCmd
+    ? ['description', 'command', 'cmd', 'code', 'script']
+    : isRead
+      ? ['path', 'file_path', 'filepath', 'url', 'description', 'query']
+      : ['query', 'pattern', 'description', 'url', 'name', 'path', 'message', 'text']
+  for (const k of keys) {
+    const v = rec[k]
+    if (typeof v === 'string' && v.trim()) {
+      const first = v.trim().split('\n')[0].trim()
+      return first.length > 140 ? first.slice(0, 140) + '…' : first
+    }
+  }
+  return ''
+}
+
+/**
+ * 缓存命中率（对齐官方 `formatCacheHitPercent(cacheRead, promptTokens, 1)`）：保留 1 位小数；
+ * 整数去尾 `.0`（26.0→26，26.4→26.4，100→100）。
+ * @param cacheReadTokens - cacheRead。
+ * @param promptTokens - 输入总 tokens（totalToken − outputTokens = uncached+cacheRead+cacheWrite）；0 返回 ''。
+ */
+export function cacheHitPercent(cacheReadTokens: number, promptTokens: number): string {
+  if (promptTokens <= 0) return ''
+  const pct = (cacheReadTokens / promptTokens) * 100
+  const s = pct.toFixed(1)
+  return s.endsWith('.0') ? pct.toFixed(0) : s
+}
+
 /** ≥1e3 缩写为 K（如 10240 → 10.2K）；无效/≤0 返回空串 */
 export function compactTokens(n: number | undefined): string {
   if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return ''
@@ -74,8 +197,10 @@ export function formatTurnStats(stats?: Record<string, unknown>): string {
   const cache = stats['cacheReadTokens']
   const cacheWrite = stats['cacheWriteTokens']
   const reasoning = stats['reasoningTokens']
-  if (typeof inp === 'number' && typeof cache === 'number' && inp + cache > 0) {
-    parts.push(`缓存命中 ${Math.round((cache / (inp + cache)) * 100)}%`)
+  const inpN = typeof inp === 'number' ? inp : 0
+  const cacheWN = typeof cacheWrite === 'number' ? cacheWrite : 0
+  if (typeof cache === 'number' && inpN + cache + cacheWN > 0) {
+    parts.push(`缓存命中 ${cacheHitPercent(cache, inpN + cache + cacheWN)}%`)
   }
   if (typeof inp === 'number') {
     parts.push(`输入 ${inp} tok`)
@@ -125,7 +250,7 @@ export function formatStatsLine(projections: Record<string, unknown>): { text: s
   // 官方 billedInputTokens = uncached + cacheRead + cacheWrite；命中率分母用 billedInput
   const billedInput = (input ?? 0) + (cache ?? 0) + (cacheWrite ?? 0)
   if (typeof cache === 'number' && billedInput > 0) {
-    parts.push(`缓存命中 ${((cache / billedInput) * 100).toFixed(0)}%`)
+    parts.push(`缓存命中 ${cacheHitPercent(cache, billedInput)}%`)
   }
   if (typeof input === 'number') parts.push(`输入 ${input} tok`)
   if (typeof output === 'number') parts.push(`输出 ${output} tok`)

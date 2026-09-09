@@ -1,0 +1,9 @@
+  /* 过渡态(Busy)：恢复历史/切工作区期间禁用输入并提示 */
+  .composer.is-busy { opacity: 0.65; }
+  .composer.is-busy #input, .composer.is-busy #send { pointer-events: none; }
+  .composer-busy {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--vscode-descriptionForeground, #888);
+    padding: 2px 2px 5px;
+  }
+  .composer-busy .codicon { font-size: 12px; }

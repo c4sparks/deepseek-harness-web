@@ -89,7 +89,7 @@ export function initSelfDrawnTitlebar(api: SelfDrawnTitlebarApi): void {
     const el = document.createElement('div')
     el.className = 'msg assistant'
     el.innerHTML =
-      `<div class="avatar">⚠</div>` +
+      `<div class="avatar" style="color:var(--vscode-errorForeground,#f14c4c)"><span class="codicon codicon-warning"></span></div>` +
       `<div class="col"><div class="body" style="color:var(--vscode-errorForeground,#f14c4c);background:rgba(241,76,76,0.08);border-radius:8px;padding:8px 10px;font-size:12px;">${safe}</div></div>`
     messagesEl.classList.remove('hidden')
     welcome.classList.add('hidden')

@@ -86,31 +86,100 @@ export interface AtSessionRef {
   mention: string
 }
 
-export interface HistoryMessage {
-  role: 'user' | 'assistant'
-  text: string
-  /** dsh 事件自带时间戳(epoch 秒或毫秒);缺省则页面不显示时间 */
+/** 实时/历史 过程折叠计数（官方口径：toolCallCount=非 subagent 工具调用数；messageCount=最终答复前带文本的中间 assistant 消息数） */
+export interface TurnCounts {
+  toolCallCount?: number
+  messageCount?: number
+}
+
+/** 历史会话里 assistant 回复的可视"过程动作"（实时另有 chatActivity/chatReasoning 增量拼装） */
+export type HistoryChainItem =
+  | { kind: 'reasoning'; text: string }
+  | {
+      kind: 'context'
+      content: unknown[]
+      source: unknown
+      provenance: { role: 'inject' | 'recall'; label: string | null }
+      form: string | null
+    }
+  | { kind: 'tool'; name: string; title?: string; summary?: string; argsRaw?: string; callId?: string; status: 'ok' | 'error' | 'stopped'; error?: string; output?: string; exitCode?: number; signal?: string; meta?: unknown }
+
+/** 单次工具/思考/步骤 活动（宿主 tool/call、tool/result、step/start 透传） */
+export interface ViewActivity {
+  type?: 'step' | 'tool' | 'toolDone'
+  step?: number
+  tool?: string
+  name?: string
+  callId?: string
+  argsRaw?: string
+  error?: string
+  output?: string
+  /** tool/result 输出末尾 marker 解析出的退出码/终止信号（Terminal 卡 Pill 展示；剥掉 marker 后的干净输出在 output） */
+  exitCode?: number
+  signal?: string
+  /** tool/result.data.meta 原文透传（web_fetch 的 statusCode、web_search 的 sources/answer 等卡数据源） */
+  meta?: unknown
+}
+
+/** 历史会话里的一条上下文注入（source.kind !== 'user' 的 user/message：系统提示词/技能/召回…），对齐官方 ContextInjectionRow。 */
+export interface HistoryContextItem {
+  role: 'context'
+  /** dsh 事件自带时间戳(epoch 秒或毫秒) */
   time?: number
-  /** 该条 assistant 消息自带的 usage 与提供方/模型（用量/用时图标数据源，仅 assistant 有） */
-  provider?: string
-  model?: string
-  inputTokens?: number
-  outputTokens?: number
-  cacheReadTokens?: number
-  cacheWriteTokens?: number
-  reasoningTokens?: number
-  /** 由快照事件时间算出的消息指标（与实时同口径），有则恢复行显示 ⏱ 用时 */
-  wallSec?: number
-  ttftSec?: number
-  tps?: number
-  /** 停止状态展示文案（已停止 · Stopped），仅被停止的回合最后一条 assistant 有 */
-  status?: string
+  seq?: number
+  /** 模型实际读到的 content blocks（原文透传） */
+  content: unknown[]
+  /** durable user/message source 原文 */
+  source: unknown
+  /** 投影角色与生产者名（recall=跨会话召回，其余=上下文注入） */
+  provenance: { role: 'inject' | 'recall'; label: string | null }
+  /** 生产者声明的展示形态；null = opaque */
+  form: string | null
+}
+
+export type HistoryMessage =
+  | { role: 'user'; text: string; time?: number }
+  | {
+      role: 'assistant'
+      text: string
+      /** dsh 事件自带时间戳(epoch 秒或毫秒);缺省则页面不显示时间 */
+      time?: number
+      /** 该条 assistant 消息自带的 usage 与提供方/模型（用量/用时图标数据源，仅 assistant 有） */
+      provider?: string
+      model?: string
+      inputTokens?: number
+      outputTokens?: number
+      cacheReadTokens?: number
+      cacheWriteTokens?: number
+      reasoningTokens?: number
+      /** 由快照事件时间算出的消息指标（与实时同口径），有则恢复行显示 ⏱ 用时 */
+      wallSec?: number
+      ttftSec?: number
+      tps?: number
+      /** 停止状态展示文案（已停止 · Stopped），仅被停止的回合最后一条 assistant 有 */
+      status?: string
+      /** assistant 回合的过程链（思考/工具），恢复后同样可折叠展开 */
+      chain?: HistoryChainItem[]
+      counts?: TurnCounts
+    }
+  | HistoryContextItem
+
+/** 上下文注入数据（实时 chatContext 与历史 HistoryContextItem 共用形状）。 */
+export interface LiveContext {
+  role?: undefined
+  seq?: number
+  time?: number
+  content: unknown[]
+  source: unknown
+  provenance: { role: 'inject' | 'recall'; label: string | null }
+  form: string | null
 }
 
 // ---------- 宿主 → 页面 ----------
 export type HostToViewMessage =
-  | { type: 'chatActivity'; activity?: { type?: 'step' | 'tool'; step?: number; tool?: string } }
-  | { type: 'chatReasoning'; text?: string; step?: number }
+  | { type: 'chatActivity'; activity?: ViewActivity }
+  | { type: 'chatReasoning'; text?: string; step?: number; index?: number }
+  | { type: 'chatContext'; context?: LiveContext }
   | { type: 'chatApproval'; approvalId?: string; description?: string; toolName?: string }
   | {
       type: 'chatQuestion'
@@ -127,6 +196,8 @@ export type HostToViewMessage =
       time?: number
       /** turn/end 非正常终止原因（error/aborted/interrupted/max-tokens/blocked…），正常完成则无 */
       end?: { kind?: string; message?: string }
+      /** 过程折叠计数（官方口径） */
+      counts?: TurnCounts
     }
   | { type: 'filePicked'; path?: string }
   | {
@@ -139,7 +210,13 @@ export type HostToViewMessage =
     }
   | { type: 'draft'; text?: string }
   | { type: 'chatHistory'; messages?: HistoryMessage[]; sessionId?: string }
+  | {
+      type: 'chatSystemPrompt'
+      /** 当前会话的工作区指令（系统提示词，agent-instructions 注入）；null=无（左上角入口隐藏） */
+      systemPrompt?: { label: string | null; content: unknown[] } | null
+    }
   | { type: 'clear' }
+  | { type: 'busy'; kind?: 'loading' | 'switching' | null }
   // 自绘标题栏专属(selfDrawn 模式才出现;原生模式宿主不发)
   | { type: 'panelState'; panelOpen?: boolean; viewMode?: 'internal' | 'browser' }
   | { type: 'selfInfo'; workspaceName?: string; panelOpen?: boolean; viewMode?: 'internal' | 'browser' }
