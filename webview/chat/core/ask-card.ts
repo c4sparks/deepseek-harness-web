@@ -29,6 +29,13 @@ export interface AskCard {
   summary: string
   pending: boolean
   transcript: AskTranscript | null
+  /**
+   * 行状态覆盖（上游 `AskQuestionRow` 对两个 code 显式改写 state，此处同口径）：
+   * `ASK_CANCELLED` → `'ok'`（用户自己取消，**不是失败**，不显示任何错误标记）；
+   * `ASK_ABORTED` → `'stopped'`（回合被打断，与其它被打断的调用同为琥珀语义）。
+   * 其余情况为 undefined，用宿主给的 `item.status`。
+   */
+  state?: 'ok' | 'stopped'
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -151,6 +158,7 @@ export function askCardModel(item: {
     return {
       summary: labels.cancelled,
       pending: false,
+      state: 'ok', // 用户自己取消：不是失败（上游同）
       transcript: questions === null
         ? null
         : { mode: 'unanswered', questions: questions.map((q) => ({ id: q.id, question: q.question })), verdict: labels.cancelledDetail },
@@ -161,6 +169,7 @@ export function askCardModel(item: {
     return {
       summary: labels.interrupted,
       pending: false,
+      state: 'stopped', // 回合被打断：琥珀「已中断」，不是失败（上游同）
       transcript: questions === null
         ? null
         : { mode: 'unanswered', questions: questions.map((q) => ({ id: q.id, question: q.question })), verdict: labels.interruptedDetail },

@@ -2,11 +2,11 @@
 // answered=问题→答案列表(空答 ask.skipped)；unanswered=结论(已取消/已中断)+问题列表；
 // pending=官方 waterfall 交互在输入框上方弹窗，对话行此处理原输出/参数兜底。
 import { html } from 'htm/preact'
-import type { ChainItem } from '../../core/store/chat'
+import type { DshTurnProcessItem } from '../../core/store/chat'
 import type { AskCard } from '../../core/ask-card'
 import { askLabels } from '../../core/ask-labels'
 
-type AskChainItem = Extract<ChainItem, { kind: 'tool' }>
+type AskChainItem = Extract<DshTurnProcessItem, { kind: 'tool' }>
 
 export function AskCardBody({ card, item }: { card: AskCard; item: AskChainItem }) {
   const labels = askLabels()

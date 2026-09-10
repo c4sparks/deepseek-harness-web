@@ -72,35 +72,40 @@ export function toolIcon(friendly: string): string {
 }
 
 /**
- * raw 工具名 → 展示标题（对齐官方 conversation 命名空间 tool.title.* 的中文观感：
- * Pwsh/网页获取/搜索…）。官方标题是 UI 层 i18n，不是模型吐出；未收录回显原名。
+ * raw 工具名 → 展示标题（中文观感：Pwsh / 网页获取 / 搜索…）。
+ * 标题是 UI 层文案，不是模型吐出。无专属标题的工具一律用通用标题「工具调用」，
+ * 真实工具名改由摘要承载（见 deriveToolSummary）。
  */
+const TOOL_TITLES: Record<string, string> = {
+  bash: 'Bash',
+  pwsh: 'Pwsh',
+  powershell: 'PowerShell',
+  shell: 'Shell',
+  read: '读取',
+  read_image: '读取图片',
+  readTextFile: '读取',
+  write: '写入',
+  edit: '编辑',
+  str_replace_editor: '编辑',
+  apply_patch: '应用补丁',
+  glob: '查找文件',
+  grep: 'Grep',
+  search: '网页搜索',
+  web_search: '网页搜索',
+  web_fetch: '网页获取',
+  webFetch: '网页获取',
+  think: '思考',
+  findings: '分析',
+  plan: 'plan',
+  subagent: 'subagent',
+  ask_user_question: '提问',
+}
+
+/** 无专属标题的工具统一用「工具调用」。 */
+const GENERIC_TOOL_TITLE = '工具调用'
+
 export function toolTitle(name: string): string {
-  const map: Record<string, string> = {
-    bash: 'Bash',
-    pwsh: 'Pwsh',
-    powershell: 'PowerShell',
-    shell: 'Shell',
-    read: '读取',
-    read_image: '读取图片',
-    readTextFile: '读取',
-    write: '写入',
-    edit: '编辑',
-    str_replace_editor: '编辑',
-    apply_patch: '应用补丁',
-    glob: '查找文件',
-    grep: 'Grep',
-    search: '网页搜索',
-    web_search: '网页搜索',
-    web_fetch: '网页获取',
-    webFetch: '网页获取',
-    think: '思考',
-    findings: '分析',
-    plan: 'plan',
-    subagent: 'subagent',
-    ask_user_question: '提问',
-  }
-  return map[name] ?? name
+  return TOOL_TITLES[name] ?? GENERIC_TOOL_TITLE
 }
 
 /** raw 工具名 → 展示图标 codicon（无 codicon- 前缀；按官方 variant 归类，未知兜底 wrench）。 */
@@ -146,20 +151,63 @@ export function deriveToolSummary(argsRaw: string | undefined, name?: string): s
   const rec = obj as Record<string, unknown>
   const lower = (name ?? '').toLowerCase()
   const isCmd = lower === 'bash' || lower === 'pwsh' || lower === 'powershell' || lower === 'shell' || lower === 'python' || lower === 'code' || lower.endsWith('exec')
-  const isRead = lower === 'read' || lower === 'read_image' || lower === 'readtextfile' || lower === 'glob' || lower.includes('fetch') || lower.includes('http')
+  const isRead = lower === 'read' || lower === 'read_image' || lower === 'readtextfile' || lower.includes('fetch') || lower.includes('http')
+  const isSearch = lower === 'web_search' || lower === 'search' || lower === 'grep' || lower === 'glob'
+  // 文件写入/编辑是独立变体（摘要取路径、**不加「工具名 · 」前缀**）；漏了这行它们会被当成 others 加前缀
+  const isWrite = lower === 'write' || lower === 'edit' || lower === 'str_replace_editor' || lower === 'apply_patch'
+  if (!isCmd && !isRead && !isSearch && !isWrite) {
+    // 无专属标题的工具：无偏好键，取首个非空字符串值，再兜底原始参数首行；
+    // 摘要带「工具名 · 」前缀（真实工具名由摘要承载，标题统一是「工具调用」）
+    const base = firstStringLine(rec) ?? clipLine(firstLine(argsRaw))
+    if (base === '') return ''
+    return name ? clipLine(`${name} · ${base}`) : base
+  }
   const keys = isCmd
     ? ['description', 'command', 'cmd', 'code', 'script']
-    : isRead
-      ? ['path', 'file_path', 'filepath', 'url', 'description', 'query']
-      : ['query', 'pattern', 'description', 'url', 'name', 'path', 'message', 'text']
+    : isWrite
+      ? ['path', 'file_path'] // 文件写入/编辑：摘要即文件路径
+      : isSearch
+        ? ['query', 'pattern', 'url'] // 搜索类偏好键
+        : ['path', 'file_path', 'filepath', 'url', 'description', 'query']
   for (const k of keys) {
     const v = rec[k]
     if (typeof v === 'string' && v.trim()) {
-      const first = v.trim().split('\n')[0].trim()
-      return first.length > 140 ? first.slice(0, 140) + '…' : first
+      return clipLine(firstLine(v))
     }
   }
   return ''
+}
+
+/** 取文本首行并去空白。 */
+function firstLine(text: string): string {
+  return text.trim().split('\n')[0].trim()
+}
+
+/**
+ * 结果文本首行——失败行收起摘要用（对齐上游 `ToolRow`/`bash-sample` 的 `firstLine`：
+ * 切到第一个换行符为止，**不 trim**）。
+ * 空串/undefined 返回 null（上游那里空结果本就被当作「无结果」，摘要位落回描述）；
+ * **首行为空行时返回 `''`**（上游同样如此：此时摘要位整体不显示，而不是落回描述）。
+ * @param output - 工具结果文本（宿主已剥退出 marker）。
+ * @returns 首行文本、`''`，或无结果时的 null。
+ */
+export function resultFirstLine(output: string | undefined): string | null {
+  if (output === undefined || output === '') return null
+  const nl = output.indexOf('\n')
+  return nl === -1 ? output : output.slice(0, nl)
+}
+
+/** 摘要单行截断（按本插件侧栏宽度设上限）。 */
+function clipLine(line: string): string {
+  return line.length > 140 ? line.slice(0, 140) + '…' : line
+}
+
+/** 对象里首个非空字符串值（按属性声明序）。 */
+function firstStringLine(rec: Record<string, unknown>): string | undefined {
+  for (const v of Object.values(rec)) {
+    if (typeof v === 'string' && v.trim()) return clipLine(firstLine(v))
+  }
+  return undefined
 }
 
 /**

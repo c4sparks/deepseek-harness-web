@@ -9,10 +9,12 @@
   .chain-summary-ico { font-size: 12px; flex: none; color: var(--vscode-charts-blue, #4daafc); }
   .chain-summary-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .chain-summary-chev { font-size: 12px; flex: none; opacity: 0.7; transition: transform 0.12s ease; }
-  .chain-detail { margin-top: 3px; display: flex; flex-direction: column; gap: 4px; }
+  /* 明细容器：行距只由各行自身的上下 margin 决定（不设 gap），
+     过程行之间 = 2 + 2 = 4px，折叠头到首行 = margin-top 2 + 2 = 4px，链内统一 4px。 */
+  .chain-detail { margin-top: 2px; display: flex; flex-direction: column; }
   /* 思考全文框：全文保留，截断只用 max-height+渐隐遮罩（peek/live/open，不删 DOM 文本） */
   .chain-reason {
-    position: relative; margin: 1px 2px 2px; padding: 2px 8px;
+    position: relative; margin: 2px 2px; padding: 2px 8px;
     white-space: pre-wrap; word-break: break-word; line-height: 1.55;
     font-size: 11.5px; color: var(--vscode-descriptionForeground, #999);
     border-radius: 5px; background: rgba(128,128,128,0.05);
@@ -26,38 +28,36 @@
   .chain-reason.is-live { max-height: 160px; overflow-y: auto; }
   .chain-reason.is-open { max-height: none; overflow: visible; cursor: pointer; }
 
-  /* 过程链（官方 turn-process 折叠）行内新件 */
-  .chain-live .chain-summary { cursor: default; }
-  .chain-reason-row { margin-top: 3px; }
-  .chain-item-title {
-    display: flex; align-items: center; gap: 5px; margin: 2px 0 1px;
-    font-size: 11.5px; font-weight: 600;
-    color: var(--vscode-descriptionForeground, #999);
-  }
-  .chain-item-title .codicon { font-size: 12px; }
-  .chain-tool-row {
-    display: flex; flex-wrap: wrap; align-items: center; gap: 6px 7px; min-width: 0;
-    margin: 3px 0; padding: 3px 8px;
-    background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.2)));
-    border: 1px solid transparent; border-radius: 6px;
-  }
-  .chain-tool-row.is-running { border-color: rgba(77, 170, 252, 0.45); }
+  /* 过程链行内件 */
   .chain-tool-ico { font-size: 12px; color: var(--vscode-descriptionForeground, #999); flex: none; }
   .chain-tool-title { font-size: 11.5px; font-weight: 600; color: var(--vscode-foreground, #ddd); }
-  .chain-tool-err { font-size: 11px; color: var(--vscode-errorForeground, #f14c4c); }
-  .chain-tool-status { font-size: 12px; margin-left: auto; flex: none; }
-  .chain-tool-status.is-ok { color: var(--vscode-charts-green, #89d185); }
-  .chain-tool-status.is-error { color: var(--vscode-errorForeground, #f14c4c); }
-  .chain-tool-status.is-running { color: var(--vscode-charts-blue, #4daafc); }
-  .chain-tool-status.is-stopped { color: var(--vscode-descriptionForeground, #999); opacity: 0.7; }
-  .chain-tool-sum {
-    flex-basis: 100%; min-width: 0;
-    color: var(--vscode-descriptionForeground, #999); font-size: 11px; line-height: 1.5;
-    white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
-    font-family: var(--vscode-editor-font-family, monospace);
+  /* ① 行首状态点（上游 StateDot）：只在异常态取代变体图标，正常/进行中仍显图标。
+     行尾不再有状态角标——上游整行只有这一个标记位。
+     结构照上游：**两层**——整圆 halo（currentColor + opacity .1）+ inset 20% 的实心内核
+     （10px 的点里只有 6px 实心）。不是一块实心圆，所以观感更轻、像带光圈的小点。 */
+  .chain-tool-dot {
+    position: relative; display: inline-block; flex: none;
+    width: 10px; height: 10px; margin: 0 1px;
+    color: var(--vscode-descriptionForeground, #999);
   }
-  /* Disclosure 行（思考/工具统一：头部 chevron 展开收起） */
-  .chain-disclosure { margin: 3px 0; }
+  .chain-tool-dot::before {
+    content: ''; position: absolute; inset: 0; border-radius: 50%;
+    background: currentColor; opacity: 0.1;
+  }
+  .chain-tool-dot::after {
+    content: ''; position: absolute; inset: 20%; border-radius: 50%;
+    background: currentColor;
+  }
+  .chain-tool-dot.is-error { color: var(--vscode-errorForeground, #f14c4c); }
+  .chain-tool-dot.is-warning { color: var(--vscode-charts-yellow, #cca700); }
+  /* ③ 行状态的读屏文字：视觉隐藏（点与掠光都是 colour-only 且 aria-hidden） */
+  .chain-row-state {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap;
+  }
+  /* Disclosure 行（思考/工具统一：头部 chevron 展开收起）。
+     上下 margin 与上下文注入行（.ctx）同为 2px：三种过程行等距，链内行距不跳。 */
+  .chain-disclosure { margin: 2px 0; }
   .chain-row-head {
     display: flex; align-items: center; gap: 6px; width: 100%;
     border: none; background: none; color: inherit; cursor: pointer;
@@ -67,7 +67,8 @@
   .chain-chev { font-size: 12px; flex: none; opacity: 0.7; transition: transform 0.12s ease; }
   .chain-kind-ico { font-size: 12px; flex: none; color: var(--vscode-descriptionForeground, #999); }
   .chain-row-title { font-weight: 600; color: var(--vscode-foreground, #ddd); }
-  .chain-disclosure-body { margin: 1px 0 2px; }
+  /* 展开体与上方可点击行留 2px 区分（思考全文框 / 工具展开体同一口径） */
+  .chain-disclosure-body { margin: 2px 0; }
   .chain-tool-json {
     margin: 3px 2px; padding: 6px 8px; overflow-x: auto;
     background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.3));
@@ -85,10 +86,13 @@
     font-size: 11px; line-height: 1.5;
     color: var(--vscode-descriptionForeground, #999);
   }
+  /* 真失败行（isError）的摘要位装着结果文本首行 → 上行错误色（上游 ToolRow `.errorSummary` 同义）。
+     注意与行首红点不同源：这条只在 isError 时挂，非零退出的行仍是描述色。 */
+  .chain-row-preview.is-error { color: var(--vscode-errorForeground, #f14c4c); }
   /* 展开且仍在流式：独立内滚容器(靠后覆盖 is-open 的 full 高) */
   .chain-reason.is-live { max-height: 160px; overflow-y: auto; }
 
-  /* 工具真实输出（tool/result，Terminal 等卡）：原样展示，不翻译不装饰 */
+  /* 工具真实输出（tool/result）：原样展示，不翻译不装饰。提问卡的兜底路径仍在用 */
   .chain-tool-out {
     margin: 3px 2px; padding: 6px 8px; overflow-x: auto;
     background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.3));
@@ -99,15 +103,47 @@
     color: var(--vscode-foreground, #ddd);
   }
 
+  /* 工具通用卡的「输入 / 输出」分区（ioCard：标签 + 内容两列网格）。
+     输入=调用参数(pretty JSON)，输出=调用结果；两段之间一条 hairline。 */
+  /* 纵向 margin 交给外层 .chain-disclosure-body（2px）：若在这里再设更大的值，
+     会与父级 margin 折叠取较大者，2px 就失效了。左侧 4px 是缩进，保留。 */
+  .chain-io-card {
+    display: flex; flex-direction: column;
+    margin: 0 0 0 4px;
+    border: 0.5px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
+    border-radius: 12px;
+    background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.3));
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11px; line-height: 1.55;
+  }
+  .chain-io-section {
+    display: grid; grid-template-columns: max-content 1fr;
+    column-gap: 14px; align-items: baseline;
+    padding: 12px 16px; max-height: 150px; overflow-y: auto;
+  }
+  /* 标签贴顶：分区内滚时标签保持可见 */
+  .chain-io-label {
+    position: sticky; top: 0; align-self: start;
+    color: var(--vscode-descriptionForeground, #999);
+    white-space: nowrap;
+  }
+  .chain-io-text {
+    min-width: 0; white-space: pre-wrap; word-break: break-word;
+    color: var(--vscode-foreground, #ddd);
+  }
+  /* 失败调用的输出与收起行错误色一致 */
+  .chain-io-text.is-error { color: var(--vscode-errorForeground, #f14c4c); }
+  .chain-io-divider {
+    flex: none; height: 0.5px;
+    background: var(--vscode-panel-border, rgba(255,255,255,0.12));
+  }
+
   /* 侧栏再窄也不换行：链/思考/工具收起行的文字一律单行省略 */
   .chain-row-head { min-width: 0; white-space: nowrap; overflow: hidden; }
   .chain-row-head > * { flex-shrink: 0; min-width: 0; }
   .chain-row-head .chain-row-preview { flex: 1 1 auto; }
   .chain-row-title, .chain-tool-title {
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  .chain-tool-err {
-    max-width: 40%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .chain-summary { min-width: 0; }
 
@@ -124,11 +160,38 @@
   /* 标签固定不换行；标签后的正文(预览/摘要)自适应侧栏宽：占满剩余，窄则省略 */
   .chain-row-head { gap: 6px; }
   .chain-row-head .chain-row-preview { flex: 1 1 auto; min-width: 0; }
-  .chain-row-head .chain-tool-status { flex: 0 0 auto; margin-left: auto; }
-  .chain-row-head .chain-tool-err { flex: 0 1 auto; max-width: 45%; }
+
+  /* ② running 的进行感：行上一道**固定宽度**的掠光带（上游 dsh-tool-row-sweep），不是转圈。
+     宽度固定 300px、位移用 left（不是 transform）——这是能适配任意栏宽的要点：
+       起点 left:-300px 让整条带子位于行左外侧（与行宽无关）
+       终点 left:100%   是相对**行宽**的，带子左缘贴到行右缘 → 再宽的编辑器页也能扫到底
+     光带用**主题底色 60%**把字形与图标「洗」向背景（shimmer 效果），不是盖一层灰。
+     末段 90%→100% 停在行外一拍，每趟之间有个呼吸。 */
+  .chain-row-head { position: relative; overflow: hidden; }
+  .chain-row-head[data-state='running']::after {
+    content: '';
+    position: absolute; top: 0; bottom: 0; left: 0;
+    width: 300px;
+    pointer-events: none;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      color-mix(in srgb, var(--vscode-editor-background, #1e1e1e) 60%, transparent) 55%,
+      transparent 100%
+    );
+    animation: chain-row-sweep 2.6s ease-out infinite;
+  }
+  @keyframes chain-row-sweep {
+    0% { left: -300px; }
+    90%, 100% { left: 100%; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .chain-row-head[data-state='running']::after { animation: none; }
+  }
 
   /* ===== Terminal 卡（官方 TerminalBlock.module.css 复刻）=====
-     值取自官方：radius 12、line-height 22、gutter 30、块 padding 9/14/输出 12/14、输出帽 224；
+     值取自官方：radius 12、line-height 22、gutter 30、块 padding 9/14/输出 12/14；
+     输出体本插件改为自适应宽高（不限高/不折叠/超宽折行），不跟 224 帽 + 16 行折叠的做法；
      深浅主题用 --vscode-* / --vscode-* 语义变量。 */
   .term {
     position: relative;
@@ -154,11 +217,24 @@
   /* 状态点：out-of-flow 在 gutter 内，垂直居中于行盒；ongoing 蓝 / done 绿 / error 红（带同色 halo） */
   .term-dot {
     position: absolute; left: -22px; top: 50%; transform: translateY(-50%);
-    width: 10px; height: 10px; border-radius: 50%; flex: none;
+    width: 10px; height: 10px; flex: none;
+    color: var(--vscode-descriptionForeground, #999);
   }
-  .term-dot[data-state='ongoing'] { background: var(--vscode-charts-blue, #4daafc); box-shadow: 0 0 0 3px rgba(77,170,252,0.18); }
-  .term-dot[data-state='done']   { background: var(--vscode-charts-green, #89d185); box-shadow: 0 0 0 3px rgba(137,209,133,0.15); }
-  .term-dot[data-state='error']  { background: var(--vscode-errorForeground, #f14c4c); box-shadow: 0 0 0 3px rgba(241,76,76,0.15); }
+  /* 两层结构与上游 StateDot 一致：整圆 halo(opacity .1) + inset 20% 的实心内核 */
+  .term-dot::before {
+    content: ''; position: absolute; inset: 0; border-radius: 50%;
+    background: currentColor; opacity: 0.1;
+  }
+  .term-dot::after {
+    content: ''; position: absolute; inset: 20%; border-radius: 50%;
+    background: currentColor;
+  }
+  /* 四态：上游 runState 只出 ongoing/done/error（上游遇 isError 不出终端卡）；
+     本插件为失败的调用也出卡，故补 warning，色与行首点 `.chain-tool-dot.is-warning` 同源。 */
+  .term-dot[data-state='ongoing'] { color: var(--vscode-charts-blue, #4daafc); }
+  .term-dot[data-state='done']   { color: var(--vscode-charts-green, #89d185); }
+  .term-dot[data-state='error']  { color: var(--vscode-errorForeground, #f14c4c); }
+  .term-dot[data-state='warning'] { color: var(--vscode-charts-yellow, #cca700); }
   /* 运行态文本标签（aria-hidden 的点 + 供 AT 的文字标签） */
   .term-state { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   .term-cwd { flex: none; color: var(--vscode-descriptionForeground, #999); }
@@ -172,14 +248,148 @@
     line-height: 22px;
   }
   .term-empty { padding: 12px 14px 12px 0; color: var(--vscode-descriptionForeground, #999); }
-  /* 垂直滚动在输出体（横幅固定）；横向 pre 溢出也在此滚 */
-  .term-output { max-height: 224px; padding: 12px 14px 12px 0; overflow-x: auto; overflow-y: auto; }
+  /* 输出体：**上限 224px + 纵向内滚**（输出可能上千行，全展开会把消息流撑没）。
+     仍**不折叠**行（上游另有 16 行折中段 + 「… 其余 n 行」）——内滚已足够查看，不必再叠一层折叠。
+     **横滚与纵滚并存**（上游 `.output{overflow-x:auto;overflow-y:auto}` 同）：超宽行不折，见下条 `.term-line`。 */
+  .term-output { max-height: 224px; overflow-y: auto; overflow-x: auto; padding: 12px 14px 12px 0; }
   .term-output::-webkit-scrollbar-thumb { border: 2px solid transparent; background-clip: padding-box; border-radius: 6px; }
   .term-output::-webkit-scrollbar-track { margin: 6px; }
+  /* 不折行（上游 `.line{white-space:pre}` + 输出体横滚）：终端输出大量是表格化/对齐文本
+     （docker ps、ps aux、git log --graph…），折行会把列对齐撞散。超宽交给横向滚动。 */
   .term-line { min-height: 22px; white-space: pre; }
-  /* 长输出折叠：… 其余 n 行（点击展开全部/收起） */
-  .term-expand { display: block; width: 100%; padding: 0; border: none; background: transparent; color: var(--vscode-descriptionForeground, #999); cursor: pointer; font: inherit; text-align: left; }
-  .term-expand:hover { color: var(--vscode-foreground, #ddd); }
+
+  /* ===== 差异卡（上游 DiffBlock.module.css 复刻；write / edit 的文件改动）=====
+     与终端卡同口径：**不折叠、不限高**（上游对话行按 8 行截断 + 「… 其余 n 行」，本插件有意不跟）；
+     超宽由折行处理（差异行不是代码正文，折行不破坏阅读）。 */
+  .diff-block {
+    position: relative;
+    margin: 4px 0 4px 4px;
+    border: 0.5px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
+    border-radius: 12px;
+    background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.3));
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 12px; line-height: 22px;
+  }
+  .diff-copy {
+    position: absolute; top: 8px; right: 12px; z-index: 1;
+    border: none; padding: 0; margin: 0; cursor: pointer; font: inherit;
+    background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.3));
+    color: var(--vscode-descriptionForeground, #999);
+  }
+  .diff-copy:hover { color: var(--vscode-foreground, #ddd); }
+  /* 横滚不折行（上游 `.line{white-space:pre}` + `.body{overflow-x:auto}`） */
+  .diff-body { padding: 12px 14px; overflow-x: auto; }
+  .diff-line { min-height: 22px; white-space: pre; }
+  /* 文件头：加粗 + 右侧留给浮在角上的复制按钮 */
+  .diff-line.is-path { font-weight: 600; padding-right: 56px; }
+  .diff-line.is-gap { color: var(--vscode-descriptionForeground, #999); }
+  /* 删除/新增：**符号与整行正文同时着色**（上游对 `.del`/`.add` 本身也设 color）。
+     符号 + 颜色双通道表意，不靠颜色单独区分——色盲用户也能靠 -/+ 读。 */
+  .diff-line.is-del,
+  .diff-line.is-del::before { color: var(--vscode-errorForeground, #f14c4c); }
+  .diff-line.is-del::before { content: '- '; }
+  .diff-line.is-add,
+  .diff-line.is-add::before { color: var(--vscode-charts-green, #89d185); }
+  .diff-line.is-add::before { content: '+ '; }
+  .diff-footer { padding: 0 14px 12px; color: var(--vscode-descriptionForeground, #999); }
+  /* 折叠按钮：整行可点，次级色，hover 转前景色（上游 .expand） */
+  .diff-expand {
+    display: block; width: 100%; padding: 0; border: none; background: transparent;
+    color: var(--vscode-descriptionForeground, #999); cursor: pointer; font: inherit; text-align: left;
+  }
+  .diff-expand:hover { color: var(--vscode-foreground, #ddd); }
+
+  /* ===== 读文件卡（上游 ReadBlock.module.css 复刻；read 的带行号内容）=====
+     不折叠、不限高。**唯独这里保留 `white-space: pre` + 横向滚动**：代码行折行会破坏缩进对齐，
+     故与差异卡不同，超宽交给横滚而不是折行。 */
+  .read-block {
+    margin: 4px 0 4px 4px;
+    border: 0.5px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
+    border-radius: 12px;
+    background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.3));
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 12px; line-height: 22px;
+  }
+  /* 横幅有**独立底色**（上游 markdown-code-block-banner）+ 顶部圆角；VS Code 无对应 token，用中性叠层兜底 */
+  .read-banner {
+    display: flex; align-items: baseline; gap: 8px; padding: 9px 14px;
+    background: rgba(128, 128, 128, 0.06);
+    border-top-left-radius: 12px; border-top-right-radius: 12px;
+  }
+  /* 字段字号不一（上游）：label/lang 走 12px 等宽；count/copy 走 13px 次级色 */
+  .read-label { color: var(--vscode-foreground, #ddd); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
+  .read-count { flex: none; color: var(--vscode-descriptionForeground, #999); font-size: 13px; }
+  .read-lang { flex: none; color: var(--vscode-descriptionForeground, #999); font-size: 12px; line-height: 18px; }
+  .read-copy {
+    flex: none; margin-left: auto; border: none; padding: 0; cursor: pointer;
+    font-family: inherit; font-size: 13px;
+    background: none; color: var(--vscode-descriptionForeground, #999);
+  }
+  .read-copy:hover { color: var(--vscode-foreground, #ddd); }
+  .read-body { padding: 12px 0; overflow-x: auto; }
+  .read-line { display: flex; min-height: 22px; white-space: pre; }
+  /* gutter：固定 48 右对齐行号，不可选中（复制走按钮，不含行号） */
+  .read-gutter {
+    flex: none; width: 48px; padding-right: 14px; text-align: right;
+    user-select: none; color: var(--vscode-descriptionForeground, #999);
+  }
+  .read-content { min-width: 0; }
+  /* 折叠按钮：左缩进到 gutter 之后，与内容列对齐（上游 .expand padding-left 48） */
+  .read-expand {
+    display: block; width: 100%; padding: 0 0 0 48px; border: none; background: transparent;
+    color: var(--vscode-descriptionForeground, #999); cursor: pointer; font: inherit; text-align: left;
+    white-space: nowrap;
+  }
+  .read-expand:hover { color: var(--vscode-foreground, #ddd); }
+
+  /* ===== 搜索卡（上游 SearchBlock.module.css 复刻；grep / glob）=====
+     不折叠、不限高、超宽折行；上游「点文件头折叠该组」也不做——既然不折叠，展开即全部。 */
+  .search-block {
+    margin: 4px 0 4px 4px;
+    border: 0.5px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
+    border-radius: 12px;
+    background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.3));
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 12px; line-height: 22px;
+  }
+  /* 头行有独立底色 + 顶部圆角（上游 markdown-code-block-banner），同 read 卡 */
+  .search-header {
+    display: flex; align-items: baseline; gap: 8px; padding: 9px 14px;
+    background: rgba(128, 128, 128, 0.06);
+    border-top-left-radius: 12px; border-top-right-radius: 12px;
+  }
+  .search-summary {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--vscode-descriptionForeground, #999); font-size: 13px;
+  }
+  .search-copy {
+    flex: none; margin-left: auto; border: none; padding: 0; cursor: pointer;
+    font-family: inherit; font-size: 13px;
+    background: none; color: var(--vscode-descriptionForeground, #999);
+  }
+  .search-copy:hover { color: var(--vscode-foreground, #ddd); }
+  .search-body { padding: 8px 14px 12px 0; overflow-x: auto; }
+  /* 文件头（matches 分支）：**按钮**，点它收起/展开该文件的匹配（上游同） */
+  .search-file-head {
+    display: flex; align-items: center; gap: 6px; width: 100%; padding: 0 14px;
+    min-height: 22px; border: none; background: transparent; cursor: pointer; font: inherit; text-align: left;
+    color: var(--vscode-foreground, #ddd);
+  }
+  .search-file-head:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.22)); }
+  .search-file-path { flex: 1 1 auto; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .search-file-count { flex: none; color: var(--vscode-descriptionForeground, #999); }
+  /* 不折行（上游 `.line{white-space:pre}` + `.body` 横滚） */
+  .search-line { min-height: 22px; padding-left: 14px; white-space: pre; }
+  .search-line-number { color: var(--vscode-descriptionForeground, #999); }
+  .search-empty { padding: 12px 14px; color: var(--vscode-descriptionForeground, #999); }
+  /* 折叠按钮：与匹配行左缩进对齐 */
+  .search-expand {
+    display: block; width: 100%; padding: 0 0 0 14px; border: none; background: transparent;
+    color: var(--vscode-descriptionForeground, #999); cursor: pointer; font: inherit; text-align: left;
+  }
+  .search-expand:hover { color: var(--vscode-foreground, #ddd); }
+  /* 结果被截断时的兜底定位符（原文，等宽可换行） */
+  .search-recovery { padding: 0 14px 12px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-descriptionForeground, #999); }
 
   /* ===== 上下文注入/召回行（官方 ui-chat ContextInjectionRow.module.css + ContextBody.module.css 复刻）=====
      收起=一行：图标(recall/inject) + 角色标题「上下文注入/跨会话召回」 + 来源标签 + notice 单行说明；

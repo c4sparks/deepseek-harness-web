@@ -592,6 +592,30 @@ export class DshService {
     }
 
     /**
+     * 当前工作区的根路径（终端卡 cwd 标签的兜底来源）。
+     * **只读**：不新建工作区、不改归属——拿不到就返回 undefined，让标签回退 `$`。
+     * 工具调用参数里通常不带 workdir，此时用会话工作区根兜底，本方法提供同一份数据。
+     */
+    async currentWorkspacePath(): Promise<string | undefined> {
+        const id = this.currentWorkspaceId;
+        if (!id) {
+            return undefined;
+        }
+        try {
+            const { items } = await this.listWorkspaces();
+            const ws = items.find((w) => w.workspaceId === id);
+            // **原样返回作者写法**（只去尾部分隔符），**不要走 normalizePath**：这个值一路传到 webview
+            // 当"显示用的相对根"（收起行摘要、读卡横幅、终端卡 cwd 标签），小写化会把 `MyProject`
+            // 显示成 `myproject`；换成正斜杠又会让工具给的 Windows 路径（`C:\...`）对不上前缀，
+            // 相对化直接失效、整条绝对路径被原样画出来。需要比较归属的地方用 normalizePath，别在这里归一化。
+            const path = (ws?.path ?? '').replace(/[/\\]+$/, '');
+            return path !== '' ? path : undefined;
+        } catch {
+            return undefined;
+        }
+    }
+
+    /**
      * 列出某工作区下的已有会话（workspace.list 的 sessionIds + session.list 汇总映射标题）。
      * 排除 subagent 内部会话；空白会话展示为「新会话」；运行中排前。
      * 注意：新建会话不做强制改名，问答后沿用 dsh 自动生成的会话标题。

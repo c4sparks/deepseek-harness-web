@@ -77,6 +77,24 @@ export const ToolState = {
 } as const
 export type ToolState = (typeof ToolState)[keyof typeof ToolState]
 
+/**
+ * 工具行状态的**无障碍文字**（zh 原文取自上游字典 `row.running`/`row.failed`/`row.stopped`）。
+ * 为什么需要：状态点与 running 的掠光带都是 colour-only、且标了 aria-hidden，视觉上能看出运行/失败/中断，
+ * 读屏却读不到——靠这段视觉隐藏的文字播报。`ok` 返回 null（不播报，图标+摘要已说明）。
+ */
+export function toolStateLabel(state: ToolState): string | null {
+  switch (state) {
+    case ToolState.Running:
+      return '运行中'
+    case ToolState.Error:
+      return '失败'
+    case ToolState.Stopped:
+      return '已停止'
+    default:
+      return null
+  }
+}
+
 /** 一次多动作过程(折叠窗口)整体状态：进行中 / 定稿。 */
 export const ChainState = {
   /** 过程仍在推进（有工具在跑/思考中）。 */

@@ -21,6 +21,7 @@ Thumbs.db
 
 # 工具配置
 .*/
+CLAUDE.md
 
 tmp/
 .codex-tmp/

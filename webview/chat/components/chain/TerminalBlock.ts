@@ -1,17 +1,28 @@
-// 终端卡（官方 TerminalBlock 复刻）——独立组件，与 Web/Ask/Context 各占一个文件，改一种不影响其它。
-// 只负责渲染 .term 卡体（命令横幅 + 状态 Pill + 复制 + 输出 + 长输出折叠）；收起/展开头由上级 ToolRow 控制。
+// 终端卡 —— 独立组件，与 Web/Ask/Context 各占一个文件，改一种不影响其它。
+// 形态是一块面板：命令横幅（状态点 + 命令，固定高度内滚）→ 一条分隔线 → 输出体。
+// 输出体**上限 224px + 纵向内滚**；**不折行**（`white-space: pre`，超宽交给输出体横滚）。**不做行折叠**——上游另有 16 行折中段，本插件不跟。
+// 收起/展开头由上级 ToolRow 控制。
 import { html } from 'htm/preact'
-import { useEffect, useState } from 'preact/hooks'
 import type { ChatStore } from '../../core/store/chat'
-import { terminalLabels, promptLabel, stripAnsi, type TermCard } from '../../core/terminal'
+import { terminalLabels, promptLabel, stripAnsi, type TermCard, type TermState } from '../../core/terminal'
 
-/** 官方 TerminalBlock 输出折叠上限（DEFAULT_TERMINAL_MAX_LINES=16；折中段 head/tail）。 */
-const MAX_LINES = 16
-const HEAD_LINES = 8
+/**
+ * 状态点：**只看卡内运行态**（= 行状态），不再只看退出码——
+ * 调用失败（spawn 失败/中止/沙箱拒绝）没有退出码，只看退出码会给出绿点。
+ */
+function dotState(state: TermState): 'ongoing' | 'done' | 'error' | 'warning' {
+  if (state === 'running') return 'ongoing'
+  if (state === 'error') return 'error'
+  if (state === 'stopped') return 'warning'
+  return 'done'
+}
 
-function dotState(card: TermCard): 'ongoing' | 'done' | 'error' {
-  if (card.running) return 'ongoing'
-  return card.failed ? 'error' : 'done'
+/** 卡内运行态文案（与状态点同源；ok→已完成，error→失败，stopped→已停止）。 */
+function runLabel(state: TermState, labels: ReturnType<typeof terminalLabels>): string {
+  if (state === 'running') return labels.running
+  if (state === 'error') return labels.failed
+  if (state === 'stopped') return labels.stopped
+  return labels.done
 }
 
 /** settled 时的状态 Pill 文案（干净退出无 Pill；signal 优先于 exitCode）。 */
@@ -24,20 +35,11 @@ function statusPill(card: TermCard, labels: ReturnType<typeof terminalLabels>): 
 
 export function TerminalBlock({ card, store }: { card: TermCard; store: ChatStore }) {
   const labels = terminalLabels()
-  const [expanded, setExpanded] = useState(false)
-  // 每次收起再展开、或状态/输出变化 → 回到折叠态
-  useEffect(() => {
-    setExpanded(false)
-  }, [card.running, card.output])
   const pill = statusPill(card, labels)
   const outputLines = (card.output ?? '').split('\n').map((l) => stripAnsi(l))
-  const capped = outputLines.length > MAX_LINES && !expanded
-  const hidden = Math.max(0, outputLines.length - MAX_LINES)
-  const headLines = capped ? outputLines.slice(0, HEAD_LINES) : outputLines
-  const tailLines = capped ? outputLines.slice(outputLines.length - (MAX_LINES - HEAD_LINES)) : []
 
-  const dot = html`<span class="term-dot" data-state=${dotState(card)}></span>`
-  // 命令行首行前：官方状态点(runState) done绿/ongoing蓝/error红
+  const dot = html`<span class="term-dot" data-state=${dotState(card.state)}></span>`
+  // 命令行首行前：官方状态点(runState) done绿/ongoing蓝/error红/stopped琥珀（上游终端卡不出 stopped，本插件为「与行一致」补）
   const promptRows = card.command.map((line, i) => html`
     <div class="term-prompt-line" key=${i}>
       ${i === 0 ? dot : null}
@@ -52,7 +54,7 @@ export function TerminalBlock({ card, store }: { card: TermCard; store: ChatStor
   return html`<div class="term" data-running=${card.running ? '' : undefined}>
     <div class="term-head">
       <div class="term-prompt">
-        <span class="term-state">${card.running ? labels.running : card.failed ? labels.failed : labels.done}</span>
+        <span class="term-state">${runLabel(card.state, labels)}</span>
         ${promptRows}
       </div>
       ${pill ? html`<span class="term-status">${pill}</span>` : null}
@@ -63,13 +65,7 @@ export function TerminalBlock({ card, store }: { card: TermCard; store: ChatStor
     ${card.empty
       ? html`<div class="term-empty">${labels.noOutput}</div>`
       : html`<div class="term-output">
-          ${headLines.map((line, i) => html`<div class="term-line" key=${i}>${line || ' '}</div>`)}
-          ${hidden > 0
-            ? html`<button type="button" class="term-expand" onClick=${() => setExpanded((e) => !e)} aria-expanded=${expanded}>
-                ${expanded ? labels.collapse : labels.expand(hidden)}
-              </button>`
-            : null}
-          ${tailLines.map((line, i) => html`<div class="term-line" key=${'t' + i}>${line || ' '}</div>`)}
+          ${outputLines.map((line, i) => html`<div class="term-line" key=${i}>${line || ' '}</div>`)}
         </div>`}
   </div>`
 }

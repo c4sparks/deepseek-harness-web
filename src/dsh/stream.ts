@@ -2,6 +2,8 @@
 import { openMuxStream } from "./api";
 import { deriveTurnTokenUsage, deriveTurnFacts, type TurnLikeEvent } from "./official/turn-stats";
 import { parseExitStatus } from "./official/exit-status";
+import { readToolResult, resultText } from "./official/result-text";
+import { toolStatusOf } from "./official/tool-status";
 import { contextForm, contextProvenance } from "./official/context-projection";
 import {
     eventText,
@@ -40,8 +42,10 @@ export interface DshActivity {
     callId?: string;
     /** 工具调用原始参数 JSON 串（tool/call.data.arguments，不解析） */
     argsRaw?: string;
-    /** toolDone 的失败原因（tool/result.data.error.code） */
+    /** toolDone 的失败原因（tool/result.data.error.code；原样透传，供展示层按码特判，如提问卡的 ASK_CANCELLED） */
     error?: string;
+    /** toolDone 的终态（由 error.code + isError 判出，见 official/tool-status.ts）。webview 直接采用，不再自己按 error 判 */
+    status?: 'ok' | 'error' | 'stopped';
     /** toolDone 的结果文本（tool/result message.content 文本；Terminal/Read 等卡展示输出） */
     output?: string;
     /** 退出码（输出末尾 marker 解析；Terminal 卡 Pill 展示；输出已剥 marker） */
@@ -51,10 +55,13 @@ export interface DshActivity {
     /** tool/result.data.meta 原文透传（web_fetch 的 statusCode/截断、web_search 的 sources/answer 等卡数据源；未知形状原样带） */
     meta?: unknown;
 }
-/** 过程折叠计数（对齐官方 turn-process：toolCallCount=非 subagent 工具调用数；messageCount=最终答复前带文本的中间 assistant 消息数） */
+/** 过程折叠计数（对齐官方 turn-process 的三个计数：toolCallCount=非 subagent 工具调用数；
+ *  messageCount=最终答复前带文本的中间 assistant 消息数；subagentCount=名字识别为 subagent 委派的调用数。
+ *  三者全 0 时折叠头文案兜底「已思考」） */
 export interface DshTurnCounts {
     toolCallCount: number;
     messageCount: number;
+    subagentCount: number;
 }
 /** 一次上下文注入（非用户 source 的 user/message：系统提示词/技能目录/跨会话召回/插件…），供 UI 渲染成「上下文注入」折叠行。 */
 export interface DshContext {
@@ -180,6 +187,7 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
     const officialEvents: TurnLikeEvent[] = [];
     // 过程折叠计数（官方口径，见 DshTurnCounts）：本回合内累计，turn 结束取数
     let toolCallCount = 0;
+    let subagentCount = 0;
     const replyTextSteps = new Set<number>(); // 出现过带文本 assistant/message 的 step
     await new Promise<void>((resolve, reject) => {
         let settled = false;
@@ -297,11 +305,17 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
                     break;
                 case 'tool/call': {
                     const toolName = stringOf(d['name']) ?? stringOf(d['toolName']);
-                    if (process.env['DSH_RAWLOG'] && toolName && (toolName === 'web_search' || toolName === 'web_fetch' || toolName === 'search' || toolName === 'webFetch')) {
-                        console.log('[dsh-debug] web tool/call name=' + toolName + ' args=' + String(d['arguments']));
+                    // 抓帧：全部工具的调用参数（原先只打 web 类，排 shell 类问题时看不到有没有 description）
+                    if (process.env['DSH_RAWLOG'] && toolName) {
+                        console.log('[dsh-debug] tool/call name=' + toolName + ' callId=' + String(d['callId']) + ' args=' + String(d['arguments']).slice(0, 600));
                     }
-                    if (toolName && !(toolName === 'subagent' || toolName.startsWith('subagent_'))) {
-                        toolCallCount += 1; // 官方口径：非 subagent 工具调用才计入
+                    if (toolName) {
+                        // 官方口径：subagent 委派单独计数，不进 toolCallCount（折叠头分两项展示）
+                        if (toolName === 'subagent' || toolName.startsWith('subagent_')) {
+                            subagentCount += 1;
+                        } else {
+                            toolCallCount += 1;
+                        }
                     }
                     opts.onActivity?.({
                         type: 'tool',
@@ -314,23 +328,13 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
                     break;
                 }
                 case 'tool/result': {
-                    // 结果文本（供 Terminal/Read 等卡展示输出）：message.content 的 text/tool-result 块或平铺字符串
-                    let output = ''
-                    const msg = d['message'] as { content?: unknown } | undefined
-                    const content = msg?.content
-                    if (Array.isArray(content)) {
-                        for (const b of content) {
-                            const bb = b as { type?: string; text?: unknown }
-                            if ((bb['type'] === 'text' || bb['type'] === 'tool-result') && typeof bb['text'] === 'string') {
-                                output += bb['text']
-                            }
-                        }
-                    } else if (typeof content === 'string') {
-                        output = content
-                    }
+                    // 结果文本（供 Terminal/Read 等卡展示输出）：按上游 schema 解包后展平，
+                    // 非 text 块序列化为 pretty JSON。配对 id 在 message.source.callId，不在顶层
+                    const payload = readToolResult(d)
+                    let output = resultText(payload.blocks, d['error'] as { name?: unknown; code?: unknown } | undefined)
                     // 退出状态：先于截断解析（marker 在输出末尾，截断会切掉）；再从展示输出剥掉 marker
                     if (process.env['DSH_RAWLOG']) {
-                        console.log('[dsh-debug] tool/result callId=' + String(d['callId']) + ' meta=' + JSON.stringify(d['meta']).slice(0, 400) + ' content=' + JSON.stringify(d['message'] ?? '').slice(0, 200));
+                        console.log('[dsh-debug] tool/result callId=' + String(payload.callId) + ' meta=' + JSON.stringify(d['meta']).slice(0, 400) + ' blocks=' + JSON.stringify(payload.blocks ?? '').slice(0, 300));
                     }
                     const status = parseExitStatus(output)
                     output = status.output
@@ -339,11 +343,14 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
                     if (output.length > 8000) {
                         output = output.slice(0, 8000) + '\n…(输出过长已截断)'
                     }
+                    const errCode = (d['error'] as { code?: string } | undefined)?.code;
                     opts.onActivity?.({
                         type: 'toolDone',
                         step: typeof d['step'] === 'number' ? d['step'] : undefined,
-                        callId: stringOf(d['callId']) ?? undefined,
-                        error: (d['error'] as { code?: string } | undefined)?.code,
+                        callId: payload.callId,
+                        error: errCode,
+                        // 终态由 isError + code 特例判出（不是「有码即失败」）
+                        status: toolStatusOf(errCode, payload.isError),
                         output: output || undefined,
                         exitCode,
                         signal,
@@ -460,6 +467,7 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
     const counts: DshTurnCounts = {
         toolCallCount,
         messageCount: replyTextSteps.size > 0 ? replyTextSteps.size - 1 : 0,
+        subagentCount,
     };
     return { text, stats: lastStats, time: messageTime, end: endMarker, counts };
 }

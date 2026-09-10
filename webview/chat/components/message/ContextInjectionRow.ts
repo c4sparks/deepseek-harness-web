@@ -4,11 +4,11 @@
 // 铁律：文案/结构取自官方字典与逻辑，不自行翻译/不编造；未知 form 与官方一致退回 opaque（原文不丢）。
 import { html } from 'htm/preact'
 import { useMemo, useState } from 'preact/hooks'
-import type { ChainItem } from '../../core/store/chat'
+import type { DshTurnProcessItem } from '../../core/store/chat'
 import { contextLabels } from '../../core/context-labels'
 import { contextView, type ContextBodySpec, type ContentRun } from '../../core/context-body'
 
-type ContextItem = Extract<ChainItem, { kind: 'context' }>
+type ContextItem = Extract<DshTurnProcessItem, { kind: 'context' }>
 
 /** 未知内容块（block run）→ 官方 JsonBlock 结构：标签 + pretty JSON。 */
 function JsonBlock({ label, payload }: { label: string; payload: unknown }) {

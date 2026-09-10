@@ -1,93 +1,137 @@
-// 工具行（ToolRow，纯分发器）：收起=一行(图标+标题+摘要单行+状态)，展开按官方 toolview 分派卡体。
-// ask_user_question → AskCardBody；web_fetch/web_search → WebCard；bash/pwsh/shell → TerminalBlock；
-// 其余 → 真实输出+原始参数。各卡体独立文件，改一种不影响其它。
-// 铁律：文案/结构取自官方 (terminal/web/ask/tool.title.*)，不自行翻译/不编造展示。
+// 工具行（ToolRow，纯分发器）：收起 = 一行(图标 + 标题 + 摘要 + 状态)，展开按卡体分派。
+// 分派顺序照上游 ToolRow 的瀑布（先到先得，一个调用只渲染一张卡）：
+//   提问卡 → 终端卡 → 差异卡 → 读文件卡 → 搜索卡 → web 卡 → 通用「输入/输出」卡（兜底）
+// 各卡体独立文件，改一种不影响其它。
+// 铁律：文案/结构与上游一致，不自行翻译、不编造展示。
 import { html } from 'htm/preact'
 import { useState } from 'preact/hooks'
-import type { ChainItem, ChatStore } from '../../core/store/chat'
-import { toolTitle, toolIconOfTool } from '../../core/format'
-import { terminalCardModel } from '../../core/terminal'
+import type { DshTurnProcessItem, ChatStore } from '../../core/store/chat'
+import { toolTitle, toolIconOfTool, resultFirstLine } from '../../core/format'
+import { toolStateLabel } from '../../core/states'
+import { terminalCardModel, relativizeToCwd } from '../../core/terminal'
 import { webCardModel } from '../../core/web-card'
 import { askCardModel } from '../../core/ask-card'
+import { diffCardModel } from '../../core/diff-card'
+import { readCardModel } from '../../core/read-card'
+import { searchCardModel } from '../../core/search-card'
 import { WebCard } from './WebCard'
 import { AskCardBody } from './AskCardBody'
 import { TerminalBlock } from './TerminalBlock'
+import { DiffCard } from './DiffCard'
+import { ReadCard } from './ReadCard'
+import { SearchCard } from './SearchCard'
 
-type Tool = Extract<ChainItem, { kind: 'tool' }>
+type Tool = Extract<DshTurnProcessItem, { kind: 'tool' }>
 
 export function ToolRow({ item, store }: { item: Tool; store: ChatStore }) {
   const [open, setOpen] = useState(false)
-  const running = item.status === 'running'
-  const stIcon =
-    item.status === 'running'
-      ? 'codicon-loading codicon-modifier-spin'
-      : item.status === 'error'
-        ? 'codicon-warning'
-        : item.status === 'stopped'
-          ? 'codicon-circle-outline'
-          : null // ok：无角标
+  const cwd = store.sessionCwd.value
+  // 六个卡模型都求值，按上游瀑布取第一个命中的（各自形状不符即 null，自然落到下一张）
   const ask = askCardModel(item)
+  const terminal = terminalCardModel(item, cwd)
+  const diff = diffCardModel(item)
+  const read = readCardModel(item, cwd)
+  const search = searchCardModel(item)
   const web = webCardModel(item)
-  const card = ask === null && web === null ? terminalCardModel(item) : null
 
-  // 收起行预览：提问卡用状态摘要；其余用 item.summary（终端卡回落 description）
-  const headSummary =
-    ask !== null
-      ? ask.summary
-      : item.summary ?? (card !== null ? card.description : undefined)
+  // 行状态三级（**单一来源**：卡内状态点与文案取的就是这个 rowState，行与卡不可能打架）：
+  //   1) 提问卡可覆盖（ASK_CANCELLED→ok / ASK_ABORTED→stopped，见 ask-card）
+  //   2) 终端卡：覆盖已在 model 里算完——非零退出/被信号终止的调用本身 isError:false
+  //      （退出状态是结果数据，不是调用失败），由 `terminal.state` 按上游 `terminalFailed` 口径标成 error，
+  //      与调用真失败（isError）同序；行不再自己判一次
+  //   3) 其余用宿主判好的 item.status（由 isError + code 特例判出，见 src/dsh/official/tool-status.ts）
+  const rowState = ask?.state ?? terminal?.state ?? item.status
+  const running = rowState === 'running'
+  // ① leading 二选一（上游 leadingFor）：error→红点、stopped→琥珀点；**其余（含 running）显变体图标**。
+  // 行尾不再有状态角标——上游整行只有这一个标记位；running 的进行感由行上的掠光带（②）承担。
+  const dotState = rowState === 'error' ? 'error' : rowState === 'stopped' ? 'warning' : null
+  // ③ 状态点与掠光都是 colour-only 且 aria-hidden，读屏靠这段视觉隐藏文字播报
+  const stateLabel = toolStateLabel(rowState)
 
-  const head = html`<button class="chain-row-head" onClick=${() => setOpen((o) => !o)} aria-expanded=${open} title=${item.name}>
+  // 收起行预览，优先级照上游 `summaryText = failureLine ?? description ?? summary`：
+  //   真失败行（⑤）→ 结果文本首行；其余 → item.summary（终端卡回落 description）
+  // ⑤ **只认宿主判出的 `item.status === 'error'`（= isError）**，与上游 `model.state === 'error'` 同口径：
+  //   非零退出/被信号终止的 shell 调用 `isError: false`（退出状态是结果数据，不是调用失败），
+  //   它的失败只由上面 rowState 的展示层覆盖表达（行首红点 + 卡内退出码 Pill），**摘要位仍是描述**——上游亦然。
+  // 首行为空行（`''`）时不落回描述、摘要位整体不显示——与上游 `'' ?? …` 的短路结果一致。
+  // 提问行除外：上游 `AskQuestionRow` **不传** `errorSummary`（只传 summary/output/state），
+  // 所以提问行永远不会被换成结果首行（ask-question-row.tsx 调 ToolRow 的那段）。
+  const failureLine = ask === null && item.status === 'error' ? resultFirstLine(item.output) : null
+  // 摘要位后半段（上游 `summaryText = failureLine ?? description ?? summary`）：
+  //   文件类工具的摘要是路径 → **相对工作区根**（上游 `abbreviateHomePath(relativizeToCwd(...), home)`；
+  //   home 缩写只对 POSIX 家目录生效，Windows 上本插件与上游同样是空操作）。
+  //   非路径摘要经 relativizeToCwd 原样返回，不受影响。
+  //   **不做 basename**：工作区外的文件仍显示全路径（与上游一致）；卡片内部路径同样按上游
+  //   （读卡相对化 / 差异卡 verbatim / 搜索卡原样），见 docs/design/09 §4。
+  const fallbackSummary =
+    ask !== null ? ask.summary : relativizeToCwd(item.summary ?? terminal?.description ?? '', cwd)
+  const headSummary = failureLine !== null ? failureLine || undefined : fallbackSummary || undefined
+  const failureStyled = failureLine !== null && failureLine !== ''
+
+  const head = html`<button class="chain-row-head" data-state=${rowState} onClick=${() => setOpen((o) => !o)} aria-expanded=${open} title=${item.name}>
+    ${stateLabel ? html`<span class="chain-row-state">${stateLabel}</span>` : null}
     <span class=${'codicon chain-chev ' + (open ? 'codicon-chevron-down' : 'codicon-chevron-right')}></span>
-    <span class="chain-tool-ico codicon codicon-${toolIconOfTool(item.name)}"></span>
+    ${dotState !== null
+      ? html`<span class=${'chain-tool-dot is-' + dotState} data-state=${dotState} aria-hidden></span>`
+      : html`<span class="chain-tool-ico codicon codicon-${toolIconOfTool(item.name)}"></span>`}
     <span class="chain-tool-title">${item.title ?? toolTitle(item.name)}</span>
-    ${!open && headSummary ? html`<span class="chain-sep" aria-hidden></span><span class="chain-row-preview">${headSummary}</span>` : null}
-    ${item.error ? html`<span class="chain-tool-err">${item.error}</span>` : null}
-    ${stIcon ? html`<span class=${'chain-tool-status codicon is-' + item.status + ' ' + stIcon}></span>` : null}
+    ${!open && headSummary
+      ? html`<span class="chain-sep" aria-hidden></span><span class=${'chain-row-preview' + (failureStyled ? ' is-error' : '')}>${headSummary}</span>`
+      : null}
   </button>`
 
-  // ---- 提问行（ask_user_question）：只做问答记录；交互在 composer 上方 waterfall 弹窗 ----
-  if (ask !== null) {
-    return html`<div class=${'chain-disclosure' + (running ? ' is-running' : '')}>
+  /** 收起头 + 展开体（各卡体共用同一层 disclosure 外壳）。 */
+  const wrap = (body: unknown): unknown =>
+    html`<div class=${'chain-disclosure' + (running ? ' is-running' : '')}>
       ${head}
-      ${open ? html`<div class="chain-disclosure-body"><${AskCardBody} card=${ask} item=${item} /></div>` : null}
+      ${open && body !== null ? html`<div class="chain-disclosure-body">${body}</div>` : null}
     </div>`
-  }
 
-  // ---- Web 卡（web_fetch / web_search）----
-  if (web !== null) {
-    return html`<div class=${'chain-disclosure' + (running ? ' is-running' : '')}>
-      ${head}
-      ${open ? html`<div class="chain-disclosure-body"><${WebCard} card=${web} /></div>` : null}
-    </div>`
-  }
+  // ---- 提问卡（ask_user_question）：只做问答记录；交互在 composer 上方 waterfall 弹窗 ----
+  if (ask !== null) return wrap(html`<${AskCardBody} card=${ask} item=${item} />`)
 
-  // ---- 通用路径：真实输出 + 原始参数(pretty JSON) ----
-  if (card === null) {
-    let jsonText = item.argsRaw ?? ''
-    if (jsonText) {
-      try {
-        jsonText = JSON.stringify(JSON.parse(jsonText), null, 2)
-      } catch {
-        /* 原样 */
-      }
+  // ---- 终端卡（bash / pwsh / shell）----
+  if (terminal !== null) return wrap(html`<${TerminalBlock} card=${terminal} store=${store} />`)
+
+  // ---- 差异卡（write / edit：文件改动）----
+  if (diff !== null) return wrap(html`<${DiffCard} card=${diff} store=${store} />`)
+
+  // ---- 读文件卡（read：带行号的文件内容）----
+  if (read !== null) return wrap(html`<${ReadCard} card=${read} store=${store} />`)
+
+  // ---- 搜索卡（grep / glob）----
+  if (search !== null) return wrap(html`<${SearchCard} card=${search} store=${store} />`)
+
+  // ---- web 卡（web_fetch / web_search）----
+  if (web !== null) return wrap(html`<${WebCard} card=${web} />`)
+
+  // ---- 通用兜底：ioCard 形态 —— 「输入」(调用参数 pretty JSON) + 「输出」(调用结果) ----
+  let bodyText = item.argsRaw ?? ''
+  if (bodyText) {
+    try {
+      bodyText = JSON.stringify(JSON.parse(bodyText), null, 2)
+    } catch {
+      /* 原样 */
     }
-    const hasBody = !!(item.output || jsonText)
-    return html`<div class=${'chain-disclosure' + (running ? ' is-running' : '')}>
-      ${head}
-      ${open && hasBody
-        ? html`<div class="chain-disclosure-body">
-            ${item.output ? html`<pre class="chain-tool-out">${item.output}</pre>` : null}
-            ${jsonText ? html`<pre class="chain-tool-json">${jsonText}</pre>` : null}
-          </div>`
-        : null}
-    </div>`
   }
-
-  // ---- 终端卡（官方 TerminalBlock → 独立组件）----
-  return html`<div class=${'chain-disclosure' + (running ? ' is-running' : '')}>
-    ${head}
-    ${open
-      ? html`<div class="chain-disclosure-body"><${TerminalBlock} card=${card} store=${store} /></div>`
-      : null}
-  </div>`
+  const outputText = item.output ?? ''
+  const ioBody =
+    bodyText !== '' || outputText !== ''
+      ? html`<div class="chain-io-card">
+          ${bodyText !== ''
+            ? html`<div class="chain-io-section">
+                <span class="chain-io-label">输入</span>
+                <span class="chain-io-text">${bodyText}</span>
+              </div>`
+            : null}
+          ${bodyText !== '' && outputText !== '' ? html`<span class="chain-io-divider" aria-hidden></span>` : null}
+          ${outputText !== ''
+            ? html`<div class="chain-io-section">
+                <span class="chain-io-label">输出</span>
+                <span class=${'chain-io-text' + (rowState === 'error' ? ' is-error' : '')}>${outputText}</span>
+              </div>`
+            : null}
+        </div>`
+      : null
+  return wrap(ioBody)
 }

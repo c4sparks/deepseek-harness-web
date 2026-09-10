@@ -4,6 +4,8 @@ import { openMuxStream, rpcCall } from "./api";
 import { deriveTurnTokenUsage, deriveTurnFacts, type TurnLikeEvent } from "./official/turn-stats";
 import { expandChunkRows } from "./official/chunk-rows";
 import { parseExitStatus } from "./official/exit-status";
+import { readToolResult, resultText } from "./official/result-text";
+import { toolStatusOf } from "./official/tool-status";
 import { contextForm, contextProvenance, isContextMessage } from "./official/context-projection";
 // ---------- 会话事件模型（dsh v0.1.2-rc.1 follow 载荷形状） ----------
 export type DshContentPart =
@@ -165,7 +167,7 @@ export async function readFollowSnapshot(sessionId: string, maxMessages = 5000, 
  * assistant 消息再附上该消息自带的 usage 与 provider/model（用量/用时图标据此显示，与实时同源）。
  */
 /** 恢复会话里 assistant 回复的“过程动作”（思考/工具），供 UI 折叠展开（与实时 chatActivity 链同语义） */
-export type HistoryChainItem =
+export type DshHistoryTurnProcessItem =
     | { kind: 'reasoning'; text: string }
     | {
         kind: 'context';
@@ -176,7 +178,7 @@ export type HistoryChainItem =
     }
     | { kind: 'tool'; name: string; callId?: string; argsRaw?: string; status: 'running' | 'ok' | 'error' | 'stopped'; error?: string; output?: string; exitCode?: number; signal?: string; meta?: unknown };
 /** 过程折叠计数（官方口径，见 stream.ts DshTurnCounts 注释） */
-export type HistoryCounts = { toolCallCount: number; messageCount: number };
+export type HistoryCounts = { toolCallCount: number; messageCount: number; subagentCount: number };
 export type SessionMessageItem =
     | { role: 'user'; text: string; time?: number }
     | {
@@ -197,7 +199,7 @@ export type SessionMessageItem =
         /** 停止状态展示文案（已停止 · Stopped），仅该回合被停止/中断/取消时给最后一条 assistant */
         status?: string;
         /** 过程链：思考/工具（官方 content blocks 重建）；仅供 assistant 消息 */
-        chain?: HistoryChainItem[];
+        chain?: DshHistoryTurnProcessItem[];
         counts?: HistoryCounts;
     };
 export async function getSessionMessages(sessionId: string): Promise<SessionMessageItem[]> {
@@ -207,7 +209,7 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
     // 核心 per-turn 统计委托 src/dsh/official/turn-stats.ts；本函数只做“拆消息 + 附加结果”，保持薄
     const lastAsst = new Map<number, number>(); // turn -> out 中最后一条 assistant 下标
     const endStatus = new Map<number, string>(); // 非 completed 的 turn -> 状态(回显 kind)
-    const turnContextItems = new Map<number, HistoryChainItem[]>(); // turn -> 该回合上下文注入项(并入链首)
+    const turnContextItems = new Map<number, DshHistoryTurnProcessItem[]>(); // turn -> 该回合上下文注入项(并入链首)
     let openTurn: number | undefined; // 当前打开的 turn(seq 游标；context 事件无 turn，按区间归属)
     const partialText = new Map<number, string>();
     const finalTextTurns = new Set<number>();
@@ -369,12 +371,12 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
         const msg = (e.data?.['message'] as { content?: unknown } | undefined)?.content;
         return Array.isArray(msg) ? (msg as Array<Record<string, unknown>>) : undefined;
     };
-    const turnChain = new Map<number, HistoryChainItem[]>();
-    const turnToolsByCall = new Map<number, Map<string, HistoryChainItem>>();
+    const turnChain = new Map<number, DshHistoryTurnProcessItem[]>();
+    const turnToolsByCall = new Map<number, Map<string, DshHistoryTurnProcessItem>>();
     const turnReplyTexts = new Map<number, number>(); // 该回合 content 含文本块(回复正文)的 assistant/message 数
     const finishTool = (turn: number, callId: string | undefined, status: 'ok' | 'error' | 'stopped', error?: string, output?: string, exitCode?: number, signal?: string, meta?: unknown): void => {
         const byCall = turnToolsByCall.get(turn);
-        let item: HistoryChainItem | undefined = callId ? byCall?.get(callId) : undefined;
+        let item: DshHistoryTurnProcessItem | undefined = callId ? byCall?.get(callId) : undefined;
         if (!item) {
             const arr = turnChain.get(turn) ?? [];
             for (let i = arr.length - 1; i >= 0; i--) {
@@ -416,7 +418,7 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
                         const callId = b['id'] !== undefined ? String(b['id']) : undefined;
                         let arr = turnChain.get(turn);
                         if (!arr) { arr = []; turnChain.set(turn, arr); }
-                        const item: HistoryChainItem = { kind: 'tool', name, argsRaw, callId, status: 'running' };
+                        const item: DshHistoryTurnProcessItem = { kind: 'tool', name, argsRaw, callId, status: 'running' };
                         arr.push(item);
                         if (callId) {
                             let byCall = turnToolsByCall.get(turn);
@@ -428,31 +430,25 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
             }
             if (hasText) { turnReplyTexts.set(turn, (turnReplyTexts.get(turn) ?? 0) + 1); }
         } else if (e.type === 'tool/result') {
-            const callId = d['callId'] !== undefined ? String(d['callId']) : undefined;
+            // 按上游 schema 解包：内容在 message.content[0].content，配对 id 在 message.source.callId
+            const payload = readToolResult(d);
             const errCode = (d['error'] as { code?: string } | undefined)?.code;
-            // 结果文本（供 Terminal 卡展示输出）：message.content 文本块/字符串
-            let output = ''
-            const msgObj = d['message'] as { content?: unknown } | undefined
-            const content = msgObj?.content
-            if (Array.isArray(content)) {
-                for (const b of content) {
-                    const bb = b as { type?: string; text?: unknown }
-                    if ((bb['type'] === 'text' || bb['type'] === 'tool-result') && typeof bb['text'] === 'string') output += bb['text']
-                }
-            } else if (typeof content === 'string') {
-                output = content
-            }
+            // 结果文本（供 Terminal 卡展示输出）：块数组展平，非 text 块序列化为 pretty JSON
+            const output = resultText(payload.blocks, d['error'] as { name?: unknown; code?: unknown } | undefined)
             // 退出状态：从输出末尾 marker 解析（Terminal 卡 Pill 展示），并从展示输出剥掉 marker
             const status = parseExitStatus(output)
-            finishTool(turn, callId, errCode ? 'error' : 'ok', errCode, status.output || undefined, status.exitCode, status.signal, d['meta']);
+            finishTool(turn, payload.callId, toolStatusOf(errCode, payload.isError), errCode, status.output || undefined, status.exitCode, status.signal, d['meta']);
         }
     }
     // 兜底状态(running→ok/stopped) + 计数 + 挂到该回合最后一条 assistant
     for (const [turn, items] of turnChain) {
         let toolCallCount = 0;
+        let subagentCount = 0;
         for (const it of items) {
             if (it.kind !== 'tool') { continue; }
-            if (!(it.name === 'subagent' || it.name.startsWith('subagent_'))) { toolCallCount += 1; }
+            // 与实时同口径：subagent 委派单独计数，不进 toolCallCount
+            if (it.name === 'subagent' || it.name.startsWith('subagent_')) { subagentCount += 1; }
+            else { toolCallCount += 1; }
             if (it.status === 'running') {
                 const kind = endStatus.get(turn);
                 it.status = kind && kind !== 'completed' ? 'stopped' : 'ok';
@@ -462,6 +458,7 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
         const counts: HistoryCounts = {
             toolCallCount,
             messageCount: Math.max(0, (turnReplyTexts.get(turn) ?? 0) - (finalTextTurns.has(turn) ? 1 : 0)),
+            subagentCount,
         };
         if (idx !== undefined) {
             const item = out[idx];

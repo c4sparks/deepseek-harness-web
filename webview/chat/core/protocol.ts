@@ -86,14 +86,16 @@ export interface AtSessionRef {
   mention: string
 }
 
-/** 实时/历史 过程折叠计数（官方口径：toolCallCount=非 subagent 工具调用数；messageCount=最终答复前带文本的中间 assistant 消息数） */
+/** 实时/历史 过程折叠计数（三个计数：toolCallCount=非 subagent 工具调用数；
+ *  messageCount=最终答复前带文本的中间 assistant 消息数；subagentCount=subagent 委派数） */
 export interface TurnCounts {
   toolCallCount?: number
   messageCount?: number
+  subagentCount?: number
 }
 
 /** 历史会话里 assistant 回复的可视"过程动作"（实时另有 chatActivity/chatReasoning 增量拼装） */
-export type HistoryChainItem =
+export type DshHistoryTurnProcessItem =
   | { kind: 'reasoning'; text: string }
   | {
       kind: 'context'
@@ -113,6 +115,9 @@ export interface ViewActivity {
   callId?: string
   argsRaw?: string
   error?: string
+  /** toolDone 的终态：宿主按 isError + code 特例判出（见 `src/dsh/official/tool-status.ts`）。
+   *  直接采用，**不要**自己按 `error` 判——那样会把「被打断/被取消」误标成失败。 */
+  status?: 'ok' | 'error' | 'stopped'
   output?: string
   /** tool/result 输出末尾 marker 解析出的退出码/终止信号（Terminal 卡 Pill 展示；剥掉 marker 后的干净输出在 output） */
   exitCode?: number
@@ -159,7 +164,7 @@ export type HistoryMessage =
       /** 停止状态展示文案（已停止 · Stopped），仅被停止的回合最后一条 assistant 有 */
       status?: string
       /** assistant 回合的过程链（思考/工具），恢复后同样可折叠展开 */
-      chain?: HistoryChainItem[]
+      chain?: DshHistoryTurnProcessItem[]
       counts?: TurnCounts
     }
   | HistoryContextItem
@@ -203,6 +208,8 @@ export type HostToViewMessage =
   | {
       type: 'chatInfo'
       projections?: Record<string, unknown>
+      /** 当前会话工作区根路径：终端卡 cwd 标签在工具调用未带 workdir 时兜底（官方同口径） */
+      cwd?: string
       models?: ChatModelInfo
       agentPresets?: { presets?: ChatAgentPreset[] }
       agentPreset?: string

@@ -461,9 +461,12 @@ async function postChatInfo(webview: vscode.Webview): Promise<void> {
                 : agentPresets?.presets.find((p) => p.isDefault)?.id;
         const sessionMeta = projections?.['sessionListMetadata'] as { blank?: boolean } | undefined;
         const agentPresetLocked = sessionMeta?.blank === false;
+        // 会话工作区根路径：终端卡 cwd 标签在工具调用未带 workdir 时用它兜底（官方同口径）
+        const cwd = await dsh.currentWorkspacePath();
         void webview.postMessage({
             type: 'chatInfo',
             projections,
+            cwd,
             models,
             agentPresets,
             agentPreset,

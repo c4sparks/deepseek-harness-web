@@ -3,9 +3,9 @@
 // 标签"思考"固定不换行；全文始终在 DOM。
 import { html } from 'htm/preact'
 import { useEffect, useRef, useState } from 'preact/hooks'
-import type { ChainItem } from '../../core/store/chat'
+import type { DshTurnProcessItem } from '../../core/store/chat'
 
-type Reasoning = Extract<ChainItem, { kind: 'reasoning' }>
+type Reasoning = Extract<DshTurnProcessItem, { kind: 'reasoning' }>
 
 /** 收起预览 = 首个非空段（单行，宽不足再省略；全文靠展开）。 */
 const firstLine = (text: string): string => {
