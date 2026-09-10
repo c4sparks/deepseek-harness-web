@@ -87,7 +87,9 @@ function durableTitleOf(s: {
     projectionValues?: Record<string, unknown>;
     projections?: { values?: Record<string, unknown> };
 }): string | undefined {
-    if (typeof s.title === 'string' && s.title.trim() !== '') return s.title;
+    if (typeof s.title === 'string' && s.title.trim() !== '') {
+        return s.title;
+    }
     const pv = s.projectionValues ?? (s.projections?.values as Record<string, unknown> | undefined);
     const t = pv?.['title'];
     return typeof t === 'string' && t.trim() !== '' ? t : undefined;

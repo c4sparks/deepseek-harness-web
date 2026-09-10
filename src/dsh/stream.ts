@@ -330,18 +330,18 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
                 case 'tool/result': {
                     // 结果文本（供 Terminal/Read 等卡展示输出）：按上游 schema 解包后展平，
                     // 非 text 块序列化为 pretty JSON。配对 id 在 message.source.callId，不在顶层
-                    const payload = readToolResult(d)
-                    let output = resultText(payload.blocks, d['error'] as { name?: unknown; code?: unknown } | undefined)
+                    const payload = readToolResult(d);
+                    let output = resultText(payload.blocks, d['error'] as { name?: unknown; code?: unknown } | undefined);
                     // 退出状态：先于截断解析（marker 在输出末尾，截断会切掉）；再从展示输出剥掉 marker
                     if (process.env['DSH_RAWLOG']) {
                         console.log('[dsh-debug] tool/result callId=' + String(payload.callId) + ' meta=' + JSON.stringify(d['meta']).slice(0, 400) + ' blocks=' + JSON.stringify(payload.blocks ?? '').slice(0, 300));
                     }
-                    const status = parseExitStatus(output)
-                    output = status.output
-                    const exitCode = status.exitCode
-                    const signal = status.signal
+                    const status = parseExitStatus(output);
+                    output = status.output;
+                    const exitCode = status.exitCode;
+                    const signal = status.signal;
                     if (output.length > 8000) {
-                        output = output.slice(0, 8000) + '\n…(输出过长已截断)'
+                        output = output.slice(0, 8000) + '\n…(输出过长已截断)';
                     }
                     const errCode = (d['error'] as { code?: string } | undefined)?.code;
                     opts.onActivity?.({

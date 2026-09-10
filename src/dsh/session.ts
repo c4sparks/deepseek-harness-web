@@ -434,9 +434,9 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
             const payload = readToolResult(d);
             const errCode = (d['error'] as { code?: string } | undefined)?.code;
             // 结果文本（供 Terminal 卡展示输出）：块数组展平，非 text 块序列化为 pretty JSON
-            const output = resultText(payload.blocks, d['error'] as { name?: unknown; code?: unknown } | undefined)
+            const output = resultText(payload.blocks, d['error'] as { name?: unknown; code?: unknown } | undefined);
             // 退出状态：从输出末尾 marker 解析（Terminal 卡 Pill 展示），并从展示输出剥掉 marker
-            const status = parseExitStatus(output)
+            const status = parseExitStatus(output);
             finishTool(turn, payload.callId, toolStatusOf(errCode, payload.isError), errCode, status.output || undefined, status.exitCode, status.signal, d['meta']);
         }
     }

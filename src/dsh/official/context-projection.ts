@@ -29,12 +29,16 @@ function readString(record: Record<string, unknown>, key: string): string | null
 /** 读 source 里一个成员数组的某个字段（label/path），去重保序。 */
 function collect(source: Record<string, unknown>, member: string, field: string): string[] {
     const list = source[member];
-    if (!Array.isArray(list)) return [];
+    if (!Array.isArray(list)) {
+        return [];
+    }
     const seen: string[] = [];
     for (const entry of list) {
         const record = asRecord(entry);
         const value = record === null ? null : readString(record, field);
-        if (value !== null && !seen.includes(value)) seen.push(value);
+        if (value !== null && !seen.includes(value)) {
+            seen.push(value);
+        }
     }
     return seen;
 }
@@ -64,7 +68,9 @@ export function contextForm(source: unknown): KnownContextForm | null {
 export function contextProvenance(source: unknown): ContextProvenanceView {
     const record = asRecord(source);
     const kind = record === null ? null : readString(record, 'kind');
-    if (record === null || kind === null) return { role: 'inject', label: null };
+    if (record === null || kind === null) {
+        return { role: 'inject', label: null };
+    }
     switch (kind) {
         case 'session-reference':
             return { role: 'recall', label: joined(collect(record, 'references', 'label')) ?? kind };
@@ -82,7 +88,9 @@ export function contextProvenance(source: unknown): ContextProvenanceView {
 
 /** 是否为一条上下文注入 user/message（source.kind !== 'user' 的非人类表层消息）。 */
 export function isContextMessage(event: { type?: string; data?: Record<string, unknown> }): boolean {
-    if (event.type !== 'user/message') return false;
+    if (event.type !== 'user/message') {
+        return false;
+    }
     const source = event.data?.['source'];
     const record = asRecord(source);
     return record === null ? false : record['kind'] !== 'user';
