@@ -50,10 +50,22 @@
 - 审批 value：`"allowed-once" | "rejected"`；提问 value：`{ answers:[{id,selected[],custom?}] }`；
   提问取消以 `UserQuestionError` / `ASK_CANCELLED` rejected 表达。
 
-`src/dsh/events.ts` 维护这条可重连流并按会话投递；聊天层应答后由它回传结果。官方页面同样实现该链路，二者谁先应答即生效，重复结果在服务端幂等。
+`src/dsh/events.ts` 维护这条可重连流并按会话投递；聊天层应答后由它回传结果。上游页面同样实现该链路，二者谁先应答即生效，重复结果在服务端幂等。
 
 ## 事件 / usage / 错误码
 事件（`DSH_EVENT_TYPES`）：user/message、assistant/message(+usage)、assistant/chunk(text-delta/reasoning-delta/finish)、step/start·end、tool/call·result、turn/start·end、request/header·context。
+
+**`tool/result` 载荷层级**（【v0.1.7 · dsh 0.1.2-rc.1】查明并修正，此前读错导致工具输出为空）：
+| 要取的东西 | 位置 | 说明 |
+|---|---|---|
+| 展示内容 | `data.message.content[0].content` | `content[0]` 是 `tool-result` 包装块（含 `toolCallId`/`isError`），真正的 `ContentBlock[]` 在**它的** `content` 里。读 `data.message.content` 顶层拿到的是包装块本身 |
+| 配对 id | `data.message.source.callId` | **顶层没有 `callId`**。读 `data.callId` 恒取到 undefined，`toolDone` 与工具行配不上，输出永远落不进去 |
+| 失败标记 | `data.message.content[0].isError`、`data.error{name,code}` | |
+| 卡片数据 | `data.meta` | web 卡的 statusCode/sources/answer/truncated 等 |
+| 历史遗留格式 | 顶层 `callId` + 扁平 `content` | 迁移前的老格式，解包器仍兼容 |
+
+解包统一走 `src/dsh/official/result-text.ts` 的 `readToolResult()`（两种格式都认），展平走同文件的 `resultText()`；`stream.ts`（实时）与 `session.ts`（历史）共用。
+
 usage：uncachedInputTokens/outputTokens/cacheReadTokens/cacheWriteTokens/reasoningTokens[/totalTokens]（原样透传、缺失不补 0）。
 投影 fields：sessionStats/tokenUsage/permissions/modelSelection/agentPreset（v0.1.4 新增）/title/goal/todos。
 错误码：arguments-invalid 查参数名；internal 重试/看日志；401/403 需鉴权；404 换斜杠；非 JSON=端口非 dsh。
