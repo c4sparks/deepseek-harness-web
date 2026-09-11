@@ -17,7 +17,6 @@ import {
     askInSessionStreaming,
     getSessionProjections,
     getSessionMessages,
-    getSystemPrompt,
     type DshEndpoint,
     type DshReplyStats,
     type DshTurnCounts,
@@ -26,6 +25,7 @@ import {
     type DshContentPart,
     type DshQuestionRequest,
     type DshContext,
+    type DshSystemPrompt,
     type SessionMessageItem,
     rpcCall,
     runSessionCommand,
@@ -696,10 +696,6 @@ export class DshService {
         return getSessionMessages(sessionId);
     }
 
-    /** 当前会话的工作区指令（系统提示词，agent-instructions 注入）；无则 null。 */
-    async getSystemPrompt(sessionId: string): Promise<{ label: string | null; content: unknown[] } | null> {
-        return getSystemPrompt(sessionId);
-    }
 
     // ---------- 官方投影 / 模型 / 权限 ----------
 
@@ -806,6 +802,7 @@ export class DshService {
             onApproval?: (a: DshApproval) => void;
             onQuestion?: (q: DshQuestionRequest) => void;
             onContext?: (c: DshContext) => void;
+            onSystemPrompt?: (s: DshSystemPrompt) => void;
             isCancelled?: () => boolean;
         } = {}
     ): Promise<{ text: string; stats: DshReplyStats; time?: number; end?: { kind: string; message?: string }; counts?: DshTurnCounts }> {

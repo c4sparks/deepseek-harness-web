@@ -477,20 +477,6 @@ async function postChatInfo(webview: vscode.Webview): Promise<void> {
     }
 }
 
-/** 下发当前会话的工作区指令（系统提示词）到页面左上角常驻入口；无则发 null（隐藏入口）。 */
-async function postSystemPrompt(webview: vscode.Webview): Promise<void> {
-    try {
-        const sid = dsh.getSessionId();
-        if (!sid) {
-            void webview.postMessage({ type: 'chatSystemPrompt', systemPrompt: null });
-            return;
-        }
-        const sp = await dsh.getSystemPrompt(sid);
-        void webview.postMessage({ type: 'chatSystemPrompt', systemPrompt: sp });
-    } catch {
-        void webview.postMessage({ type: 'chatSystemPrompt', systemPrompt: null });
-    }
-}
 
 /**
  * 状态类斜杠命令(/plan /goal…)执行后的投影刷新。dsh 把 plan/goal 选择按会话事件 fold 成投影：
@@ -686,6 +672,11 @@ function setupChatWebview(
                             onContext: (c) => {
                                 if (g === gen.n) {
                                     post({ type: 'chatContext', context: c });
+                                }
+                            },
+                            onSystemPrompt: (s) => {
+                                if (g === gen.n) {
+                                    post({ type: 'chatSystemLine', text: s.text });
                                 }
                             },
                         }
@@ -1068,7 +1059,6 @@ async function wsSwitchNew(wsId: string): Promise<void> {
     postToChats({ type: 'clear' });
     for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
         void postChatInfo(w);
-        void postSystemPrompt(w);
     }
     vscode.window.showInformationMessage('已切换工作区');
 }
@@ -1106,7 +1096,6 @@ async function wsRestore(wsId: string, sessionId: string, blank: boolean): Promi
     postToChats({ type: 'chatHistory', messages, sessionId });
     for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
         void postChatInfo(w);
-        void postSystemPrompt(w);
     }
     postToChats({ type: 'busy', kind: null });
 }
@@ -1127,7 +1116,6 @@ async function wsCreateNew(): Promise<boolean> {
     postToChats({ type: 'clear' });
     for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
         void postChatInfo(w);
-        void postSystemPrompt(w);
     }
     vscode.window.showInformationMessage(`已新建并切换到工作区：${created.workspace.title || path.basename(dir)}`);
     return true;

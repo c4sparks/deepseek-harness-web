@@ -107,6 +107,5 @@ export function createChatStore(host: ChatHost): ChatStore {
     statsLine: status.store.statsLine,
     planState: status.store.planState,
     goalState: status.store.goalState,
-    systemPrompt: status.store.systemPrompt,
   }
 }

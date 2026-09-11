@@ -143,7 +143,13 @@ export interface HistoryContextItem {
 }
 
 export type HistoryMessage =
-  | { role: 'user'; text: string; time?: number }
+  | {
+      role: 'user'
+      text: string
+      time?: number
+      /** 该回合实际发给模型的 system（上游 `system-prompt` 节点）；仅该回合第一条 user 行带 */
+      systemPrompt?: string
+    }
   | {
       role: 'assistant'
       text: string
@@ -218,9 +224,9 @@ export type HostToViewMessage =
   | { type: 'draft'; text?: string }
   | { type: 'chatHistory'; messages?: HistoryMessage[]; sessionId?: string }
   | {
-      type: 'chatSystemPrompt'
-      /** 当前会话的工作区指令（系统提示词，agent-instructions 注入）；null=无（左上角入口隐藏） */
-      systemPrompt?: { label: string | null; content: unknown[] } | null
+      type: 'chatSystemLine'
+      /** 一个模型请求实际发给模型的 system（上游 `system-prompt` 节点）：在所属回合开头渲染一条可折叠行 */
+      text: string
     }
   | { type: 'clear' }
   | { type: 'busy'; kind?: 'loading' | 'switching' | null }

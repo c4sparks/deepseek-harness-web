@@ -60,6 +60,8 @@ export interface TurnCounts {
 
 export type ChatRow =
   | { kind: 'user'; key: number; text: string; images: ImageAttachment[]; time: string; refs?: Array<{ kind: RefChip['kind']; label: string }> }
+  /** 系统提示词行（上游 `system-prompt` 节点）：该回合实际发给模型的 system，可折叠；位置在该回合用户提问之前 */
+  | { kind: 'sysprompt'; key: number; text: string }
   | {
       kind: 'context'
       key: number
@@ -144,8 +146,6 @@ export interface ChatStore {
   planState: Signal<{ active: boolean; pending: boolean } | null>
   /** 会话目标(投影 goal)；null=无目标/能力缺失。goal bar 常驻条数据源（形状按官方 GoalProjection） */
   goalState: Signal<{ objective: string; phase: string } | null>
-  /** 当前会话的系统提示词（工作区指令 agent-instructions），左上角常驻入口数据源；null=无 */
-  systemPrompt: Signal<{ label: string | null; content: unknown[] } | null>
   /** 官方 waterfall 提问弹窗（输入框上方）：pending 时让用户选择/提交/取消/关闭；null=无 */
   pendingQuestion: Signal<{ rpcId?: string; sessionId?: string; questions: QuestionSpec[] } | null>
   /** 主动触底请求计数：用户发送/重新生成/恢复会话时 +1（MessageList 消费后清零并强制滚到底） */

@@ -6,9 +6,13 @@ import type { ChatStore } from '../core/store/chat'
 
 export function ModelPicker({ store }: { store: ChatStore }) {
   const sel = store.sel.value
-  const activeModel = (provider: string, model: string): { name?: string; reasoning?: { efforts?: Array<{ id: string; name: string }> } } | undefined =>
+  const activeModel = (provider: string, model: string): { name?: string; reasoning?: { efforts?: Array<{ id: string; name: string }>; defaultEffort?: string } } | undefined =>
     sel.modelGroups?.find((g) => g.id === provider)?.models.find((m) => m.id === model)
-  const efforts = activeModel(sel.curProvider, sel.curModel)?.reasoning?.efforts ?? []
+  const active = activeModel(sel.curProvider, sel.curModel)
+  const efforts = active?.reasoning?.efforts ?? []
+  // 对齐上游 ModelSelect：该模型没有 defaultEffort 时，等级列表首位给「Default」项（= 走提供方默认，不传 effort）。
+  // 缺这一项时，切到这类模型等级位会空着，用户也无法表达「就用默认」
+  const showProviderDefault = active?.reasoning !== undefined && active.reasoning.defaultEffort === undefined
   return html`<div class="modelpicker">
     <div class="popup-title">模型</div>
     ${sel.modelFailures.length > 0
@@ -29,9 +33,16 @@ export function ModelPicker({ store }: { store: ChatStore }) {
           )}
         </div>`
     )}
-    ${efforts.length > 0
+    ${efforts.length > 0 || showProviderDefault
       ? html`<div>
           <div class="optgroup-label">推理等级</div>
+          ${showProviderDefault
+            ? html`<div class=${'opt reason' + (sel.curEffort === '' ? ' selected' : '')} key="provider-default"
+              onClick=${() => {
+                store.selectModel(sel.curProvider, sel.curModel, '') // '' = 显式选提供方默认
+                store.closePopups() // 选等级即提交关闭
+              }}>Default</div>`
+            : null}
           ${efforts.map(
             (e) => html`<div class=${'opt reason' + (e.id === sel.curEffort ? ' selected' : '')} key=${e.id}
               onClick=${() => {

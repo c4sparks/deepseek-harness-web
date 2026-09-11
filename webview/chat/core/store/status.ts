@@ -1,11 +1,11 @@
 // 会话状态切片：过渡态与宿主投影（统计行 / plan / goal / 系统提示词）。
-// 除 applyProjections 外无动作、不需要 host；busy / systemPrompt 由归约器直接写 .value。
+// 除 applyProjections 外无动作、不需要 host；busy 由归约器直接写 .value。
 import { signal } from '@preact/signals'
 import { formatStatsLine } from '../format'
 import type { ChatStore } from './types'
 
 export interface StatusSlice {
-  store: Pick<ChatStore, 'busy' | 'sessionCwd' | 'statsLine' | 'planState' | 'goalState' | 'systemPrompt'>
+  store: Pick<ChatStore, 'busy' | 'sessionCwd' | 'statsLine' | 'planState' | 'goalState'>
   /** 由投影快照刷新统计行、plan 与 goal 三项（形状兼容见下）。 */
   applyProjections(proj: Record<string, unknown>): void
   reset(): void
@@ -17,7 +17,6 @@ export function createStatus(): StatusSlice {
   const statsLine = signal({ text: '', title: '' })
   const planState = signal<{ active: boolean; pending: boolean } | null>(null)
   const goalState = signal<{ objective: string; phase: string } | null>(null)
-  const systemPrompt = signal<{ label: string | null; content: unknown[] } | null>(null)
 
   /** plan 投影：能力未组合则键缺失 → 保持 null。 */
   function derivePlanState(proj: Record<string, unknown>): { active: boolean; pending: boolean } | null {
@@ -56,10 +55,9 @@ export function createStatus(): StatusSlice {
     statsLine.value = { text: '', title: '' }
     planState.value = null
     goalState.value = null
-    systemPrompt.value = null
     // sessionCwd 不随会话清空：它标识的是工作区，换会话后同一工作区仍有效；
     // 工作区切换由宿主推新的 chatInfo 覆盖。
   }
 
-  return { store: { busy, sessionCwd, statsLine, planState, goalState, systemPrompt }, applyProjections, reset }
+  return { store: { busy, sessionCwd, statsLine, planState, goalState }, applyProjections, reset }
 }

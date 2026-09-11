@@ -98,14 +98,19 @@ export function createSelectors(host: ChatHost, emitNotice: EmitNotice): Selecto
     }
   }
   function selectModel(provider: string, model: string, effort?: string): void {
-    // 对齐官方 ui-model-selection selectionOf：
+    // 对齐上游 ui-model-selection selectionOf：
     //   重新选当前同一 provider+model → 保留当前推理等级；
     //   切到别的模型 → 用该模型 reasoning.defaultEffort（模型默认等级随模型走）。
     // 显式传 effort(用户主动改等级)时始终用它。
     const s0 = sel.value
     const sameRoute = s0.curProvider === provider && s0.curModel === model
+    // '' 是「Default」(提供方默认) 的哨兵：显式清掉等级、不发给宿主，由上游按提供方默认解析。
+    // 不能复用 undefined —— 那是「未指定」，要按 sameRoute/defaultEffort 自动推断
+    const explicitDefault = effort === ''
     let eff = effort
-    if (eff === undefined) {
+    if (explicitDefault) {
+      eff = undefined
+    } else if (eff === undefined) {
       if (sameRoute) {
         eff = s0.curEffort || undefined
       } else {
@@ -117,8 +122,8 @@ export function createSelectors(host: ChatHost, emitNotice: EmitNotice): Selecto
     sel.value = { ...sel.value, curProvider: provider, curModel: model }
     if (eff !== undefined) {
       sel.value = { ...sel.value, curEffort: eff }
-    } else if (!sameRoute) {
-      // 切走的模型没有默认等级：本地先清空旧等级，等宿主 postChatInfo 回刷真实值
+    } else if (!sameRoute || explicitDefault) {
+      // 切走的模型没有默认等级 / 用户显式选 Default：本地先清空，等宿主 postChatInfo 回刷真实值
       sel.value = { ...sel.value, curEffort: '' }
     }
     host.post({

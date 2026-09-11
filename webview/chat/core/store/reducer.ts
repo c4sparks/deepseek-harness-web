@@ -85,8 +85,9 @@ export function createReducer(deps: ReducerDeps): ReducerSlice {
       case 'chatHistory':
         history.renderHistory(m.messages ?? [], m.sessionId)
         break
-      case 'chatSystemPrompt':
-        status.store.systemPrompt.value = m.systemPrompt ?? null
+      case 'chatSystemLine':
+        // 上游 system-prompt 节点：插在该回合用户提问之前的一条可折叠行
+        messages.systemLine(m.text ?? '')
         break
       case 'clear':
         reset()

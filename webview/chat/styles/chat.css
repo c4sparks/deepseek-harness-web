@@ -343,6 +343,9 @@
     width: min(360px, 92vw);
     max-width: none;
   }
+  /* 容器只为承接键盘事件而聚焦(tabIndex=-1)，不该长出 VS Code 默认的焦点描边——选中态由行的 .selected 表达 */
+  #modePopup:focus,
+  #modePopup:focus-visible { outline: none; }
   #modePopup .opt {
     flex-direction: column;
     align-items: flex-start;
@@ -460,14 +463,15 @@
     opacity: 0.72;
   }
   /* 公共可搜索选择弹窗（SearchPicker）：顶部搜索框 + 列表 */
-  .spicker { display: flex; flex-direction: column; gap: 2px; }
+  /* 列表自己滚、搜索框钉住：SearchPicker 打开时会自动定位当前项，若让外层 .popup 滚会把搜索框一起滚走 */
+  .spicker { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-height: 0; }
   .spicker-search {
     box-sizing: border-box; width: 100%; margin: 0 0 2px; padding: 4px 8px; font-size: 12px;
     background: var(--vscode-input-background, #1e1e1e); color: var(--vscode-input-foreground, #ddd);
     border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.18)); border-radius: 5px; outline: none;
   }
   .spicker-search:focus { border-color: var(--vscode-focusBorder, #4daafc); }
-  .spicker-list { display: flex; flex-direction: column; gap: 1px; }
+  .spicker-list { display: flex; flex-direction: column; gap: 1px; overflow-y: auto; min-height: 0; flex: 1 1 auto; }
   .spicker .opt { align-items: baseline; gap: 8px; }
   .spicker .sp-name { flex: none; white-space: nowrap; }
   .spicker .sp-desc {
@@ -654,7 +658,7 @@
   .msg-actions .tm-btn:hover { background: rgba(255,255,255,0.08); color: var(--vscode-foreground, #ddd); }
   .msg-actions .tm-btn.active { color: var(--vscode-foreground, #ddd); background: rgba(128,128,128,0.25); }
 
-  /* 底部官方统计（左对齐，超长省略，悬停显示全文） */
+  /* 底部上游统计（左对齐，超长省略，悬停显示全文） */
   #statsbar {
     padding: 0 12px 4px; font-size: 11px; /* 顶部收紧，贴近输入框 */
     color: var(--vscode-descriptionForeground, #888);
@@ -795,9 +799,9 @@
   .user-text.notice-line.notice-ok .notice-msg { color: var(--vscode-foreground, #ddd); }
   .user-text.notice-line .notice-cmd { opacity: 0.75; }
 
-  /* ===== 会话级「系统提示词」常驻入口（聊天区最左上角）=====
-     数据=当前会话 agent-instructions 注入；无则整行不渲染。 */
-  .sysp { margin: 0 14px 2px; }
+  /* ===== 系统提示词行（上游 system-prompt）：对话流内、每回合开头一条 =====
+     左边不留 margin：#messages 已有 14px padding，再加 14px 会让图标比回合过程折叠头（20px）偏右 14px */
+  .sysp { margin: 0 14px 2px 0; }
   .sysp-head {
     display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
     border: none; background: none; color: inherit; cursor: pointer;
@@ -821,7 +825,7 @@
   }
   .sysp-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--vscode-foreground, #ccc); font: inherit; }
 
-  /* ===== Turn 级状态行（官方 ui-chat ChatView TurnStatus）：左下角「xxx...」=====
+  /* ===== Turn 级状态行（上游 ui-chat ChatView TurnStatus）：左下角「xxx...」=====
      在消息列表容器内左对齐(align-self flex-start)，running turn 全程显示，≥15s 加时钟。 */
   .turn-status {
     align-self: flex-start; flex: none;
@@ -834,7 +838,7 @@
   .turn-status-text { white-space: nowrap; }
   .turn-status-clock { font-size: 13px; font-weight: 400; color: var(--vscode-descriptionForeground, #999); font-variant-numeric: tabular-nums; }
 
-  /* ===== 官方 waterfall 提问弹窗（输入框上方）：pending 时显示，选择/输入 + 回答/取消/关闭 ===== */
+  /* ===== 上游 waterfall 提问弹窗（输入框上方）：pending 时显示，选择/输入 + 回答/取消/关闭 ===== */
   .q-dialog {
     margin: 0 14px 4px; padding: 12px 14px;
     border: 0.5px solid var(--vscode-panel-border, rgba(255,255,255,0.12));

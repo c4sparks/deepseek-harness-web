@@ -7,6 +7,7 @@ import { parseExitStatus } from "./official/exit-status";
 import { readToolResult, resultText } from "./official/result-text";
 import { toolStatusOf } from "./official/tool-status";
 import { contextForm, contextProvenance, isContextMessage } from "./official/context-projection";
+import { readRequestPrompt, requestShowsPrompt, requestToolsKey } from "./official/request-prompt";
 // ---------- 会话事件模型（dsh v0.1.2-rc.1 follow 载荷形状） ----------
 export type DshContentPart =
     | { type: 'text'; text: string }
@@ -180,7 +181,13 @@ export type DshHistoryTurnProcessItem =
 /** 过程折叠计数（官方口径，见 stream.ts DshTurnCounts 注释） */
 export type HistoryCounts = { toolCallCount: number; messageCount: number; subagentCount: number };
 export type SessionMessageItem =
-    | { role: 'user'; text: string; time?: number }
+    | {
+        role: 'user';
+        text: string;
+        time?: number;
+        /** 该回合实际发给模型的 system（上游 `system-prompt` 节点的数据源）；仅该回合第一条 user 行带 */
+        systemPrompt?: string;
+    }
     | {
         role: 'assistant';
         text: string;
@@ -211,6 +218,36 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
     const endStatus = new Map<number, string>(); // 非 completed 的 turn -> 状态(回显 kind)
     const turnContextItems = new Map<number, DshHistoryTurnProcessItem[]>(); // turn -> 该回合上下文注入项(并入链首)
     let openTurn: number | undefined; // 当前打开的 turn(seq 游标；context 事件无 turn，按区间归属)
+    // 系统提示词(request/header)：**必须先单独扫一遍**再挂。
+    // 原因：该事件在 turn 内、且**晚于**该回合的 user/message —— 上游正是因此才把锚点回退到 turn.start
+    // （`request-prompt.ts` 的 requestPromptAnchor）。边扫边挂会赶不上那条 user 行，导致一条都挂不上。
+    // 归属用 seq 游标（事件自身无 turn 字段）；若先于 turn/start 到达则暂存给下一个 turn。
+    const promptByTurn = new Map<number, string>();
+    {
+        let cursor: number | undefined;
+        let pending: string | undefined;
+        let prev: { system: string; toolsKey: string } | undefined;
+        for (const e of snap.events) {
+            const d = e.data ?? {};
+            const t = typeof d['turn'] === 'number' ? (d['turn'] as number) : undefined;
+            if (e.type === 'turn/start' && t !== undefined) {
+                cursor = t;
+                if (pending !== undefined) { promptByTurn.set(t, pending); pending = undefined; }
+            } else if (e.type === 'turn/end' && t !== undefined) {
+                cursor = undefined;
+            } else if (e.type === 'request/header') {
+                // 判据与实时侧共用 official/request-prompt.ts（同一逻辑只写一份）
+                const { system, reason } = readRequestPrompt(d);
+                const toolsKey = requestToolsKey(d);
+                const shows = requestShowsPrompt(prev, system, toolsKey, reason, d['startsSeries'] === true);
+                prev = { system, toolsKey };
+                if (shows && system !== '') {
+                    if (cursor !== undefined) { promptByTurn.set(cursor, system); }
+                    else { pending = system; }
+                }
+            }
+        }
+    }
     const partialText = new Map<number, string>();
     const finalTextTurns = new Set<number>();
     const chunkPiece = (e: RawEvent): string => {
@@ -236,7 +273,10 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
         if (eventIsSurfaceHuman(e)) {
             const text = textOfBlocks(e.data?.['content']);
             if (text) {
-                out.push({ role: 'user', text, time: e.time });
+                // 系统提示词挂该回合第一条 user 行上（渲染时插在它之前）；带过即删，后续 user 行不重复
+                const sysPrompt = openTurn !== undefined ? promptByTurn.get(openTurn) : undefined;
+                if (sysPrompt !== undefined && openTurn !== undefined) { promptByTurn.delete(openTurn); }
+                out.push({ role: 'user', text, time: e.time, systemPrompt: sysPrompt });
             }
             continue;
         }
@@ -474,27 +514,6 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
     return out;
 }
 
-/**
- * 当前会话的工作区指令（系统提示词，agent-instructions 上下文注入）。
- * 扫 follow 快照 events，取最后一次 agent-instructions 注入的 content 与 label（工作区指令文件路径）。
- * 无/无内容 → null（UI 左上角不显示）。
- */
-export async function getSystemPrompt(sessionId: string): Promise<{ label: string | null; content: unknown[] } | null> {
-    const snap = await readFollowSnapshot(sessionId);
-    let latest: { label: string | null; content: unknown[] } | null = null;
-    for (const e of snap.events) {
-        if (!isContextMessage(e)) { continue; }
-        const source = e.data?.['source'];
-        const rec = source && typeof source === 'object' ? source as Record<string, unknown> : undefined;
-        if (rec?.['kind'] !== 'agent-instructions') { continue; }
-        const provenance = contextProvenance(source);
-        const content = (Array.isArray(e.data?.['content']) ? e.data?.['content'] : []) as unknown[];
-        if (content.length > 0) {
-            latest = { label: provenance.label, content };
-        }
-    }
-    return latest;
-}
 /**
  * 会话核心投影（适配 dsh v0.1.2-rc.1）。
  * 上游：无 `session.history` 投影；经 `session/follow` 快照的 projections.values 返回。

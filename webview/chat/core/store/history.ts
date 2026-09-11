@@ -25,6 +25,10 @@ export function createHistory(deps: HistoryDeps): HistorySlice {
     for (const item of list) {
       if (item.role === 'user') {
         lastUser = item.text
+        // 系统提示词行（上游 system-prompt）：宿主挂在该回合第一条 user 行上。
+        // 此刻当前 user 行还没 push → 直接 push 就落在它之前。
+        // （不能用 systemLine：那是给实时回插用的，会找到「上一条」user 行，第二回合起就错位了）
+        if (item.systemPrompt) messages.push({ kind: 'sysprompt', key: messages.nextKey(), text: item.systemPrompt })
         messages.addUser(item.text, [], item.time) // 恢复历史:显示快照里该消息的原时刻
       } else if (item.role === 'context') {
         // 上下文注入并入 assistant 链（session 已归并），不再作为独立行

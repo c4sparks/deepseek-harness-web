@@ -2,6 +2,12 @@
 
 All notable changes to the "deepseek-harness-web" extension will be documented in this file.
 
+## [0.1.8] - 2026-09-11
+
+### 变更
+
+- 界面交互，对话区显示优化
+
 ## [0.1.7] - 2026-09-09
 
 ### 变更

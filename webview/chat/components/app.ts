@@ -9,14 +9,14 @@ import { MODE_NAMES, DANGEROUS_PERMS } from '../core/format'
 import { showDialog } from '../modal'
 import { SearchPicker } from './SearchPicker'
 import { ModelPicker } from './ModelPicker'
+import { keepRowVisible } from '../core/scroll'
 import { useTriggerMenu } from '../core/trigger/useTrigger'
 import { slashTrigger } from '../core/trigger/slash'
 import { atTrigger } from '../core/trigger/at'
 import { MessageList } from './message/MessageList'
-import { SystemPromptEntry } from './message/SystemPromptEntry'
 import { QuestionDialog } from './message/QuestionDialog'
 
-// goal chip 的阶段中文标签（与官方 GoalPhase 对应；complete 时不显示 chip）
+// goal chip 的阶段中文标签（与上游 GoalPhase 对应；complete 时不显示 chip）
 const GOAL_PHASE_LABEL: Record<string, string> = {
   active: '进行中',
   paused: '已暂停',
@@ -71,6 +71,24 @@ function Popup({ store }: { store: ChatStore }) {
   useEffect(() => {
     composerRef.current = document.getElementById('composer')
   })
+  // 模式弹窗的键盘光标位：底色=光标、✓=当前生效模式（与权限/模型弹窗同一语义）
+  const [modeIdx, setModeIdx] = useState(0)
+  const modeRef = useRef<HTMLDivElement | null>(null)
+  const modeCount = sel.modeOptions.length
+  const modeActive = modeCount === 0 ? 0 : Math.min(Math.max(modeIdx, 0), modeCount - 1)
+  // 打开时定位到当前模式，并把 DOM 焦点交给容器——否则按键仍落在 textarea 上，收不到 ↑↓。
+  // 依赖只取 open：模式目录中途刷新(chatInfo)不重置用户已移动的光标
+  useEffect(() => {
+    if (open !== 'mode') return
+    const i = sel.modeOptions.findIndex((m) => m.id === sel.currentMode)
+    setModeIdx(i < 0 ? 0 : i)
+    modeRef.current?.focus()
+  }, [open])
+  // 光标移动时把高亮行滚进容器可视区（#modePopup 自身 overflow-y:auto）
+  useEffect(() => {
+    if (open !== 'mode') return
+    keepRowVisible(modeRef.current, modeActive)
+  }, [open, modeActive])
   // 锚定到对应按钮上方(与旧 anchorPopup 一致)
   const style = (
     btnId: string,
@@ -168,17 +186,45 @@ function Popup({ store }: { store: ChatStore }) {
     </div>`
   }
 
-  // 模式(固定位)
+  // 模式(固定位)：↑↓ 循环、Enter 选中、Esc 关闭；底色=光标位、✓=当前生效模式
   let modePopup = html`<div id="modePopup" class="popup hidden"></div>`
   if (open === 'mode') {
-    modePopup = html`<div id="modePopup" class="popup" style=${style('modeBtn', true)}>
+    // 关闭后把焦点交还输入框：弹窗卸载后焦点会掉到 body，接着打字/敲 "/" 都会失效
+    const backToInput = (): void => {
+      queueMicrotask(() => document.getElementById('input')?.focus())
+    }
+    const pickMode = (id: string): void => {
+      store.selectMode(id) // 内部 closePopups
+      backToInput()
+    }
+    const onModeKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        if (modeCount > 0) setModeIdx((i) => (i + 1) % modeCount)
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        if (modeCount > 0) setModeIdx((i) => (i - 1 + modeCount) % modeCount)
+      } else if (e.key === 'Enter') {
+        e.preventDefault()
+        const m = sel.modeOptions[modeActive]
+        if (m) pickMode(m.id)
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        store.closePopups()
+        backToInput()
+      }
+    }
+    modePopup = html`<div id="modePopup" class="popup" style=${style('modeBtn', true)} tabIndex=${-1}
+      role="listbox" aria-label="会话模式" ref=${modeRef} onKeyDown=${onModeKeyDown}>
       <div class="popup-title">会话模式</div>
-      ${sel.modeOptions.length === 0
+      ${modeCount === 0
         ? html`<div class="opt" style=${{ opacity: 0.6 }}>暂无可用模式</div>`
         : sel.modeOptions.map(
-            (m) => html`<div class=${'opt' + (m.id === sel.currentMode ? ' selected' : '')} key=${m.id}
-              onClick=${() => store.selectMode(m.id)}>
-              <span>${m.name || MODE_NAMES[m.id] || m.id}</span>
+            (m, i) => html`<div class=${'opt' + (i === modeActive ? ' selected' : '')} key=${m.id}
+              role="option" aria-selected=${i === modeActive} data-idx=${i}
+              onMouseEnter=${() => setModeIdx(i)}
+              onClick=${() => pickMode(m.id)}>
+              <span>${m.id === sel.currentMode ? '✓ ' : ''}${m.name || MODE_NAMES[m.id] || m.id}</span>
               ${m.description ? html`<span class="opt-desc">${m.description}</span>` : null}
             </div>`
           )}
@@ -249,8 +295,11 @@ function Composer({ store }: { store: ChatStore }) {
     const g = s.modelGroups?.find((x) => x.id === s.curProvider)
     const m = g?.models.find((x) => x.id === s.curModel)
     let label = m?.name || s.curModel
-    const effort = m?.reasoning?.efforts?.find((x) => x.id === s.curEffort)
-    if (s.curEffort && effort) label += ' · ' + (effort.name || s.curEffort)
+    // 等级位对齐上游 ModelSelect.effortLabel 的三级取值：当前值 → 该模型 defaultEffort → 上游字典的 Default。
+    // 末级不是空——没有它，切到无默认等级的模型时等级位会整个消失
+    const effId = s.curEffort || m?.reasoning?.defaultEffort
+    const effort = m?.reasoning?.efforts?.find((x) => x.id === effId)
+    if (m?.reasoning) label += ' · ' + (effort?.name || effId || 'Default')
     return label
   }
   const modeName = (): string => {
@@ -296,7 +345,7 @@ function Composer({ store }: { store: ChatStore }) {
     setGhostY((br ? er.top - br.top : 0) + parseFloat(cs.paddingTop))
   }, [slashHint, text])
 
-  // 已 claim 的斜杠命令行（/命令 参数…，首词命中带 hint 的 host 命令）：普通 Enter 直接执行（对齐官方）
+  // 已 claim 的斜杠命令行（/命令 参数…，首词命中带 hint 的 host 命令）：普通 Enter 直接执行（对齐上游）
   const argCommand = ((): string | null => {
     const v = text
     if (!v || v.includes('\n') || !v.startsWith('/')) return null
@@ -504,7 +553,6 @@ function TitlebarShell() {
 function ChatApp({ store }: { store: ChatStore }) {
   return html`${TitlebarShell()}
     <${Welcome} store=${store} />
-    <${SystemPromptEntry} store=${store} />
     <${MessageList} store=${store} />
     <${QuestionDialog} key=${store.pendingQuestion.value?.rpcId ?? 'none'} store=${store} />
     <${Composer} store=${store} />

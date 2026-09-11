@@ -1,5 +1,5 @@
-// "/" 斜杠命令触发器：行首 "/" 唤起，候选 = dsh host 命令目录 + 会话技能（按官方展示，无插件本地项）。
-// 数据源与官方 ui-commands/ui-skill 同名(commands/list、skills/list)。
+// "/" 斜杠命令触发器：行首 "/" 唤起，候选 = dsh host 命令目录(原序) + 客户端贡献(/model) + 会话技能。
+// 数据源与上游 ui-commands/ui-skill 同名(commands/list、skills/list)；顺序对齐上游：host 原序在前、贡献殿后、空查询不排序。
 import type { TriggerDef, TriggerRow } from './useTrigger'
 import type { ChatStore } from '../store/chat'
 
@@ -22,12 +22,17 @@ export function slashTrigger(store: ChatStore): TriggerDef {
     rows(): TriggerRow[] {
       const rows: TriggerRow[] = []
       const cat = store.slashCatalog.value
-      // 分组与标题同官方词典：指令(commands/list) → 技能(skills/list)；无插件本地组
-      const commands = (cat?.commands ?? []).slice().sort((a, b) => a.name.localeCompare(b.name))
+      // 分组标题同上游词典：指令(commands/list) → 技能(skills/list)。
+      // 组内不排序：上游空查询在 fuzzyCandidates 早退，host 返回序即展示序
+      const commands = cat?.commands ?? []
       for (const c of commands) {
         rows.push({ kind: 'command', group: 'command', groupLabel: '指令', prefix: '/', name: c.name, description: c.description, hint: c.input?.hint })
       }
-      const skills = (cat?.skills ?? []).slice().sort((a, b) => a.name.localeCompare(b.name))
+      // /model 上游由客户端(非 host)贡献：追加在指令组末尾，对齐上游「host 原序 + contribution 殿后」。
+      // kind 必须区别于 'command'，否则会落进 pick() 末尾「无参 command 立即执行」分支被误发到后端；
+      // group 仍挂 'command'，分组头按 group 边界渲染，不会在它前面重出「指令」头
+      rows.push({ kind: 'local', group: 'command', groupLabel: '指令', prefix: '/', name: 'model', description: '选择模型与推理等级' })
+      const skills = cat?.skills ?? []
       for (const s of skills) {
         rows.push({ kind: 'skill', group: 'skill', groupLabel: '技能', prefix: '/', name: s.name, description: s.description })
       }
@@ -41,6 +46,15 @@ export function slashTrigger(store: ChatStore): TriggerDef {
         store.closePopups()
         store.markSlashPick('permission')
         if (store.openPopup.value !== 'perm') store.togglePopup('perm')
+        return
+      }
+      if (row.kind === 'local' && row.name === 'model') {
+        // /model 是客户端贡献项：清掉 token，转交「仅模型列表」可搜索弹窗(openModelSearch)。
+        // 先 clear 再 open：clear 的归焦 microtask 先入队，SearchPicker 挂载后的自动聚焦后跑才拿得到焦点。
+        // 不能在这里 closePopups()——它会把下面刚设的 slashPickKind 清成 null，选中后就不回显结果行了
+        helpers.clear()
+        store.markSlashPick('model')
+        store.openModelSearch()
         return
       }
       if (row.kind === 'command' && !row.hint) {

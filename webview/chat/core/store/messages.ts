@@ -29,6 +29,8 @@ export interface MessagesSlice {
   pushApproval(approvalId: string, description: string, toolName?: string): void
   /** 追加一条用户行（历史恢复时传入事件自带时刻）。 */
   addUser(text: string, imgs?: ImageAttachment[], time?: number, refs?: Array<{ kind: RefChip['kind']; label: string }>): void
+  /** 插入一条系统提示词行（上游 `system-prompt`）：落在最近一条用户行之前，即该回合的开头。 */
+  systemLine(text: string): void
   /** 开启（或复用）当前进行中的 assistant 行。 */
   beginAssistant(prompt?: string): void
   /** 取一个列表内唯一行 key。 */
@@ -98,6 +100,18 @@ export function createMessages(host: ChatHost): MessagesSlice {
   function addUser(textMsg: string, imgs: ImageAttachment[] = [], time?: number, refs?: Array<{ kind: RefChip['kind']; label: string }>): void {
     // 实时本地上送用本地时刻;恢复历史时传入事件自带时间戳,不覆盖为"现在"
     push({ kind: 'user', key: rowKey++, text: textMsg, images: imgs, time: time !== undefined ? formatMsgClock(time) : nowTime(), refs })
+  }
+  /** 系统提示词行：上游把它锚在该回合可见消息序列的开头（用户提问之前），
+   *  而该事件到达时用户行已在列表里 → 回插到最近一条用户行之前。 */
+  function systemLine(text: string): void {
+    if (!text) return
+    const rows = messages.value
+    let at = -1
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i].kind === 'user') { at = i; break }
+    }
+    const row: ChatRow = { kind: 'sysprompt', key: rowKey++, text }
+    messages.value = at === -1 ? [...rows, row] : [...rows.slice(0, at), row, ...rows.slice(at)]
   }
   function beginAssistant(prompt = ''): void {
     ensureAssistant(prompt)
@@ -283,6 +297,7 @@ export function createMessages(host: ChatHost): MessagesSlice {
     finish,
     pushApproval,
     addUser,
+    systemLine,
     beginAssistant,
     nextKey,
     push,

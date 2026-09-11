@@ -5,6 +5,7 @@ import { parseExitStatus } from "./official/exit-status";
 import { readToolResult, resultText } from "./official/result-text";
 import { toolStatusOf } from "./official/tool-status";
 import { contextForm, contextProvenance } from "./official/context-projection";
+import { readRequestPrompt, requestShowsPrompt, requestToolsKey } from "./official/request-prompt";
 import {
     eventText,
     readFollowSnapshot,
@@ -76,6 +77,17 @@ export interface DshContext {
     /** 生产者声明的展示形态（opaque 用与官方一致），null = opaque */
     form: string | null;
 }
+/**
+ * 一次模型请求的系统提示词（上游 `system-prompt` 节点的数据源）。
+ * 取自 `request/header` 的 `header.system` —— 该请求**实际发给模型**的完整 system；
+ * 与 agent-instructions 的注入事件不是一回事（后者只说明"注入了一份指令文件"）。
+ */
+export interface DshSystemPrompt {
+    /** 该请求实际发给模型的完整 system（原文透传，不裁剪） */
+    text: string;
+    /** 上游 reason：initial / series / change */
+    reason?: string;
+}
 export interface DshApproval {
     approvalId?: string;
     description?: string;
@@ -110,8 +122,10 @@ interface StreamingOpts {
     onActivity?: (a: DshActivity) => void;
     onApproval?: (a: DshApproval) => void;
     onQuestion?: (q: DshQuestionRequest) => void;
-    /** 上下文注入行（source.kind !== 'user' 的 user/message：系统提示词/技能/召回…） */
+    /** 上下文注入行（source.kind !== 'user' 的 user/message：技能/召回…；系统提示词走 onSystemPrompt） */
     onContext?: (c: DshContext) => void;
+    /** 模型请求的系统提示词（`request/header`；上游在同回合开头渲染一条可折叠行） */
+    onSystemPrompt?: (s: DshSystemPrompt) => void;
 }
 interface TurnResult {
     text: string;
@@ -225,6 +239,8 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
         }, 400);
         // 本轮统计口径：只取本轮 assistant/message 事件自带的 usage，不并入会话级投影，
         // 也不自行累计步数（steps 只展示，不回填到本轮数字里）。
+        // 系统提示词(request/header)的跨事件状态：供上游那套「这条行要不要渲染」的判定
+        let prevPrompt: { system: string; toolsKey: string } | undefined;
         const handle = (raw: RawEvent): void => {
             if (raw.seq <= baselineSeq) {
                 return;
@@ -277,12 +293,14 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
                     break;
                 }
                 case 'user/message': {
-                    // 上下文注入（非用户 source）：系统提示词/技能目录/跨会话召回等，回 UI 渲染成折叠行。
-                    // 用官方投影逻辑判定（source.kind !== 'user'），把 content/source/provenance/form 透传。
+                    // 上下文注入（非用户 source）：技能目录/跨会话召回等，回 UI 渲染成折叠行。
+                    // 用上游投影逻辑判定（source.kind !== 'user'），把 content/source/provenance/form 透传。
+                    // 系统提示词（agent-instructions）例外：它走左上角常驻入口，不进对话区——必须与历史侧
+                    // （session.ts 的 getSessionMessages）同口径，否则实时冒出一行、刷新（走历史）后又消失。
                     const source = d['source'];
                     const record = source && typeof source === 'object' ? source as Record<string, unknown> : undefined;
                     const kind = record?.['kind'];
-                    if (kind !== undefined && kind !== 'user') {
+                    if (kind !== undefined && kind !== 'user' && contextForm(source) !== 'instructions') {
                         const content = Array.isArray(d['content']) ? d['content'] : [];
                         const provenance = contextProvenance(source);
                         opts.onContext?.({
@@ -293,6 +311,18 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
                             provenance,
                             form: contextForm(source),
                         });
+                    }
+                    break;
+                }
+                case 'request/header': {
+                    // 上游 system-prompt 节点的数据源：该请求**实际发给模型**的 system。
+                    // 判据与历史侧共用 official/request-prompt.ts（同一逻辑只写一份）。
+                    const { system, reason } = readRequestPrompt(d);
+                    const toolsKey = requestToolsKey(d);
+                    const shows = requestShowsPrompt(prevPrompt, system, toolsKey, reason, d['startsSeries'] === true);
+                    prevPrompt = { system, toolsKey };
+                    if (shows && system !== '') {
+                        opts.onSystemPrompt?.({ text: system, reason });
                     }
                     break;
                 }

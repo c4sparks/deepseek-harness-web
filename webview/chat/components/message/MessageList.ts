@@ -8,6 +8,7 @@ import { ApprovalRow } from './ApprovalRow'
 import { QuestionRow } from './QuestionRow'
 import { NoticeRow } from './NoticeRow'
 import { ContextInjectionRow } from './ContextInjectionRow'
+import { SysPromptRow } from './SysPromptRow'
 import { TurnStatus } from './TurnStatus'
 
 export function MessageList({ store }: { store: ChatStore }) {
@@ -49,6 +50,8 @@ export function MessageList({ store }: { store: ChatStore }) {
           return html`<${UserRow} key=${row.key} row=${row} store=${store} latest=${latest} />`
         case 'context':
           return html`<${ContextInjectionRow} key=${row.key} row=${row} />`
+        case 'sysprompt':
+          return html`<${SysPromptRow} key=${row.key} text=${row.text} />`
         case 'assistant':
           return html`<${AssistantRow} key=${row.key} row=${row} store=${store} latest=${latest} />`
         case 'approval':
