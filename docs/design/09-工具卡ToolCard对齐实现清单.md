@@ -9,7 +9,7 @@
 - 已删自造中文键名翻译（`TOOL_ARG_LABEL/toolArgEntries`）。
 - ToolRow 结构已 Disclosure：收起单行(标题+摘要+状态)、展开看内容。
 - ✅ **本轮已做（Terminal 卡主）**：工具变体分类、exitCode/signal 解析透传、Terminal 卡 UI 复刻（见下文勾选）。
-- ✅ **上下文注入行（非工具卡，同属 UI 对齐）**：宿主捕获非用户 source 的 `user/message`（系统提示词/技能/召回）→ `ChatRow.kind:'context'` → `message/ContextInjectionRow.ts` 按上游渲染。记录见 `docs/details/upgrade/09` §5.2。
+- ✅ **上下文注入行（非工具卡，同属 UI 对齐）**：宿主捕获非用户 source 的 `user/message`（系统提示词/技能/召回）→ `ChatRow.kind:'context'` → `message/ContextInjectionRow.ts` 按上游渲染。
 
 ## 待办（对齐上游，按序）
 ### 1 数据补齐（上游字段）
@@ -74,7 +74,7 @@
 - [x] 视觉数值(padding/margin/字号/圆角/gutter/line-height)复刻上游 `TerminalBlock.module.css`/`bash-sample.module.css`，已登记进 `docs/design/08` §5.4。
 
 ### 4 其它工具卡
-- [x] **web_fetch / web_search**：按上游 WebRow → WebBlock 复刻（见 `docs/details/upgrade/09` §5.3）。fetch 卡 = URL 超链接（**globe 浏览器图标**、无独立协议格）→ `HTTP {statusCode}` 状态**下一行** → 截断；search 卡显示 answer + 序号来源列表 + noResults/截断。数据来自 `tool/result.data.meta`（宿主补齐捕获），无 meta/畸形回退通用卡（输入/输出两分区）。
+- [x] **web_fetch / web_search**：按上游 WebRow → WebBlock 复刻。fetch 卡 = URL 超链接（**globe 浏览器图标**、无独立协议格）→ `HTTP {statusCode}` 状态**下一行** → 截断；search 卡显示 answer + 序号来源列表 + noResults/截断。数据来自 `tool/result.data.meta`（宿主补齐捕获），无 meta/畸形回退通用卡（输入/输出两分区）。
 - [x] **ask_user_question（提问）**：按上游 waterfall 形态——**交互在输入框上方弹窗**（`message/QuestionDialog`：选项/自由输入+回答(选全可提交)/取消/关闭），对话行 ask 行**只做问答记录**（`提问 · {n}/{N} 已回答 / 已取消 / 已中断` + 问题↔回复）；**提问不 fold**（hasFold 排除 ask）。数据=chatQuestion→`store.pendingQuestion` 信号。
 - [x] **差异卡 / 读文件卡 / 搜索卡**（【v0.1.7 · dsh 0.1.2-rc.1】）：按上游 `DiffBlock` / `ReadBlock` / `SearchBlock` 逐类复刻三张专属卡，`ToolRow` 分派顺序改为上游瀑布 `提问 → 终端 → 差异 → 读文件 → 搜索 → web → 通用`。数据来源与回退：
   - **差异卡**（`write`/`edit`/`str_replace_editor`）：优先用结果 `meta.diffs`；`write` 在 meta 缺失/空时**回退参数推导的整文件差异**（故 `write` 不依赖 meta，必出卡）；`edit` 依赖 `meta.diffs`，缺失即回退通用卡；`str_replace_editor` 定稿不出卡。模型 `webview/chat/core/diff-card.ts`，组件 `components/chain/DiffCard.ts`
@@ -91,7 +91,7 @@
 - [x] 编译：`tsc --noEmit`(src)、`tsc --noEmit -p webview/chat`、`node scripts/build-chat.mjs`、`node esbuild.js` 全绿。
 - [ ] 真机 F5：发多工具指令（含 Pwsh + web_fetch + web_search），看 Terminal 卡（命令原文/输出/退出码 Pill/复制/输出上限224px+内滚）、其余工具走通用卡（输入/输出两分区）；深浅主题、窄栏(editor tab)走查。
 - [ ] **行状态五类走查**（§2 的行状态标记做完后）：各跑一次并核对收起行——① 正常 ok（行首显变体图标，摘要 = 描述）；② running（行上掠光带）；③ **非零退出的 shell**（应整行红：④ 覆盖生效；摘要**仍是描述**——⑤ 只对 isError 生效）；④ 真失败（红点；摘要位换成**结果文本首行**并按错误色显示，**不显示裸错误码**）；⑤ 被打断 stopped（琥珀点）。另核对无障碍：读屏能播报 运行中/失败/已停止。
-- [ ] 对照上游截图逐点核对（`tmp/pic`：Pwsh 卡状态点 done、命令等宽、输出区、`复制`按钮；网页搜索卡）。
+- [ ] 对照上游截图逐点核对：Pwsh 卡状态点 done、命令等宽、输出区、`复制`按钮；网页搜索卡。
 
 ## 约束提醒（写死）
 - 中文/标签/文案：一律用上游字典原文；工具字段值：原样透传展示。

@@ -27,7 +27,7 @@
 | session/list | _request | 探测 | |
 | session/create · session/prompt | request | createSession / 发消息(queue) | |
 | session/rename · session/cancel | request | 改名 / 停止 | |
-| session/selectModel · session/modelCatalog | request / {} | 选模型 / 列模型 | 切模型不带 effort |
+| session/selectModel · session/modelCatalog | request / {} | 选模型 / 列模型 | 切模型带该模型 `reasoning.defaultEffort`；无则**不带** effort（上游按提供方默认解析，UI 显示 `Default`）。不传时投影 `modelSelection.next` 也没有该字段（上游 `pending` 原样存提交值） |
 | session/page · session/follow | request | 分页冷读 / 热流订阅 | rc1 无 session.history |
 | workspace/create · workspace/follow | request | 建工作区 / 枚举 | follow 走 mux |
 | commands/execute | {agentId,line,images} | 斜杠命令(/permission) | 点号 404 |
@@ -127,3 +127,8 @@ F1 聊天(session/prompt+follow+事件)、F2 模型(modelCatalog/selectModel)、
 ### 0.1.4（2026-09-05）
 - 新增：
   - 对接 `agentPresets/list`、`agentPresets/select`；投影字段补 `agentPreset`
+
+### next（2026-09-11）
+- 修改：
+  - `session/selectModel` 备注修正（原写「切模型不带 effort」，不准）：切模型带该模型 `reasoning.defaultEffort`；无则**不带** effort，由上游按提供方默认解析，UI 显示 `Default`
+  - 补记上游投影机制：`modelSelection.next = pending ?? lastUsed`，而 `pending` **原样存客户端提交的 selection**（`model-selection-projection.ts:65`）——所以不传 effort 时投影 `next` 也没有该字段，UI 读不到「上游实际解析出的等级」，要等下次请求后 `lastUsed`（来自 `request/header`）才有
