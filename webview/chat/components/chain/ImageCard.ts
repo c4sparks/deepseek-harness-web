@@ -7,7 +7,8 @@ import { AttachmentGallery } from '../attachment/AttachmentGallery'
 
 export function ImageCard({ card, store }: { card: ImageCardData; store: ChatStore }) {
   return html`<div class="img-card">
-    <div class="img-label">${card.label}</div>
+    <button type="button" class="img-label chain-file-link" title=${card.path}
+      onClick=${() => store.openFile(card.path)}>${card.label}</button>
     <${AttachmentGallery} store=${store} images=${card.images} />
     ${card.text !== '' ? html`<div class="img-meta">${card.text}</div>` : null}
   </div>`

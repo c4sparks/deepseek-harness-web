@@ -1,8 +1,8 @@
-// web 卡纯函数模型（对齐官方 ui-tool `models/web-card-model.ts` + `raw-tool-call.ts` 校验）。
+// web 卡纯函数模型：从 tool item 派生 fetch / search 两种卡（适配上游 0.1.5-rc.2）。
 // 从 tool item（name/argsRaw/meta/status）派生 WebBlock 需要的卡数据：
 //   web_fetch → {kind:'fetch', url, statusCode, truncated}（HTTP 状态码来自 tool/result.data.meta.statusCode）
 //   web_search → {kind:'search', answer?, sources[], truncated}
-// 校验失败/错误/运行中 → null（调用方回退泛型「输出 + raw JSON」）。照抄官方逻辑，不自行定义。
+// 校验失败/错误/运行中 → null（调用方回退通用卡）。判据不自行发明。
 
 export interface WebSource {
   url: string
@@ -15,7 +15,7 @@ export type WebCard =
   | { kind: 'fetch'; url: string; statusCode: number; truncated: boolean }
   | { kind: 'search'; answer?: string; sources: WebSource[]; truncated: boolean }
 
-/** 仅 http(s) URL 才允许成为可导航外链；其它协议作纯文本（对齐官方 WebBlock safeHref）。 */
+/** 仅 http(s) URL 才允许成为可导航外链；其它协议作纯文本（防注入：只认 http/https）。 */
 export function safeHref(url: string): string | undefined {
   try {
     const { protocol } = new URL(url)
@@ -25,7 +25,7 @@ export function safeHref(url: string): string | undefined {
   }
 }
 
-/** 链接可见标签：有 title 用 title，否则用 hostname，仍为空则原 URL（对齐官方 linkLabel）。 */
+/** 链接可见标签：有 title 用 title，否则用 hostname，仍为空则原 URL。 */
 export function linkLabel(url: string, title: string | undefined): string {
   if (title !== undefined && title !== '') return title
   try {

@@ -12,6 +12,17 @@ export interface ImageAttachment {
   name: string
 }
 
+/** 附件引用（图片）：事件里只有引用、没有字节，字节由附件层按需取（见 store/attachments）。 */
+export interface AttachmentRef {
+  attachmentId: string
+  mediaType: string
+  name?: string
+  /** 固有像素宽（图廊按它定尺寸） */
+  width?: number
+  /** 固有像素高 */
+  height?: number
+}
+
 export interface QuestionOption {
   label: string
   description?: string
@@ -130,7 +141,7 @@ export interface ViewActivity {
   blocks?: unknown
 }
 
-/** 历史会话里的一条上下文注入（source.kind !== 'user' 的 user/message：系统提示词/技能/召回…），对齐官方 ContextInjectionRow。 */
+/** 历史会话里的一条上下文注入（source.kind !== 'user' 的 user/message：系统提示词/技能/召回…）。 */
 export interface HistoryContextItem {
   role: 'context'
   /** dsh 事件自带时间戳(epoch 秒或毫秒) */
@@ -153,6 +164,10 @@ export type HistoryMessage =
       time?: number
       /** 该回合实际发给模型的 system（上游 `system-prompt` 节点）；仅该回合第一条 user 行带 */
       systemPrompt?: string
+      /** 该用户消息带的图片附件引用（恢复历史时用；实时路径的图是内联 base64，见 ChatRow 的 images） */
+      images?: AttachmentRef[]
+      /** 该用户消息带的上传文件（只有名字/大小：上游 file 引用不含本地路径，历史里只展示不可点开） */
+      files?: Array<{ name: string; bytes?: number }>
     }
   | {
       role: 'assistant'
@@ -217,6 +232,7 @@ export type HostToViewMessage =
       counts?: TurnCounts
     }
   | { type: 'filePicked'; path?: string }
+  | { type: 'fileUploaded'; key: string; receiptId?: string; name?: string; bytes?: number; error?: string }
   // 附件字节（附件大类）：结果帧只带附件引用，渲染层要显示时按 id 向宿主懒取
   | { type: 'attachmentBytes'; attachmentId: string; mediaType?: string; data?: string; error?: string }
   | {
@@ -261,7 +277,7 @@ export type HostToViewMessage =
 // ---------- 页面 → 宿主 ----------
 export type ViewToHostMessage =
   | { type: 'ready' }
-  | { type: 'chatSend'; text: string; images?: ImageAttachment[] }
+  | { type: 'chatSend'; text: string; images?: ImageAttachment[]; files?: Array<{ receiptId: string; name: string; path?: string }> }
   | { type: 'cancel' }
   | { type: 'copy'; text: string }
   | { type: 'approvalResponse'; approvalId: string; allow: boolean }
@@ -272,6 +288,10 @@ export type ViewToHostMessage =
   | { type: 'chatSelectMode'; agentPreset: string }
   | { type: 'pickFile' }
   | { type: 'attachmentReq'; attachmentId: string }
+  // 在编辑器区打开一个文件（相对路径由宿主按 cwd 解析）；line 为 1 起的行号
+  | { type: 'openFile'; path: string; line?: number; cwd?: string }
+  // 文件上送：webview 只给路径，字节由宿主读并上传；key 由 webview 生成（多文件并发对得上）
+  | { type: 'fileUploadReq'; key: string; path: string }
   // 自绘标题栏专属
   | { type: 'titleAction'; cmd: string }
   | {

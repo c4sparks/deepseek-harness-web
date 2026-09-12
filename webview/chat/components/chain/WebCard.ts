@@ -1,7 +1,7 @@
-// web 卡展开体（官方 ui-primitives WebBlock.tsx 复刻）。
+// web 卡展开体：fetch 的状态码/URL 与 search 的来源列表（适配上游 0.1.5-rc.2）。
 // fetch：URL 超链接（globe 图标，http(s) 才成锚）→ `HTTP {statusCode}` 状态**下一行** → 截断提示；
 // search：answer → 有序来源列表(url/title/snippet/publishedAt，序号引用) → 空则 noResults → 截断。
-// 照抄官方几何/标签；HTTP 状态在链接下一行（官方 URL 上、状态下）。
+// HTTP 状态在链接下一行（与 URL 同行在窄栏下会被挤掉）。
 import { html } from 'htm/preact'
 import { renderMd } from '../../core/markdown'
 import type { WebCard as WebCardData, WebSource } from '../../core/web-card'

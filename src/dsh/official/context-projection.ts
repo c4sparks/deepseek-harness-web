@@ -1,8 +1,8 @@
-// 上下文注入投影（对齐官方 ui-chat conversation-nodes/event-projection.ts 的 contextForm/contextProvenance）。
+// 上下文注入投影：把注入事件投影成 UI 需要的 role/label 与展示形态（适配上游 0.1.5-rc.2）。
 // 背景：dsh 的上下文注入是一条 source.kind !== 'user' 的 user/message durable 事件
 // （agent-instructions / skill-invocation / plugin / session-reference…），
 // 官方 Chat 据此在时间线里渲染成一条「上下文注入 / 跨会话召回」折叠行。
-// 本模块把「非用户 source 的 user/message」投影成 UI 需要的 role/label 与 form，**照抄官方逻辑**，不自行定义。
+// 判据只看事件自带字段，不自行发明规则；认不出的形态一律走兜底。
 
 /** 表单：生产者声明的信息形态；null = opaque 兜底展示。 */
 export type KnownContextForm = 'instructions' | 'catalog' | 'snapshot' | 'notice' | 'relay' | 'recall';
@@ -48,7 +48,7 @@ function joined(names: string[]): string | null {
 }
 
 /**
- * 读取生产者声明的展示形态（对齐官方 contextForm）。
+ * 读取生产者声明的展示形态；缺省 null（= opaque）。
  * @param source - 记录的 user/message source。
  * @returns 支持的 form，或 null（opaque 展示）。
  */

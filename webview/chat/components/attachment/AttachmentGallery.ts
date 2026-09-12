@@ -4,25 +4,15 @@
 import { html } from 'htm/preact'
 import { useEffect, useState } from 'preact/hooks'
 import type { ChatStore } from '../../core/store/chat'
+import type { AttachmentRef } from '../../core/protocol'
 
-/** 图廊条目：附件引用（上游 `ImageAttachmentRef` 中本插件用到的字段）。 */
-export interface AttachmentRef {
-  attachmentId: string
-  mediaType: string
-  name?: string
-  /** 固有像素宽（用于定尺寸；缺失按上限方图处理） */
-  width?: number
-  /** 固有像素高 */
-  height?: number
-}
-
-/** 单图长边上限、多图瓦片边长、显示比例上下限（对齐上游 singleFit / compact tile）。 */
+/** 单图长边上限、多图瓦片边长、显示比例上下限。 */
 const SINGLE_MAX = 240
 const TILE = 64
 const MIN_RATIO = 0.25
 const MAX_RATIO = 4
 
-/** 图廊文案（上游 ui-attachment 字典口径：加载中 / 加载失败点此重试）。 */
+/** 图廊三态文案。 */
 const labels = {
   loading: '加载中…',
   failed: '加载失败，点此重试',

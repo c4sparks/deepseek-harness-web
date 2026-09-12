@@ -2,10 +2,13 @@
 .vscode-test/**
 .claude/**
 .codegraph/**
+.dsh/**
+.skills/**
 CLAUDE.md
 webview/**
 scripts/**
 out/**
+dist/_harness/**
 node_modules/**
 src/**
 .gitignore

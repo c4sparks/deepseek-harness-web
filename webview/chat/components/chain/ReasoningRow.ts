@@ -1,4 +1,4 @@
-// 思考行（ReasoningRow，Disclosure 形态，对齐官方 ReasoningRow）：
+// 思考行（Disclosure 形态；适配上游 0.1.5-rc.2）：
 // 收起态=一行动态摘要——定稿/历史取首行，流式(live)取**最新一行**(latestLine)实时跟随；展开才看全文。
 // 标签"思考"固定不换行；全文始终在 DOM。
 import { html } from 'htm/preact'

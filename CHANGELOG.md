@@ -2,6 +2,14 @@
 
 All notable changes to the "deepseek-harness-web" extension will be documented in this file.
 
+## [0.1.9] - 2026-09-12
+
+### 变更
+
+- **适配 dsh 0.1.5-rc.2**：修复该升级导致的流式输出、系统提示词与斜杠命令失效
+- 完善图片、文件等多模态支持; 文件路径可点击，在编辑区打开
+- 优化工具行展开后的内容显示
+
 ## [0.1.8] - 2026-09-11
 
 ### 变更

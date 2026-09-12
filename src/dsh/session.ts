@@ -5,14 +5,16 @@ import { deriveTurnTokenUsage, deriveTurnFacts, type TurnLikeEvent } from "./off
 import { expandChunkRows } from "./official/chunk-rows";
 import { expandAssistantStream } from "./official/assistant-stream";
 import { parseExitStatus } from "./official/exit-status";
-import { hasImageBlock, readToolResult, resultText, textOnly } from "./official/result-text";
+import { fileRefsOf, hasImageBlock, imageRefsOf, readToolResult, resultText, textOnly, type FileRef, type ImageRef } from "./official/result-text";
 import { toolStatusOf } from "./official/tool-status";
 import { contextForm, contextProvenance, isContextMessage } from "./official/context-projection";
 import { readSystemPrompt } from "./official/system-prompt";
 // ---------- 会话事件模型（dsh v0.1.5-rc.2 follow 载荷形状） ----------
 export type DshContentPart =
     | { type: 'text'; text: string }
-    | { type: 'image'; mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'; data: string; name?: string };
+    | { type: 'image'; mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'; data: string; name?: string }
+    // 文件附件：只带**上传凭据**（字节早已由上传通道交给 dsh）
+    | { type: 'file'; receiptId: string };
 /** 一条原始会话事件（v0.1.5-rc.2 的 follow/snapshot 载荷轻量表示）。 */
 export interface RawEvent {
     type: string;
@@ -212,6 +214,10 @@ export type SessionMessageItem =
         time?: number;
         /** 该回合实际发给模型的 system（上游 `system-prompt` 节点的数据源）；仅该回合第一条 user 行带 */
         systemPrompt?: string;
+        /** 该用户消息带的图片附件引用（字节不在事件里，渲染时由附件层按需取） */
+        images?: ImageRef[];
+        /** 该用户消息带的上传文件（只有名字/大小；引用不含本地路径，历史里只展示不可点开） */
+        files?: FileRef[];
     }
     | {
         role: 'assistant';
@@ -296,12 +302,16 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
             }
         }
         if (eventIsSurfaceHuman(e)) {
-            const text = textOfBlocks(e.data?.['content']);
-            if (text) {
+            const content = e.data?.['content'];
+            const text = textOfBlocks(content);
+            const images = imageRefsOf(content);
+            const files = fileRefsOf(content);
+            // **只有附件没有文字也要出行**：否则「发一张图/一个文件」在历史里整条消失（实时路径有行、恢复后没有）
+            if (text || images.length > 0 || files.length > 0) {
                 // 系统提示词挂该回合第一条 user 行上（渲染时插在它之前）；带过即删，后续 user 行不重复
                 const sysPrompt = openTurn !== undefined ? promptByTurn.get(openTurn) : undefined;
                 if (sysPrompt !== undefined && openTurn !== undefined) { promptByTurn.delete(openTurn); }
-                out.push({ role: 'user', text, time: e.time, systemPrompt: sysPrompt });
+                out.push({ role: 'user', text, time: e.time, systemPrompt: sysPrompt, ...(images.length > 0 ? { images } : {}), ...(files.length > 0 ? { files } : {}) });
             }
             continue;
         }
@@ -556,7 +566,7 @@ export async function getSessionProjections(sessionId: string): Promise<Record<s
     return snap.projections;
 }
 // ---------- 会话操作（适配 dsh v0.1.5-rc.2；对应 session-controller 远程方法，载荷统一
-//   args{ request: Session*Request }，见 rc1 源码 packages/api/session-controller/src/types.ts） ----------
+//   args{ request: Session*Request }，契约见 docs/design/04） ----------
 /** 新建会话（上游 `session/create`；request 的 workspaceId / cwd 二选一）→ sessionId。 */
 export async function createSession(opts: { workspaceId?: string; cwd?: string } = {}): Promise<string> {
     const value = await rpcCall<{ sessionId: string }>('session.create', {
@@ -627,7 +637,7 @@ export async function selectModel(sessionId: string, provider: string, model: st
  * 模型目录（适配 dsh v0.1.5-rc.2）。
  * 上游接口：session-controller 远程方法 `session/modelCatalog`（无参，payload { args:{} }），
  * 返回 ModelCatalog { default, routableProviders, groups[{ id,name,models[{id,name,description,
- * reasoning:{efforts[]}}] }], failures }（见 rc1 packages/api/session-controller/src/types.ts）。
+ * reasoning:{efforts[]}}] }], failures }（契约见 docs/design/04）。
  * “当前会话选择的模型”不在这里：由 modelSelection 投影给出（见 dshService.listModels）。
  */
 export async function modelCatalog(): Promise<{
@@ -648,7 +658,7 @@ export async function modelCatalog(): Promise<{
     return rpcCall('session.modelCatalog', {});
 }
 // ---------- 工作区 ----------
-/** 一个工作区（与上游 WorkspaceView 对齐；见 rc1 packages/api/workspace-controller/src/types.ts）。 */
+/** 一个工作区（字段取上游 workspace 读法的投影）。 */
 export interface WorkspaceItem {
     workspaceId: string;
     path: string;

@@ -1,4 +1,4 @@
-// 上下文注入/召回行（对齐官方 ui-chat ContextInjectionRow.tsx + ContextBody.tsx）。
+// 上下文注入/召回行（展开体渲染在 ContextBody；适配上游 0.1.5-rc.2）。
 // 收进 assistant 过程链：收起=一行（图标 + 角色标题「上下文注入/跨会话召回」+ 来源标签 + notice 单行说明），
 // 展开=按生产者声明的 form（instructions/catalog/snapshot/notice/relay/recall/opaque）展示该行内容。
 // 铁律：文案/结构取自官方字典与逻辑，不自行翻译/不编造；未知 form 与官方一致退回 opaque（原文不丢）。

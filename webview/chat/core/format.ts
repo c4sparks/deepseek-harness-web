@@ -10,7 +10,7 @@ export function turnStatusBadge(kind: string | undefined): string {
 const pad2 = (n: number): string => String(n).padStart(2, '0')
 
 /**
- * 消息时钟（对齐 dsh 官方 formatMessageClock + 中文 clock.md/clock.ymd 模板）：
+ * 消息时钟（中文模板）：
  * 同日 → HH:mm；今年更早 → M月D日 HH:mm；更早年份 → Y年M月D日 HH:mm。
  * 无值返回 ''。t 为 dsh 事件/快照自带 epoch（秒或毫秒，由上游给出）。
  */
@@ -104,6 +104,35 @@ const TOOL_TITLES: Record<string, string> = {
 /** 无专属标题的工具统一用「工具调用」。 */
 const GENERIC_TOOL_TITLE = '工具调用'
 
+/**
+ * `file:` URI → 本地路径（拖拽给的 `text/uri-list` 是 URI，不是路径）。
+ * 三种写法：`file:///C:/x` → `C:/x`（**去掉 URI 带出来的前导斜杠**）、`file://server/share/x` → `\\server\share\x`、
+ * `file:///home/x` → `/home/x`。识别不出返回 undefined（不猜）。
+ */
+export function fileUriToPath(uri: string): string | undefined {
+  const raw = uri.trim()
+  if (!raw.startsWith('file:')) return undefined
+  let rest = raw.slice('file:'.length)
+  if (rest.startsWith('//')) {
+    rest = rest.slice(2)
+    const slash = rest.indexOf('/')
+    const host = slash === -1 ? rest : rest.slice(0, slash)
+    const pathPart = slash === -1 ? '' : rest.slice(slash)
+    if (host !== '' && host.toLowerCase() !== 'localhost') {
+      return '\\\\' + host + pathPart.replace(/\//g, '\\')
+    }
+    rest = pathPart
+  }
+  let decoded = rest
+  try {
+    decoded = decodeURIComponent(rest)
+  } catch {
+    /* 保留原样 */
+  }
+  const drive = /^\/([A-Za-z]:[\\/].*)$/.exec(decoded)
+  return drive === null ? decoded : drive[1]
+}
+
 export function toolTitle(name: string): string {
   return TOOL_TITLES[name] ?? GENERIC_TOOL_TITLE
 }
@@ -136,7 +165,7 @@ export function toolIconOfTool(name: string): string {
   return map[name] ?? 'wrench'
 }
 
-/** 工具调用原始参数(JSON 串) → 摘要一行（对齐官方 SUMMARY_KEYS：
+/** 工具调用原始参数(JSON 串) → 摘要一行（偏好键：
  *  bash 类取 description/command；read/web_fetch 类取 path/file_path/url；search 类取 query/pattern。
  *  取首个命中字符串的首行，超长截断）。无/解析失败返回 ''。 */
 export function deriveToolSummary(argsRaw: string | undefined, name?: string): string {
@@ -211,7 +240,7 @@ function firstStringLine(rec: Record<string, unknown>): string | undefined {
 }
 
 /**
- * 缓存命中率（对齐官方 `formatCacheHitPercent(cacheRead, promptTokens, 1)`）：保留 1 位小数；
+ * 缓存命中率：保留 1 位小数；
  * 整数去尾 `.0`（26.0→26，26.4→26.4，100→100）。
  * @param cacheReadTokens - cacheRead。
  * @param promptTokens - 输入总 tokens（totalToken − outputTokens = uncached+cacheRead+cacheWrite）；0 返回 ''。

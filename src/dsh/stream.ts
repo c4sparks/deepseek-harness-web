@@ -60,7 +60,7 @@ export interface DshActivity {
     /** 结果原始内容块（**仅当结果含图片块时**带；图片块只含附件引用，字节由渲染层按需另取） */
     blocks?: unknown;
 }
-/** 过程折叠计数（对齐官方 turn-process 的三个计数：toolCallCount=非 subagent 工具调用数；
+/** 过程折叠计数（三个计数：toolCallCount=非 subagent 工具调用数；
  *  messageCount=最终答复前带文本的中间 assistant 消息数；subagentCount=名字识别为 subagent 委派的调用数。
  *  三者全 0 时折叠头文案兜底「已思考」） */
 export interface DshTurnCounts {

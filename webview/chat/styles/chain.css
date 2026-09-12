@@ -76,6 +76,22 @@
     font-size: 11px; line-height: 1.5;
     color: var(--vscode-descriptionForeground, #999);
   }
+  /* 收起行摘要里的**文件路径**：可点击，在编辑器区打开（上游为宿主默认程序——本插件有意偏离）。
+     用按钮承载（键盘可达），点它不触发展开收起（组件里 stopPropagation）。 */
+  .chain-file-link {
+    border: none; background: none; padding: 0; margin: 0; text-align: left; font: inherit;
+    cursor: pointer; color: inherit;
+    /* 虚线**常显**（不是 hover 才现）：它就是这个路径「可以点」的唯一提示，对齐上游 .fileLink */
+    text-decoration: underline dotted;
+    text-decoration-color: var(--vscode-descriptionForeground, #999);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+  }
+  /* hover / 键盘聚焦：文字与虚线一起提亮（上游同口径：text-decoration-color 转 currentColor） */
+  .chain-file-link:hover, .chain-file-link:focus-visible {
+    color: var(--vscode-foreground, #ddd);
+    text-decoration-color: currentColor;
+  }
   /* 真失败行（isError）的摘要位装着结果文本首行 → 上行错误色（上游 ToolRow `.errorSummary` 同义）。
      注意与行首红点不同源：这条只在 isError 时挂，非零退出的行仍是描述色。 */
   .chain-row-preview.is-error { color: var(--vscode-errorForeground, #f14c4c); }

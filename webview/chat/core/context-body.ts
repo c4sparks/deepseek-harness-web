@@ -1,6 +1,6 @@
-// 上下文注入行的展开体（对齐官方 ui-chat ContextBody.tsx）。
+// 上下文注入行的展开体：按展示形态解析注入内容，供注入行渲染（适配上游 0.1.5-rc.2）。
 // 只做「数据提取 + 结构描述」，把模型读到的 content/source 解析成可渲染的分支；
-// 具体 htm 渲染在 ContextInjectionRow 组件里。照抄官方逻辑，不自行翻译/不编造。
+// 具体 htm 渲染在 ContextInjectionRow 组件里；解析规则不自行发明。
 
 import { contextLabels, type ContextLabels } from './context-labels'
 
@@ -64,7 +64,7 @@ function fieldValue(value: unknown, labels: ContextLabels): string {
   return boundedText(text, labels)
 }
 
-// ---------- 表单读取（对齐官方） ----------
+// ---------- 表单读取 ----------
 
 interface InstructionChange {
   action: 'set' | 'replace' | 'remove'
@@ -216,7 +216,7 @@ const opaque = (props: { content: readonly unknown[]; source: unknown }, labels:
 })
 
 /**
- * 为一条上下文选择它的展开体（对齐官方 contextBody）。
+ * 为一条上下文选择它的展开体；识别不出返回 null（调用方走兜底）。
  * @param form - 生产者声明的 form。
  * @param props - 该行的 content/source。
  * @returns 实际渲染的 form、收起行 summary、以及 body 结构描述。

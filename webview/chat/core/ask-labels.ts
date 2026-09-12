@@ -1,4 +1,4 @@
-// 提问卡（ask_user_question）展示字典（官方 zh 原文，`ask.*`），照抄 ui-conversation locales.ts，不自行翻译。
+// 提问卡展示字典（文案取字典原文，不自造同义词）。
 export interface AskLabels {
   rowTitle: string
   waiting: string
@@ -16,8 +16,6 @@ export interface AskLabels {
   unread: string
   unreadDetail: string
 }
-
-/** 官方 zh：`ask.rowTitle` / `ask.waiting` / `ask.cancelled{Detail}` / `ask.interrupted{Detail}` / `ask.answered` / `ask.skipped`。 */
 export function askLabels(): AskLabels {
   return {
     rowTitle: '提问',

@@ -60,6 +60,7 @@ export function createChatStore(host: ChatHost): ChatStore {
     processing: messages.store.processing,
     scrollPend: messages.store.scrollPend,
     showNotice: messages.store.showNotice,
+    openFile: messages.store.openFile,
     answerApproval: messages.store.answerApproval,
     // 发送动作
     send: outbox.store.send,
@@ -81,6 +82,7 @@ export function createChatStore(host: ChatHost): ChatStore {
     removeImage: composer.store.removeImage,
     addAttachment: composer.store.addAttachment,
     removeAttachment: composer.store.removeAttachment,
+    retryUpload: composer.store.retryUpload,
     addRef: composer.store.addRef,
     removeRef: composer.store.removeRef,
     readImageFile: composer.store.readImageFile,

@@ -3,12 +3,12 @@
 // 与列表渲染 diff，各自从 1 计数即可。
 import { computed, signal } from '@preact/signals'
 import type { ChatHost } from '../host'
-import type { ViewActivity, ImageAttachment, LiveContext } from '../protocol'
+import type { ViewActivity, ImageAttachment, LiveContext, AttachmentRef } from '../protocol'
 import { toolTitle, deriveToolSummary, formatMsgClock, turnStatusBadge } from '../format'
 import type { ChatRow, ChatStore, DshTurnProcessItem, RefChip } from './types'
 
 export interface MessagesSlice {
-  store: Pick<ChatStore, 'messages' | 'view' | 'processing' | 'scrollPend' | 'showNotice' | 'answerApproval'>
+  store: Pick<ChatStore, 'messages' | 'view' | 'processing' | 'scrollPend' | 'showNotice' | 'answerApproval' | 'openFile'>
   /** 过程事件落链（tool 调用与结果）。 */
   activity(a: ViewActivity | undefined): void
   /** 思考增量（同 step+index 续接为一段）。 */
@@ -28,13 +28,15 @@ export interface MessagesSlice {
   /** 追加一条审批行。 */
   pushApproval(approvalId: string, description: string, toolName?: string): void
   /** 追加一条用户行（历史恢复时传入事件自带时刻）。 */
-  addUser(text: string, imgs?: ImageAttachment[], time?: number, refs?: Array<{ kind: RefChip['kind']; label: string }>): void
+  addUser(text: string, imgs?: ImageAttachment[], time?: number, refs?: Array<{ kind: RefChip['kind']; label: string }>, imageRefs?: AttachmentRef[], files?: Array<{ name: string; path?: string; bytes?: number }>): void
   /** 插入一条系统提示词行（上游 `system-prompt`）：落在最近一条用户行之前，即该回合的开头。 */
   systemLine(text: string): void
   /** 开启（或复用）当前进行中的 assistant 行。 */
   beginAssistant(prompt?: string): void
   /** 取一个列表内唯一行 key。 */
   nextKey(): number
+  /** 在编辑器区打开文件（相对路径按 cwd——会话工作区根——解析）。 */
+  openFile(path: string, line?: number, cwd?: string): void
   /** 直接追加一行（历史恢复构行用）。 */
   push(row: ChatRow): void
   /** 请求滚到底（+1 由列表组件消费后清零）。 */
@@ -62,6 +64,11 @@ export function createMessages(host: ChatHost): MessagesSlice {
   }
   const removeWhere = (pred: (r: ChatRow) => boolean): void => {
     messages.value = messages.value.filter((r) => !pred(r))
+  }
+
+  function openFile(filePath: string, line?: number, cwd?: string): void {
+    if (!filePath) return
+    host.post({ type: 'openFile', path: filePath, ...(line === undefined ? {} : { line }), ...(cwd ? { cwd } : {}) })
   }
 
   const showNotice = (msgText: string, command?: string, tone: 'error' | 'ok' = 'error'): void => {
@@ -97,9 +104,9 @@ export function createMessages(host: ChatHost): MessagesSlice {
   }
 
   // ---------- 消息流动作(本地渲染) ----------
-  function addUser(textMsg: string, imgs: ImageAttachment[] = [], time?: number, refs?: Array<{ kind: RefChip['kind']; label: string }>): void {
+  function addUser(textMsg: string, imgs: ImageAttachment[] = [], time?: number, refs?: Array<{ kind: RefChip['kind']; label: string }>, imageRefs?: AttachmentRef[], files?: Array<{ name: string; path?: string; bytes?: number }>): void {
     // 实时本地上送用本地时刻;恢复历史时传入事件自带时间戳,不覆盖为"现在"
-    push({ kind: 'user', key: rowKey++, text: textMsg, images: imgs, time: time !== undefined ? formatMsgClock(time) : nowTime(), refs })
+    push({ kind: 'user', key: rowKey++, text: textMsg, images: imgs, time: time !== undefined ? formatMsgClock(time) : nowTime(), refs, ...(imageRefs && imageRefs.length > 0 ? { imageRefs } : {}), ...(files && files.length > 0 ? { files } : {}) })
   }
   /** 系统提示词行：上游把它锚在该回合可见消息序列的开头（用户提问之前），
    *  而该事件到达时用户行已在列表里 → 回插到最近一条用户行之前。 */
@@ -291,7 +298,8 @@ export function createMessages(host: ChatHost): MessagesSlice {
   }
 
   return {
-    store: { messages, view, processing, scrollPend, showNotice, answerApproval },
+    store: { messages, view, processing, scrollPend, showNotice, answerApproval, openFile },
+    openFile,
     activity,
     reasoning,
     contextRow,

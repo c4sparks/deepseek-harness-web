@@ -16,7 +16,7 @@ type AssistantRow = Extract<ChatRow, { kind: 'assistant' }>
 
 export function Chain({ row, store }: { row: AssistantRow; store: ChatStore }) {
   const chain = row.chain
-  // 进行中展开、定稿收起（对齐官方 turnClosed）
+  // 进行中展开、定稿收起
   const [open, setOpen] = useState(!row.done)
   useEffect(() => {
     setOpen(!row.done)

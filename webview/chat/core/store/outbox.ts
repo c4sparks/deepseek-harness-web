@@ -1,6 +1,7 @@
 // 发送切片（用户发起的发送动作）：发送、建议、重新生成，以及目录到达后对被挂起「/」行的裁决。
 // 这组动作只读写既有切片的信号，不自持状态；依赖由装配层注入。
 import type { ChatHost } from '../host'
+import { fileLabels } from '../file-labels'
 import type { ImageAttachment } from '../protocol'
 import type { ChatStore } from './types'
 import type { ComposerSlice } from './composer'
@@ -51,21 +52,27 @@ export function createOutbox(deps: OutboxDeps): OutboxSlice {
       }
       // cat 已到但首词未命中(技能/未知斜杠 token)：落回普通发送(技能走 chatSend、未知 token 走消息，与官方一致)
     }
-    const attachRefs = attach.map((a) => '@' + a.replace(/\\/g, '/'))
+    // 文件走「文件上送」：必须全部就绪才允许发送（canSend 也挡，这里是兜底）
+    const notReady = attach.find((a) => a.state !== 'ready')
+    if (notReady !== undefined) {
+      messages.store.showNotice(fileLabels().stillUploading)
+      return
+    }
+    const files = attach.map((a) => ({ receiptId: a.receiptId as string, name: a.name, path: a.path }))
     const refTokens = refs.value.map((r) => r.token)
-    const prompt = [...attachRefs, ...refTokens, msg].filter(Boolean).join('\n\n') // 发给宿主：含引用 token
-    const display = [...attachRefs, msg].filter(Boolean).join('\n\n') // 气泡展示：引用以 chip 呈现，不铺 @token 文本
+    const prompt = [...refTokens, msg].filter(Boolean).join('\n\n') // 发给宿主：含引用 token
+    const display = msg
     const refSnap = refs.value.map((r) => ({ kind: r.kind, label: r.label }))
     // 用户主动发送：即使滚动条在上面也强制滚到底看新内容（流式中自己翻上去则不受影响）
     messages.bumpScroll()
-    messages.addUser(display, imgs, undefined, refSnap.length ? refSnap : undefined)
+    messages.addUser(display, imgs, undefined, refSnap.length ? refSnap : undefined, undefined, files.length > 0 ? files : undefined)
     attachments.value = []
     images.value = []
     refs.value = []
     text.value = ''
     processing.value = true
     messages.beginAssistant(prompt) // 立即出现"思考中…"行(与 setProcessing(true) 行为一致)
-    host.post({ type: 'chatSend', text: prompt, images: imgs })
+    host.post({ type: 'chatSend', text: prompt, images: imgs, ...(files.length > 0 ? { files } : {}) })
   }
 
   /** 目录到达后裁决被挂起的「/」行：命中命令→执行；未命中→按普通消息发出(仅当用户没改写输入)。 */

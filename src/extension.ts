@@ -629,6 +629,9 @@ function setupChatWebview(
                             name: img.name,
                         } as DshContentPart);
                     }
+                    for (const f of (msg.files ?? []) as Array<{ receiptId: string }>) {
+                        parts.push({ type: 'file', receiptId: f.receiptId } as DshContentPart);
+                    }
                     if (parts.length === 0) {
                         return;
                     }
@@ -719,6 +722,16 @@ function setupChatWebview(
             })();
         } else if (msg.type === 'cancel') {
             stopTurn();
+        } else if (msg.type === 'fileUploadReq') {
+            // 文件上送：字节由宿主读并上传（webview 拿不到任意路径的字节）；成功/失败都回帧
+            void (async () => {
+                try {
+                    const up = await chatInput.uploadFile(msg.path);
+                    post({ type: 'fileUploaded', key: msg.key, receiptId: up.receiptId, name: up.name, ...(up.bytes === undefined ? {} : { bytes: up.bytes }) });
+                } catch (e) {
+                    post({ type: 'fileUploaded', key: msg.key, error: e instanceof Error ? e.message : String(e) });
+                }
+            })();
         } else if (msg.type === 'pickFile') {
             void (async () => {
                 const picked = await vscode.window.showOpenDialog({ canSelectMany: true, openLabel: '添加到 dsh 对话' });
@@ -764,6 +777,8 @@ function setupChatWebview(
                     stopTurn();
                 }
             })();
+        } else if (msg.type === 'openFile') {
+            void openFileInEditor(msg.path, msg.line, msg.cwd);
         } else if (msg.type === 'attachmentReq') {
             // 附件大类：webview 按 attachmentId 懒取字节；失败也回帧（渲染侧显示失败态并可重试）
             void (async () => {
@@ -1065,6 +1080,43 @@ async function listAllWorkspaces(): Promise<Array<{ workspaceId: string; path: s
         sessionIds: string[];
     }>;
 }
+
+/**
+ * 在**编辑器区**打开一个文件（相对路径按会话工作区根 cwd 解析），可选跳到指定行。
+ *
+ * 两条通道，按文件类型分流（**图片不能当文本读**——`openTextDocument` 遇二进制会直接抛错）：
+ *   - 文本：`openTextDocument` + `showTextDocument({selection})`，这样才支持跳到 `line`；
+ *   - 图片等二进制：`vscode.open`，由 VS Code 内置的图片预览打开（png/jpg/gif/webp/bmp/ico）。
+ *
+ * 有意偏离上游：上游把行摘要里的路径交给**宿主默认程序**打开；本插件的聊天区就在 VS Code 里，
+ * 交给编辑器打开才顺手（`preview: true`：复用预览标签，不刷一堆标签页）。
+ * @param p - 路径（绝对或相对）。
+ * @param line - 1 起的行号（仅文本文件用；图片忽略）。
+ * @param cwd - 会话工作区根（相对路径的基准）；缺省用当前 VS Code 文件夹。
+ */
+async function openFileInEditor(p: string, line?: number, cwd?: string): Promise<void> {
+    const base = cwd && cwd !== '' ? cwd : (vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '');
+    const abs = path.isAbsolute(p) ? p : path.resolve(base, p);
+    const uri = vscode.Uri.file(abs);
+    if (!IMAGE_EXTENSIONS.has(path.extname(abs).toLowerCase())) {
+        try {
+            const doc = await vscode.workspace.openTextDocument(uri);
+            const selection = line !== undefined && line > 0 ? new vscode.Range(line - 1, 0, line - 1, 0) : undefined;
+            await vscode.window.showTextDocument(doc, { preview: true, selection });
+            return;
+        } catch {
+            /* 落到下面：二进制 / 未支持的编码 → 交给 vscode.open */
+        }
+    }
+    try {
+        await vscode.commands.executeCommand('vscode.open', uri, { preview: true });
+    } catch {
+        vscode.window.showWarningMessage(`无法打开文件：${abs}`);
+    }
+}
+
+/** VS Code 内置图片预览支持的扩展名（这些必须走 `vscode.open`，不能被读成文本）。 */
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico']);
 
 /** 拉取某工作区的会话（供 QuickPick / webview dropdown 共用） */
 async function listWorkspaceSessionsOf(wsId: string): Promise<WsSessionRow[]> {

@@ -1,12 +1,10 @@
-// web 卡展示字典（官方 zh 原文，`web.*`），照抄 ui-conversation locales.ts，不自行翻译。
+// web 卡展示字典（文案取字典原文，不自造同义词；适配上游 0.1.5-rc.2）。
 export interface WebLabels {
   http: string
   noResults: string
   sourcesTruncated: string
   contentTruncated: string
 }
-
-/** 官方 zh：`web.http` / `web.noResults` / `web.sourcesTruncated` / `web.contentTruncated`。 */
 export function webLabels(): WebLabels {
   return {
     http: 'HTTP',

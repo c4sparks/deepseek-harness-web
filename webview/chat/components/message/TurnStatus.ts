@@ -1,4 +1,4 @@
-// 左下角 Turn 级状态行（对齐官方 ui-chat ChatView TurnStatus）：「xxx...」+ 小转圈 + ≥15s 运行时钟。
+// 左下角 Turn 级状态行：「xxx...」+ 小转圈 + ≥15s 运行时钟（适配上游 0.1.5-rc.2）。
 // running(store.processing)时整轮显示（首 token 等待/工具执行/流式全程），左对齐贴底。
 import { html } from 'htm/preact'
 import { useEffect, useState } from 'preact/hooks'

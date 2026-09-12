@@ -161,6 +161,10 @@
   }
   .msg.assistant .body { white-space: normal; word-break: break-word; }
   .msg.user .body .user-text { white-space: pre-wrap; }
+  /* 附件行：气泡**之外**、正文之上 */
+  .msg.user .user-atts {
+    display: flex; flex-direction: column; align-items: flex-end; gap: 6px; margin: 0 0 6px;
+  }
   .msg.user .body .user-img { margin-top: 6px; }
   /* 用户消息里 @ 引用以内联高亮 chip 展示：一行流、自动换行(真换行来自文本) */
   .user-refs { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 6px; }
@@ -689,6 +693,28 @@
   .file-chip .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .file-chip .x { cursor: pointer; opacity: 0.7; flex-shrink: 0; }
   .file-chip .x:hover { opacity: 1; }
+  /* 文件上送三态：上传中（次级色 + 呼吸）/ 失败（错误色，正文即重试按钮） */
+  .file-chip .fmeta { flex: 0 0 auto; color: var(--vscode-descriptionForeground, #999); font-size: 11px; }
+  .file-chip.is-uploading .fname { color: var(--vscode-descriptionForeground, #999); }
+  .file-chip.is-error { border-color: var(--vscode-errorForeground, #f14c4c); }
+  .file-chip.is-error .ficon { color: var(--vscode-errorForeground, #f14c4c); }
+  .file-chip.is-error .fname {
+    border: none; background: none; padding: 0; font: inherit; cursor: pointer;
+    color: var(--vscode-errorForeground, #f14c4c);
+  }
+  .file-chip.is-error .fname:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
+
+  /* 消息气泡内的文件 chip（随消息发出的文件；点了用编辑器打开） */
+  .user-files { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+  .user-file-chip {
+    display: inline-flex; align-items: center; gap: 5px; max-width: 240px;
+    background: rgba(128,128,128,0.18); color: inherit; border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.25));
+    border-radius: 6px; padding: 3px 8px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .user-file-chip:hover { border-color: var(--vscode-focusBorder, #007fd4); }
+  .user-file-chip .codicon { font-size: 14px; flex: none; color: var(--vscode-descriptionForeground, #aaa); }
+  .user-file-chip .ufname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .user-file-chip .ufmeta { flex: none; color: var(--vscode-descriptionForeground, #999); font-size: 11px; }
 
   /* @ 引用贴片：蓝色小片（视觉代替正文里的 @token，正文不出 @） */
   .ref-chip {
@@ -835,7 +861,7 @@
     color: var(--vscode-descriptionForeground, #999);
   }
   .turn-status-ico { font-size: 11px; flex: none; }
-  .turn-status-text { white-space: nowrap; }
+  .turn-status-text { white-space: nowrap; font-size: 10px; }
   .turn-status-clock { font-size: 13px; font-weight: 400; color: var(--vscode-descriptionForeground, #999); font-variant-numeric: tabular-nums; }
 
   /* ===== 上游 waterfall 提问弹窗（输入框上方）：pending 时显示，选择/输入 + 回答/取消/关闭 ===== */

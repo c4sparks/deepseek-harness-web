@@ -1,6 +1,6 @@
 // ⚠️ CORE-COUPLED（核心耦合；目录名 official，本仓库注释里称“核心”）——只映射 dsh 核心 rc1 规则，勿混入插件自有逻辑；核心变化只改本目录。
 // 核心 per-turn 用量/计时。
-// 口径(rc1 ui-chat + llm/token-meter)：
+// 口径：
 //  - 用量 = deriveTurnTokenUsage：按回合内各 attempt(assistant/message usage)聚合，
 //          cacheRead/cacheWrite/reasoning 仅当每个 attempt 都上报才给；routes 每个都有才给；
 //  - TTFT  = 该回合最靠前 step 的 step/start→首 token；

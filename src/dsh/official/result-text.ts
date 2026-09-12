@@ -49,6 +49,77 @@ export function readToolResult(data: Record<string, unknown>): ToolResultPayload
     };
 }
 
+/** 附件引用（搬运用：只取渲染层要用的字段）。 */
+export interface ImageRef {
+    attachmentId: string;
+    mediaType: string;
+    name?: string;
+    /** 固有像素宽（图廊按它定尺寸） */
+    width?: number;
+    /** 固有像素高 */
+    height?: number;
+}
+
+/**
+ * 从内容块里取出图片附件引用（用户消息与工具结果共用）。
+ * **只搬运、不判定**：缺 `attachmentId`/`mediaType` 的块直接跳过 —— 形状校验与渲染都在渲染侧。
+ * @param content - 事件的 content 块数组（`user/message` 的 `data.content` 或 `tool/result` 的 `message.content[0].content`）。
+ * @returns 按顺序的附件引用。
+ */
+export function imageRefsOf(content: unknown): ImageRef[] {
+    const refs: ImageRef[] = [];
+    if (!Array.isArray(content)) { return refs; }
+    for (const block of content) {
+        const b = block as { type?: unknown; attachment?: unknown } | null | undefined;
+        if (b === null || b === undefined || b['type'] !== 'image') { continue; }
+        const a = b['attachment'] as Record<string, unknown> | undefined;
+        if (a === null || typeof a !== 'object') { continue; }
+        const id = a['attachmentId'];
+        const media = a['mediaType'];
+        if (typeof id !== 'string' || id === '' || typeof media !== 'string' || media === '') { continue; }
+        const name = typeof a['name'] === 'string' ? a['name'] : undefined;
+        const width = typeof a['width'] === 'number' ? a['width'] : undefined;
+        const height = typeof a['height'] === 'number' ? a['height'] : undefined;
+        refs.push({
+            attachmentId: id,
+            mediaType: media,
+            ...(name === undefined ? {} : { name }),
+            ...(width === undefined ? {} : { width }),
+            ...(height === undefined ? {} : { height }),
+        });
+    }
+    return refs;
+}
+
+/** 文件附件的展示信息（历史回放用：只有名字与字节数，没有本地路径）。 */
+export interface FileRef {
+    name: string;
+    bytes?: number;
+}
+
+/**
+ * 从内容块里取出**文件**附件（`user/message` 的 `data.content` 里 `{type:'file',attachment}`）。
+ * 只搬运不判定：缺名字的块跳过。字节与本地路径都不在事件里（事件里只有内容寻址引用），
+ * 所以历史回放只能显示名字/大小 —— 这与上游消息里的文件卡一致（不可点开）。
+ * @param content - 事件的 content 块数组。
+ * @returns 按顺序的文件展示信息。
+ */
+export function fileRefsOf(content: unknown): FileRef[] {
+    const refs: FileRef[] = [];
+    if (!Array.isArray(content)) { return refs; }
+    for (const block of content) {
+        const b = block as { type?: unknown; attachment?: unknown } | null | undefined;
+        if (b === null || b === undefined || b['type'] !== 'file') { continue; }
+        const a = b['attachment'] as Record<string, unknown> | undefined;
+        if (a === null || typeof a !== 'object') { continue; }
+        const name = typeof a['name'] === 'string' && a['name'] !== '' ? a['name'] : undefined;
+        if (name === undefined) { continue; }
+        const bytes = typeof a['bytes'] === 'number' ? a['bytes'] : undefined;
+        refs.push({ name, ...(bytes === undefined ? {} : { bytes }) });
+    }
+    return refs;
+}
+
 /**
  * 结果内容块里是否含图片块。
  *

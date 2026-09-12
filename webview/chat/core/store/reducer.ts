@@ -69,6 +69,9 @@ export function createReducer(deps: ReducerDeps): ReducerSlice {
             : { state: 'ready', mediaType: m.mediaType as string, data: m.data as string }
         )
         break
+      case 'fileUploaded':
+        composer.receiveUpload(m.key, m)
+        break
       case 'filePicked':
         if (m.path) composer.store.addAttachment(m.path)
         break

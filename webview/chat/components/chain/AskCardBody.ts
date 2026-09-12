@@ -1,4 +1,4 @@
-// 提问卡展开体（官方 ui-tool AskQuestionCard 复刻）：只渲染两种**有记录**的形态 ——
+// 提问卡展开体（适配上游 0.1.5-rc.2）：只渲染两种**有记录**的形态 ——
 // answered=问题→答案列表(空答 ask.skipped)；unanswered=结论(已取消/已中断)+问题列表。
 // 「无记录可展示」（进行中 / 问答配对不上 / 结果坏形）**不在这里兜底**：由 ToolRow 落回通用「输入/输出」区。
 import { html } from 'htm/preact'

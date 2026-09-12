@@ -1,4 +1,4 @@
-// 历史恢复切片：把宿主快照重放出的消息列表重建为对话行。
+// 历史恢复切片：把宿主快照重放出的消息列表重建为对话行（适配上游 0.1.5-rc.2）。
 // 恢复前先全量清空（跨全部切片），故 resetAll 由装配层注入而非本切片自行 import。
 import type { HistoryMessage } from '../protocol'
 import { toolTitle, deriveToolSummary, formatMsgClock } from '../format'
@@ -29,7 +29,7 @@ export function createHistory(deps: HistoryDeps): HistorySlice {
         // 此刻当前 user 行还没 push → 直接 push 就落在它之前。
         // （不能用 systemLine：那是给实时回插用的，会找到「上一条」user 行，第二回合起就错位了）
         if (item.systemPrompt) messages.push({ kind: 'sysprompt', key: messages.nextKey(), text: item.systemPrompt })
-        messages.addUser(item.text, [], item.time) // 恢复历史:显示快照里该消息的原时刻
+        messages.addUser(item.text, [], item.time, undefined, item.images, item.files) // 恢复历史:显示快照里该消息的原时刻；图走附件引用、文件只带名字/大小
       } else if (item.role === 'context') {
         // 上下文注入并入 assistant 链（session 已归并），不再作为独立行
         continue
@@ -43,7 +43,7 @@ export function createHistory(deps: HistoryDeps): HistorySlice {
           if (typeof v === 'number') u[k] = v
         }
         // 用量/用时按钮独立：任一(用量 token/provider 或 时间 wall/ttft/tps)存在即挂 TurnStats。
-        // 对齐官方：TurnTailNodeView 里 📊 用量 pill ⇐ 该回合 tokenUsage 存在才渲染；
+        // 📊 用量 pill：该回合 tokenUsage 存在才渲染；
         // ⏱ 用时 pill ⇐ runMs 存在才渲染（deriveTurnMetrics 的 TTFT/TPS 缺行则官方隐藏）。
         const hasUsage =
           typeof u['provider'] === 'string' ||

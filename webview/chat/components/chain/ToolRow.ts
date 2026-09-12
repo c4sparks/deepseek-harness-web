@@ -9,7 +9,7 @@ import { useState } from 'preact/hooks'
 import type { DshTurnProcessItem, ChatStore } from '../../core/store/chat'
 import { toolTitle, toolIconOfTool, resultFirstLine } from '../../core/format'
 import { toolStateLabel } from '../../core/states'
-import { terminalCardModel, relativizeToCwd } from '../../core/terminal'
+import { filePathOf, terminalCardModel, relativizeToCwd } from '../../core/terminal'
 import { webCardModel } from '../../core/web-card'
 import { askCardModel } from '../../core/ask-card'
 import { diffCardModel } from '../../core/diff-card'
@@ -59,7 +59,7 @@ export function ToolRow({ item, store }: { item: Tool; store: ChatStore }) {
   //   它的失败只由上面 rowState 的展示层覆盖表达（行首红点 + 卡内退出码 Pill），**摘要位仍是描述**——上游亦然。
   // 首行为空行（`''`）时不落回描述、摘要位整体不显示——与上游 `'' ?? …` 的短路结果一致。
   // 提问行除外：上游 `AskQuestionRow` **不传** `errorSummary`（只传 summary/output/state），
-  // 所以提问行永远不会被换成结果首行（ask-question-row.tsx 调 ToolRow 的那段）。
+  // 所以提问行永远不会被换成结果首行。
   const failureLine = ask === null && item.status === 'error' ? resultFirstLine(item.output) : null
   // 摘要位后半段（上游 `summaryText = failureLine ?? description ?? summary`）：
   //   文件类工具的摘要是路径 → **相对工作区根**（上游 `abbreviateHomePath(relativizeToCwd(...), home)`；
@@ -73,6 +73,13 @@ export function ToolRow({ item, store }: { item: Tool; store: ChatStore }) {
   // （`工具名 · 参数首行`）—— 上游此处即取 model.summary，不把摘要位留空。
   const fallbackSummary = ask !== null && ask.summary !== '' ? ask.summary : genericSummary
   const headSummary = failureLine !== null ? failureLine || undefined : fallbackSummary || undefined
+  // 收起行摘要里的文件路径可点击打开（对齐上游 ToolRow 的 filePath/onOpenFile）：
+  //   - 只对文件类变体（read/write/edit，含 read_image）有值，取参数里的 path/file_path；
+  //   - **失败行不挂**（失败行的摘要位是结果首行，不是路径）；
+  //   - 读族带 `meta.offset` 时跳到该行（上游 filePathLine 同口径）。
+  const openPath = failureLine === null ? filePathOf(item.name, item.argsRaw) : undefined
+  const openLineRaw = (item.meta as { offset?: unknown } | undefined)?.offset
+  const openLine = typeof openLineRaw === 'number' && Number.isInteger(openLineRaw) && openLineRaw > 0 ? openLineRaw : undefined
   const failureStyled = failureLine !== null && failureLine !== ''
 
   const head = html`<button class="chain-row-head" data-state=${rowState} onClick=${() => setOpen((o) => !o)} aria-expanded=${open} title=${item.name}>
@@ -83,7 +90,13 @@ export function ToolRow({ item, store }: { item: Tool; store: ChatStore }) {
       : html`<span class="chain-tool-ico codicon codicon-${toolIconOfTool(item.name)}"></span>`}
     <span class="chain-tool-title">${item.title ?? toolTitle(item.name)}</span>
     ${!open && headSummary
-      ? html`<span class="chain-sep" aria-hidden></span><span class=${'chain-row-preview' + (failureStyled ? ' is-error' : '')}>${headSummary}</span>`
+      ? html`<span class="chain-sep" aria-hidden></span>${openPath !== undefined
+          ? html`<button type="button" class="chain-row-preview chain-file-link" title=${openPath}
+              onClick=${(e: Event) => {
+                e.stopPropagation()
+                store.openFile(openPath, openLine, cwd)
+              }}>${headSummary}</button>`
+          : html`<span class=${'chain-row-preview' + (failureStyled ? ' is-error' : '')}>${headSummary}</span>`}`
       : null}
   </button>`
 

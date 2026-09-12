@@ -7,6 +7,8 @@ import type { ChatStore } from '../core/store/chat'
 import type { ImageAttachment } from '../core/protocol'
 import { MODE_NAMES, DANGEROUS_PERMS } from '../core/format'
 import { showDialog } from '../modal'
+import { fileLabels, fileExt, fileSizeText } from '../core/file-labels'
+import { fileUriToPath } from '../core/format'
 import { SearchPicker } from './SearchPicker'
 import { ModelPicker } from './ModelPicker'
 import { keepRowVisible } from '../core/scroll'
@@ -54,12 +56,21 @@ function AttachmentBar({ store }: { store: ChatStore }) {
         <img class="img-thumb" src=${`data:${img.mediaType};base64,${img.data}`} title=${img.name} />
         <span class="x" onClick=${() => store.removeImage(img)}>✕</span></span>`
     )}
-    ${paths.map(
-      (p) => html`<span class="file-chip" key=${p}>
+    ${paths.map((f) => {
+      const labels = fileLabels()
+      if (f.state === 'error') {
+        return html`<span class="file-chip is-error" key=${f.key} title=${f.error ?? labels.failed}>
+          <span class="ficon"><span class="codicon codicon-warning"></span></span>
+          <button type="button" class="fname" title=${labels.retry(f.name)} onClick=${() => store.retryUpload(f.key)}>${labels.failed}</button>
+          <span class="x" title=${labels.remove(f.name)} onClick=${() => store.removeAttachment(f.key)}>✕</span></span>`
+      }
+      const meta = f.state === 'uploading' ? labels.uploading : [fileExt(f.name), fileSizeText(f.bytes)].filter(Boolean).join(' ')
+      return html`<span class="file-chip${f.state === 'uploading' ? ' is-uploading' : ''}" key=${f.key} title=${f.path}>
         <span class="ficon"><span class="codicon codicon-file"></span></span>
-        <span class="fname" title=${p}>${(p.split(/[\\/]/).pop() || p)}</span>
-        <span class="x" onClick=${() => store.removeAttachment(p)}>✕</span></span>`
-    )}
+        <span class="fname">${f.name}</span>
+        <span class="fmeta">${meta}</span>
+        <span class="x" title=${labels.remove(f.name)} onClick=${() => store.removeAttachment(f.key)}>✕</span></span>`
+    })}
   </div>`
 }
 
@@ -409,8 +420,12 @@ function Composer({ store }: { store: ChatStore }) {
       }
       const uri = dt.getData('text/uri-list')
       if (uri) {
-        const first = uri.split('\n').find((l) => l.trim().length > 0)
-        if (first && first.startsWith('file:')) store.addAttachment(decodeURIComponent(first.slice(7)))
+        // 一次可拖多个（uri-list 逐行一个 URI）；路径解析走 fileUriToPath
+        // （`file:///C:/…` 直接 slice(7) 会得到 `/C:/…`，多一个前导斜杠 → 宿主读文件会 ENOENT）
+        for (const line of uri.split(/\r?\n/)) {
+          const path = fileUriToPath(line)
+          if (path !== undefined) store.addAttachment(path)
+        }
       }
     }}>
     <${Popup} store=${store} />

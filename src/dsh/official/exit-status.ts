@@ -1,5 +1,5 @@
 // 终端命令退出状态解析：从 tool/result 输出文本末尾的 marker 提取退出码/终止信号。
-// 对齐官方 ui-tool terminal-card-model 的 parseExitStatus（marker 由 shell render 追加，非独立 JSON 字段）。
+// marker 由 shell render 追加在输出末尾，不是独立的 JSON 字段。
 // 宿主/线程层用（stream.ts、session.ts 在截断输出前调用）；webview 侧另有一份等价实现（core/terminal.ts）。
 const SIGNAL_RE = /\n\[killed by signal: ([^\]\n]+)\]$/;
 const EXIT_RE = /\n\[exit code: (\d+)\]$/;

@@ -6,6 +6,7 @@ import {
     listSkills as listSkillsRpc,
     runSessionCommand,
     fetchSessionLogZip as fetchSessionLogZipRpc,
+    uploadSessionFile,
     listFileReferences as listFileReferencesRpc,
     listSessionReferenceCandidates as listSessionReferenceCandidatesRpc,
     ExportUnsupportedError,
@@ -22,6 +23,26 @@ export interface ChatInputSession {
 
 export class ChatInputService {
     constructor(private readonly session: ChatInputSession) {}
+
+    /**
+     * 把本地文件上传给当前会话，返回可随 prompt 引用的凭据。
+     * 上传失败原样上抛（含上游错误码）；没工作区/服务不可用同样抛错，由调用方回给 UI。
+     * @param filePath - 本地文件绝对路径（webview 只给路径，字节由宿主读）。
+     * @returns 凭据 id 与文件信息（大小用于就绪态显示）。
+     */
+    async uploadFile(filePath: string): Promise<{ receiptId: string; name: string; bytes?: number }> {
+        if (!(await this.session.ensureRunning())) {
+            throw new Error('DSH 服务不可用，无法上传文件');
+        }
+        const sid = await this.session.getSession();
+        const uploaded = await uploadSessionFile(sid, filePath);
+        const name = uploaded.file.name ?? filePath.split(/[\/]/).pop() ?? 'file';
+        return {
+            receiptId: uploaded.receiptId,
+            name,
+            ...(typeof uploaded.file.bytes === 'number' ? { bytes: uploaded.file.bytes } : {}),
+        };
+    }
 
     /** 当前会话可用的斜杠命令目录(commands/list)；拉取失败返回空数组。 */
     async listCommands(): Promise<DshCommandDescriptor[]> {

@@ -1,9 +1,9 @@
-// 提问卡纯函数模型（对齐官方 ui-tool `toolviews/ask-question-row.tsx` 的 questionEntries/answerEntries/pairAnswers + 状态裁决）。
+// 提问卡纯函数模型：从工具项派生问答记录与状态裁决（适配上游 0.1.5-rc.2）。
 // 从 tool item（name/argsRaw/output/status/error）派生 AskQuestionCard 需要的卡数据：
 //   待答(运行中) → 等待回答；已回答(ok) → {answered}/{total} 已回答 + 问题→答案记录；
 //   ASK_CANCELLED → 已取消 + 未答问题；ASK_ABORTED → 已中断 + 未答问题。
 // 记录取不到时 transcript 为 null、摘要为空串，由 ToolRow 落回通用「输入/输出」区 + 通用摘要。
-// 照抄官方逻辑（含 best-effort 计数兜底），不自行翻译/不编造。
+// 校验从严：形状不符即退让；含 best-effort 计数兜底，不猜、不编造。
 
 import { askLabels, type AskLabels } from './ask-labels'
 

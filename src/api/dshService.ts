@@ -447,7 +447,7 @@ export class DshService {
         return this.newSession();
     }
 
-    /** 该工作区内可复用的现存空会话（blank 且未归档、属于该工作区），无则 undefined —— 对齐官方 connectWorkspace 的“复用现成新会话” */
+    /** 该工作区内可复用的现存空会话（blank 且未归档、属于该工作区），无则 undefined ——“复用现成新会话”，避免反复新建越积越多。 */
     private async findReusableBlank(workspaceId: string): Promise<string | undefined> {
         try {
             const { items: wsItems, archivedSessionIds } = await this.listWorkspaces();
@@ -482,7 +482,7 @@ export class DshService {
 
     /**
      * 开启新会话并设为当前。指定 workspaceId 时归入该工作区，缺省用当前文件夹对应的工作区（无文件夹才回未分组）。
-     * 对齐 dsh 官方：同一工作区已存在空白“新会话”时先复用它，不重复创建 → 反复点“新建会话”不会越积越多。
+     * 同一工作区已存在空白“新会话”时先复用它，不重复创建 → 反复点“新建会话”不会越积越多。
      */
     async newSession(workspaceId?: string): Promise<string> {
         // 工作区优先取显式指定 → 当前 → 自动默认（dsh 里最新 / 当前 VS Code 文件夹）。

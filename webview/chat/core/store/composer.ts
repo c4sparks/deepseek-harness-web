@@ -2,6 +2,7 @@
 // （取消 / 复制 / 选文件 / 执行斜杠命令）。不依赖 messages 信号。
 import { signal } from '@preact/signals'
 import type { ChatHost } from '../host'
+import type { StagedFile } from './types'
 import type { ImageAttachment } from '../protocol'
 import type { ChatStore, RefChip } from './types'
 
@@ -21,18 +22,21 @@ export interface ComposerSlice {
     | 'removeImage'
     | 'addAttachment'
     | 'removeAttachment'
+    | 'retryUpload'
     | 'addRef'
     | 'removeRef'
     | 'readImageFile'
   >
   /** 宿主草稿消息到达：并入输入框文本并触发焦点。 */
   appendDraft(draft: string | undefined): void
+  /** 宿主回帧：就绪（带凭据/大小）或失败（带原因）。 */
+  receiveUpload(key: string, result: { receiptId?: string; name?: string; bytes?: number; error?: string }): void
   reset(): void
 }
 
 export function createComposer(host: ChatHost): ComposerSlice {
   const text = signal('')
-  const attachments = signal<string[]>([])
+  const attachments = signal<StagedFile[]>([])
   const images = signal<ImageAttachment[]>([])
   const refs = signal<RefChip[]>([])
   const focusTick = signal(0)
@@ -66,13 +70,42 @@ export function createComposer(host: ChatHost): ComposerSlice {
   const removeImage = (img: ImageAttachment): void => {
     images.value = images.value.filter((i) => i !== img)
   }
-  function addAttachment(p: string): void {
-    if (!attachments.value.includes(p)) {
-      attachments.value = [...attachments.value, p]
-    }
+  let fileKey = 1
+  const baseName = (p: string): string => p.split(/[\/]/).pop() || p
+  /** 发起一次上传（选中即传；宿主读字节，webview 只给路径）。 */
+  function requestUpload(entry: StagedFile): void {
+    host.post({ type: 'fileUploadReq', key: entry.key, path: entry.path })
   }
-  const removeAttachment = (p: string): void => {
-    attachments.value = attachments.value.filter((a) => a !== p)
+  function addAttachment(p: string): void {
+    if (!p) return
+    const entry: StagedFile = { key: `f${fileKey++}`, path: p, name: baseName(p), state: 'uploading' }
+    attachments.value = [...attachments.value, entry]
+    requestUpload(entry)
+  }
+  /** 宿主回帧：就绪（带凭据/大小）或失败（带原因）。 */
+  function receiveUpload(key: string, result: { receiptId?: string; name?: string; bytes?: number; error?: string }): void {
+    attachments.value = attachments.value.map((a) => {
+      if (a.key !== key) return a
+      if (result.receiptId === undefined) return { ...a, state: 'error' as const, error: result.error ?? '上传失败' }
+      return {
+        ...a,
+        state: 'ready' as const,
+        receiptId: result.receiptId,
+        ...(result.name === undefined ? {} : { name: result.name }),
+        ...(result.bytes === undefined ? {} : { bytes: result.bytes }),
+      }
+    })
+  }
+  /** 失败重试：回到上传中再发一次（key 不变，回帧仍能对上）。 */
+  function retryUpload(key: string): void {
+    const entry = attachments.value.find((a) => a.key === key)
+    if (entry === undefined) return
+    const next: StagedFile = { ...entry, state: 'uploading', error: undefined }
+    attachments.value = attachments.value.map((a) => (a.key === key ? next : a))
+    requestUpload(next)
+  }
+  const removeAttachment = (key: string): void => {
+    attachments.value = attachments.value.filter((a) => a.key !== key)
   }
   /** 添加一条 @ 引用贴片（label 用于显示，token 为发送时注入 prompt 的引用文本）。 */
   function addRef(kind: RefChip['kind'], label: string, token: string, detail?: string): void {
@@ -120,10 +153,12 @@ export function createComposer(host: ChatHost): ComposerSlice {
       removeImage,
       addAttachment,
       removeAttachment,
+      retryUpload,
       addRef,
       removeRef,
       readImageFile,
     },
+    receiveUpload,
     appendDraft,
     reset,
   }

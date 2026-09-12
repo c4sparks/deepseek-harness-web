@@ -1,9 +1,9 @@
-// 终端卡(官方 TerminalBlock)纯函数模型：variant 分类、退出状态解析、提示行标签、zh 字典。
-// 铁律：文案/结构取自官方 ui-tool / ui-conversation / ui-primitives，不自行翻译、不编造；
-// 本节是对官方源码(terminal-card-model.ts / TerminalBlock.tsx / bash-sample.tsx)的忠实复刻。
+// 终端卡纯函数模型：variant 分类、退出状态解析、提示行标签与文案（适配上游 0.1.5-rc.2）。
+// 铁律：文案与结构取字典与实现原文，不自行翻译、不编造；
+// 终端卡的判定与几何（适配上游 0.1.5-rc.2）。
 // host 侧另有等价解析( src/dsh/official/exit-status.ts )，二者正则保持一致。
 
-/** 工具变体（对齐官方 tool-call-model 的 ToolRowVariant 归组） */
+/** 工具变体（决定行图标与卡体） */
 export type ToolVariant = 'bash' | 'read' | 'search' | 'write' | 'edit' | 'code' | 'others'
 
 const TOOL_VARIANTS: Record<string, ToolVariant> = {
@@ -14,7 +14,36 @@ const TOOL_VARIANTS: Record<string, ToolVariant> = {
   run_code: 'code', code: 'code',
 }
 
-/** 工具名 → 展示变体（未知兜底 others，对齐官方 classifyTool） */
+/** 参数里可打开的路径键与适用变体（哪些工具的参数里带可打开路径）。 */
+const FILE_PATH_KEYS = ['path', 'file_path'] as const
+const FILE_PATH_VARIANTS = new Set<ToolVariant>(['read', 'write', 'edit'])
+
+/**
+ * 工具参数里的文件路径（收起行摘要里那个可点击的路径）。
+ * 只对 read/write/edit 三个变体生效（`read_image`/`web_fetch` 归入 read 变体，前者带 path、后者只有 url）；
+ * 取 `path` / `file_path` 的**首行**。解析失败或没有该字段 → undefined（不猜）。
+ * @param name - wire 工具名。
+ * @param argsRaw - 调用参数 JSON 串。
+ * @returns 原样路径（不解析、不拼绝对路径——那由宿主按会话工作区根做）。
+ */
+export function filePathOf(name: string, argsRaw?: string): string | undefined {
+  if (!FILE_PATH_VARIANTS.has(classifyTool(name)) || !argsRaw) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(argsRaw)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined
+  const rec = parsed as Record<string, unknown>
+  for (const key of FILE_PATH_KEYS) {
+    const value = rec[key]
+    if (typeof value === 'string' && value.trim() !== '') return value.split('\n')[0]
+  }
+  return undefined
+}
+
+/** 工具名 → 展示变体（未知兜底 others） */
 export function classifyTool(name: string): ToolVariant {
   return TOOL_VARIANTS[name] ?? 'others'
 }
@@ -38,7 +67,7 @@ export function parseExitStatus(text: string): { output: string; exitCode?: numb
 }
 
 // ---- 转义序列剥离 ----
-// 覆盖面照上游 `ui-primitives/ansi.ts` 的三段（那边是完整解析+着色，我们不做着色、也不重放光标，
+// 覆盖面分三段（不做着色、也不重放光标，
 // 只要求**控制字节不被当成正文画出来**）。漏掉一类就会留下可见残渣，且因为输出体不折行
 // （`white-space: pre`），残渣会把行撑宽 → 输出区出现本不该有的横向滚动条。
 // Windows 上是真会发生的：pwsh 的提示符会写 OSC 133 标记（`ESC ] 133;D;<code> BEL`），
@@ -64,7 +93,7 @@ export function stripAnsi(s: string): string {
     .replace(INERT_CONTROL, '')
 }
 
-/** 提示行 cwd 标签（对齐官方 promptLabel：精确等于 home 折叠为 ~，否则取路径末段，无值用 $） */
+/** 提示行 cwd 标签（精确等于 home 折叠为 ~，否则取路径末段，无值用 $） */
 export function promptLabel(cwd: string | undefined, home?: string): string {
   if (cwd === undefined || cwd === '') return '$'
   const trimmed = cwd.replace(/[/\\]+$/, '')
@@ -176,7 +205,7 @@ function resolveTerminalCwd(workdir: string | undefined, sessionCwd: string | un
   return normalizeSegments(resolveWorkspacePath(sessionCwd, workdir))
 }
 
-// ---- 展示字典（zh，原文照抄官方 ui-conversation + 共享 base；不自行翻译）----
+// ---- 展示字典（zh；文案取原文，不自造同义词）----
 export interface TerminalLabels {
   signal: (s: string) => string
   exitCode: (c: number) => string
@@ -192,7 +221,6 @@ export interface TerminalLabels {
   expand: (n: number) => string
 }
 
-/** 官方 zh 字典原文（terminal.* / row.* / copy / collapse） */
 export function terminalLabels(): TerminalLabels {
   return {
     signal: (s) => `信号 ${s}`,
@@ -258,7 +286,7 @@ function parseArgs(argsRaw?: string): ShellArgs | null {
 }
 
 /**
- * 从 tool item 派生终端卡。要求：工具变体为 bash 且 arguments 含非空 command（对齐官方 shellCall 校验）；
+ * 从 tool item 派生终端卡。要求：工具变体为 bash 且 arguments 含非空 command；
  * 否则返回 null（调用方回退通用「输入 / 输出」卡，见 ToolRow）。
  *
  * 已知差异（有意为之）：上游在若干情况下会退回通用卡——调用失败、description 缺失（常驻 shell）、

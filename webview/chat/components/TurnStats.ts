@@ -1,4 +1,4 @@
-// 用量 / 用时 弹窗组件（对齐 dsh 官方字段）。喂入 chatDone.stats 原始值(usageRaw)。
+// 用量 / 用时 弹窗组件：喂入 chatDone.stats 原始值(usageRaw)，有值才显示（适配上游 0.1.5-rc.2）。
 // 独立成组件，后续要改字段文案/布局/触发方式只动这里。
 import { html } from 'htm/preact'
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
@@ -69,7 +69,7 @@ export function TurnStats({ usage }: { usage: Record<string, unknown> }) {
   const cacheWrite = num('cacheWriteTokens')
   const provider = usage['provider']
   const model = usage['model']
-  // 缓存命中率对齐官方 formatCacheHitPercent(cacheRead, totalTokens−outputTokens, 1)：1 位小数，分母含 cacheWrite
+  // 缓存命中率：1 位小数，分母 = uncached + cacheRead + cacheWrite
   const hit =
     typeof cache === 'number' ? cacheHitPercent(cache, (inp ?? 0) + cache + (cacheWrite ?? 0)) : undefined
   const total = (inp && inp > 0 ? inp : 0) + (cache && cache > 0 ? cache : 0) + (out && out > 0 ? out : 0)
@@ -91,7 +91,7 @@ export function TurnStats({ usage }: { usage: Record<string, unknown> }) {
     if (total < 60) return String(total) + '秒'
     return Math.floor(total / 60) + '分' + (total % 60) + '秒'
   })()
-  // 弹窗行：有值才显示（对齐官方，缺失行不出现，不显示 “—”）
+  // 弹窗行：有值才显示（缺失行不出现，不显示 “—”）
   const usageRows: unknown[] = []
   if (total > 0) usageRows.push(row('本轮用量', fmt(total) + ' tok'))
   if (provider || model) usageRows.push(row('提供方 / 模型', [provider, model].filter(Boolean).join('/')))

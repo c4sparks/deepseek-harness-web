@@ -5,6 +5,7 @@ import type { Signal } from '@preact/signals'
 import type {
   HostToViewMessage,
   ImageAttachment,
+  AttachmentRef,
   PermissionOption,
   QuestionSpec,
   ChatModelInfo,
@@ -61,7 +62,11 @@ export interface TurnCounts {
 }
 
 export type ChatRow =
-  | { kind: 'user'; key: number; text: string; images: ImageAttachment[]; time: string; refs?: Array<{ kind: RefChip['kind']; label: string }> }
+  | { kind: 'user'; key: number; text: string; images: ImageAttachment[]; time: string; refs?: Array<{ kind: RefChip['kind']; label: string }>;
+      /** 历史恢复来的图片附件引用（字节不在事件里，由附件层按需取）；实时路径的图在 `images`（内联 base64） */
+      imageRefs?: AttachmentRef[];
+      /** 随该消息发出的文件（文件上送）：只留显示信息与本地路径，点它用编辑器打开 */
+      files?: Array<{ name: string; path?: string; bytes?: number }> }
   /** 系统提示词行（上游 `system-prompt` 节点）：该回合实际发给模型的 system，可折叠；位置在该回合用户提问之前 */
   | { kind: 'sysprompt'; key: number; text: string }
   | {
@@ -97,6 +102,23 @@ export type ChatRow =
   | { kind: 'approval'; key: number; approvalId: string; description: string; toolName?: string }
   | { kind: 'question'; key: number; rpcId: string; sessionId?: string; questions: QuestionSpec[]; disabled: boolean }
   | { kind: 'notice'; key: number; text: string; command?: string; tone?: 'error' | 'ok' }
+
+/** 输入区暂存的待发送文件（文件上送）：选中即上传，**就绪后才能发送**。 */
+export interface StagedFile {
+  /** webview 生成的稳定 key（多文件并发对得上宿主回包） */
+  key: string
+  /** 本地绝对路径（宿主据此读字节上传；发送后也用于「点开文件」） */
+  path: string
+  /** 显示名（文件名） */
+  name: string
+  state: 'uploading' | 'ready' | 'error'
+  /** 就绪后拿到的上传凭据（随 prompt 引用；发出后服务端即 retire，故发送时清空暂存） */
+  receiptId?: string
+  /** 文件字节数（就绪态显示大小） */
+  bytes?: number
+  /** 失败原因（原样展示） */
+  error?: string
+}
 
 /** 附件字节缓存条目（附件大类）：loading 取件中 / ready 就绪 / error 失败（可重试）。 */
 export interface AttachmentEntry {
@@ -143,7 +165,7 @@ export interface ChatStore {
   /** 当前会话工作区根路径；'' = 未知。终端卡的 cwd 标签在工具调用未带 workdir 时用它兜底（官方同口径） */
   sessionCwd: Signal<string>
   text: Signal<string>
-  attachments: Signal<string[]>
+  attachments: Signal<StagedFile[]>
   images: Signal<ImageAttachment[]>
   /** 「@」引用贴片（不进正文；发送时转为引用行） */
   refs: Signal<RefChip[]>
@@ -182,9 +204,13 @@ export interface ChatStore {
   addImage(img: ImageAttachment): void
   removeImage(i: ImageAttachment): void
   addAttachment(p: string): void
+  /** 重试一次失败的上传 */
+  retryUpload(key: string): void
   /** 按 attachmentId 懒取附件字节（已就绪/在飞时不重复发；失败可重试） */
   requestAttachment(attachmentId: string): void
-  removeAttachment(p: string): void
+  /** 在编辑器区打开文件（相对路径按 cwd 解析；line 为 1 起的行号） */
+  openFile(path: string, line?: number, cwd?: string): void
+  removeAttachment(key: string): void
   /** 添加一条 @ 引用贴片（文件/目录/会话） */
   addRef(kind: RefChip['kind'], label: string, token: string, detail?: string): void
   removeRef(key: number): void

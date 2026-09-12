@@ -1,4 +1,4 @@
-// "@" 引用触发器：与 "/" 指令同套 trigger 框架的另一个 source（对齐官方 ui-reference）。
+// "@" 引用触发器：与 "/" 指令同套 trigger 框架的另一个 source（适配上游 0.1.5-rc.2）。
 // 行首或空白(含换行)后输入 @（或 @"…"）唤起「文件与文件夹 / 对话」候选，数据源与官方同名：
 //   fileReferences/list（返回 {path,kind}）、sessionReferenceResolver/candidates（返回含 mention）。
 // 选中后在光标处插入官方 mention 文本（发送时只是正文文本，dsh 宿主 pre-step 会解析会话/文件引用）：
@@ -45,7 +45,7 @@ export function atTrigger(store: ChatStore): TriggerDef {
       const rows: TriggerRow[] = []
       if (!cat) return rows
       // 只列“当前一层”：query 空=顶层；以 / 结尾=该目录直接子级；否则(模糊搜文件名)才放行深层。
-      // 按类型分组展示（对齐官方）：文件夹 → 文件 → 会话。
+      // 按类型分组展示：文件夹 → 文件 → 会话。
       const level = cat.query
       const isDirectChild = (p: string): boolean => {
         if (level.endsWith('/')) {
