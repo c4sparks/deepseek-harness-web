@@ -29,8 +29,10 @@
 | session/selectModel · session/modelCatalog | request / {} | 选模型 / 列模型 | 切模型带该模型 `reasoning.defaultEffort`；无则**不带** effort（上游按提供方默认解析，UI 显示 `Default`）。不传时投影 `modelSelection.next` 也没有该字段（上游 `pending` 原样存提交值） |
 | session/page · session/follow | request | 分页冷读 / 热流订阅 | rc1 无 session.history |
 | workspace/create · workspace/follow | request | 建工作区 / 枚举 | follow 走 mux |
-| commands/execute | {agentId,line,images} | 斜杠命令(/permission) | 点号 404 |
+| commands/execute | {agentId,line,**submittedAttachments**}（0.1.2-rc.1 时代为 `images`） | 斜杠命令(/permission) | 点号 404；形参名不符会被网关描述符校验拒掉 |
 | commands/list | {agentId} | `/` 指令目录 | 与 commands/execute 同 args 信封 |
+| session/uploadFileBinary | **非信封的二进制 POST**：`?sessionId=…&name=…` + `content-type: application/octet-stream`，body 原始字节 | 文件上送（供 prompt 的 `{type:'file',receiptId}` 引用） | 通过校验一律 **HTTP 200**；成功 `{ok:true,value:{receiptId,file}}`，**业务失败也在 200**（`{ok:false,error:{code,message}}`）；415/405/400 仅用于头/方法/参数不对 |
+| session/attachment | {sessionId,attachmentId} | 图片附件字节（**引用方**读回，返回 `{attachment,data(base64)}`） | 上游校验该附件确被本会话引用，否则 `session/attachment-invalid` |
 | skills/list | {request:{sessionId}} | `/` 技能目录 | **args 不接受 agentId**（描述符拒，实测 `unexpected "agentId"`）；只放 `{request:{sessionId}}`。勿用旧 `skill.list`（点号不存在）【2026-09-08 实测修正】 |
 | fileReferences/list | {agentId,query} | `@` 文件/目录候选 | 返回 `{path,kind}`，path 为工作区相对 |
 | sessionReferenceResolver/candidates | {agentId,query} | `@` 会话候选 | 条目含 `mention`=应插入正文的 token【2026-09-08】 |
@@ -54,17 +56,18 @@
 ## 事件 / usage / 错误码
 事件（`DSH_EVENT_TYPES`）：user/message、assistant/message(+usage)、step/start·end、tool/call·result、turn/start·end、request/header·context。
 
-**助手流式增量的载体**【v0.1.9 · dsh 0.1.5-rc.2】上游 `feat(session)!: embed assistant streams` 把增量从独立事件挪走，实时与历史各换一处；插件改动落在 `src/dsh/` 的流式与会话处理：
+**事件载体在 0.1.5 的两处变更**【v0.1.9 · dsh 0.1.5-rc.2】上游把「流式输出增量」与「system 提示词」的载体各挪了一处，插件改动落在 `src/dsh/`：
 | 场景 | 0.1.2-rc.1 | 0.1.5-rc.2 | 插件读法 |
 |---|---|---|---|
-| 实时增量 | 事件 `assistant/chunk`（`data.chunk`） | **帧** `{ type:'assistant-stream', frame }`，`frame.type` 为 start/chunk/end，增量在 `frame.chunk` | 改为按帧解析 |
+| 实时增量 | 事件 `assistant/chunk`（`data.chunk`） | **帧** `{ type:'assistant-stream', frame }`，`frame.type` 为 start/chunk/end，增量在 `frame.chunk` | 按帧解析 |
 | 同上（开关） | 无需开关 | `session/follow` 请求**必须**带 `assistantStream: true`；不带则服务端一帧都不下发 | 两处 follow 请求（实时与快照）都带 |
 | 历史增量 | 持久事件 `assistant/chunk`，加 `{ type:'chunks' }` packing 行（带 `seq0`） | 内嵌进结算事件 `assistant/message` / `assistant/attempt` 的 `data.stream`（**无 `seq0`**） | 历史展开后归一为内部标签 `assistant/chunk` |
+| **system 提示词** | `request/header` 事件的 `header.system` | **`system/message` 事件** `{ turn, step, message }`；旧字段**已删** | 取 `message.content` 的 text 块拼起来（`official/system-prompt.ts`），按 `(turn, step)` 去重 |
 
 - `assistant/chunk` 在 0.1.2-rc.1 是 wire 事件、0.1.5 起已不是（故上面的事件清单不含它），但插件内部仍把它当**统一标签**用（历史展开后合成，供计时统计与文本累加共用）。若照旧读作 wire 事件名，会误判为无需改动，表现为「不流式，整段出现」。
 - `assistant/live-chunk` 是上游 **TypeScript 客户端的内存表示**（定义处注释写明 Client-only），**wire 上没有这个事件**，不要照它改。
-- 会话日志格式 v0 升至 v3 属 identity 迁移（只改 header 的 version），事件信封不变，插件不受影响。
-- 已知缺口【v0.1.9】：打开一个正在生成的会话时，快照基线里已生成但未结算的助手增量不会回放，从接入时刻起续上。影响面仅限「打开时恰在流式」这一场景，待真机验证后决定是否补。
+- 会话日志格式 v0 升至 v3：其中 **v1 到 v2 是内容转换**（顶层 `assistant/chunk` 事件被嵌入 attempt 事件的 `data.stream`），**v2 到 v3 才是 identity**（只改 header 的 version）。插件读的是 wire 事件、且上游在读取时就地迁移，故不受影响。
+- 已知缺口【v0.1.9】：打开一个正在生成的会话时，快照基线里已生成但未结算的流式输出不会回放，从接入时刻起续上。影响面仅限「打开时恰在流式」这一场景，待真机验证后决定是否补。
 
 **`tool/result` 载荷层级**（【v0.1.7 · dsh 0.1.2-rc.1】查明并修正，此前读错导致工具输出为空）：
 | 要取的东西 | 位置 | 说明 |
@@ -109,5 +112,10 @@ F1 聊天(session/prompt+follow+事件)、F2 模型(modelCatalog/selectModel)、
 - 修改：修正 `session/selectModel` 备注，并补记上游投影机制
 
 ### 0.1.9（2026-09-12）
-- 新增：事件章节补「助手流式增量的载体」表；上游适配追踪表补增量载体变更一行
+- 新增：事件章节补「事件载体在 0.1.5 的两处变更」表；上游适配追踪表补增量载体变更一行
 - 修改：事件清单删去已非 wire 事件的 `assistant/chunk`；基线由 `0.1.2-rc.1` 上移至 `0.1.5-rc.2`
+- 修改：事件载体表补 **system 提示词**一行（0.1.5 起从 `request/header` 的 `header.system` 搬到 `system/message` 事件，旧字段已删；真机表现为该行完全不显示）
+- 修正：「会话日志格式 v0 升至 v3 属 identity 迁移」不准确 —— v1 到 v2 是**内容转换**（顶层 chunk 事件嵌入 attempt 的 `data.stream`），v2 到 v3 才是 identity
+- 修改：RPC 表 `commands/execute` 的 args 形状更正为 `submittedAttachments`（0.1.5 起由 `images` 改名，元素形如 `{type:'image'|'file'}`）；形参名不符会被网关描述符校验拒掉，表现为**所有斜杠命令都失败**（真机踩到）
+- 新增：RPC 表补 `session/attachment`（图片附件字节读取；结果帧只带附件引用，字节由附件层按需取）
+- 新增：RPC 表补 `session/uploadFileBinary`（文件上送的二进制路由；与其它 RPC 不同，业务失败也在 HTTP 200）
