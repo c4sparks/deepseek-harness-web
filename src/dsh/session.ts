@@ -529,9 +529,10 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
             // 与实时同口径：subagent 委派单独计数，不进 toolCallCount
             if (it.name === 'subagent' || it.name.startsWith('subagent_')) { subagentCount += 1; }
             else { toolCallCount += 1; }
+            // 所在回合已关闭而该调用仍没有结果 → 视为「被中断」（与回合结束原因无关）
             if (it.status === 'running') {
-                const kind = endStatus.get(turn);
-                it.status = kind && kind !== 'completed' ? 'stopped' : 'ok';
+                it.status = 'stopped';
+                it.error = 'interrupted';
             }
         }
         const idx = lastAsst.get(turn);

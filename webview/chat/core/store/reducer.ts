@@ -9,6 +9,7 @@ import type { CatalogsSlice } from './catalogs'
 import type { SelectorsSlice } from './selectors'
 import type { QuestionSlice } from './question'
 import type { StatusSlice } from './status'
+import type { PrefsSlice } from './prefs'
 import type { AttachmentsSlice } from './attachments'
 import type { OutboxSlice } from './outbox'
 import type { HistorySlice } from './history'
@@ -20,6 +21,7 @@ export interface ReducerDeps {
   selectors: SelectorsSlice
   question: QuestionSlice
   status: StatusSlice
+  prefs: PrefsSlice
   attachments: AttachmentsSlice
   outbox: OutboxSlice
   history: HistorySlice
@@ -32,7 +34,7 @@ export interface ReducerSlice {
 }
 
 export function createReducer(deps: ReducerDeps): ReducerSlice {
-  const { messages, composer, catalogs, selectors, question, status, attachments, outbox, history, reset } = deps
+  const { messages, composer, catalogs, selectors, question, status, prefs, attachments, outbox, history, reset } = deps
 
   function onHostMessage(m: HostToViewMessage): void {
     switch (m.type) {
@@ -92,6 +94,10 @@ export function createReducer(deps: ReducerDeps): ReducerSlice {
         }
         break
       }
+      case 'chatPrefs':
+        // 上游显示偏好（全局）：只改展示形态，不动会话数据
+        prefs.apply(m.transcriptView)
+        break
       case 'draft':
         composer.appendDraft(m.text)
         break

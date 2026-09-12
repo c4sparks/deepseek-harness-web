@@ -473,9 +473,32 @@ async function postChatInfo(webview: vscode.Webview): Promise<void> {
             agentPreset,
             agentPresetLocked,
         });
+        // 设置偏好兜底对齐：emit 万一收不到，会话/工作区切换时也重读一次（值变了才广播）
+        void dsh.readTranscriptView();
     } catch {
         // 服务未就绪时静默
     }
+}
+
+/** 推上游「设置 → 对话显示」偏好（全局，与会话无关）。读不到就不推：webview 侧默认 compact = 接入前的形态 */
+async function postChatPrefs(): Promise<void> {
+    const transcriptView = (await dsh.readTranscriptView()) ?? dsh.getCachedTranscriptView();
+    if (transcriptView === undefined) {
+        return; // 别把「读失败」当 compact 推下去，否则会抹掉上次读到的 normal
+    }
+    postToChats({ type: 'chatPrefs', transcriptView });
+}
+
+/** 上游设置变更跟随：进程内只订阅一次，变更（含重连后重读发现的变化）广播给所有存活聊天页 */
+let settingsFollowed = false;
+function ensureSettingsFollow(): void {
+    if (settingsFollowed) {
+        return;
+    }
+    settingsFollowed = true;
+    dsh.subscribeTranscriptView((transcriptView) => {
+        postToChats({ type: 'chatPrefs', transcriptView });
+    });
 }
 
 
@@ -609,6 +632,8 @@ function setupChatWebview(
                     // 服务不可用：后续操作再触发
                 }
                 await postChatInfo(webview);
+                await postChatPrefs();
+                ensureSettingsFollow();
             })();
             return;
         }
@@ -649,7 +674,9 @@ function setupChatWebview(
                                 }
                             },
                             onActivity: (a) => {
-                                if (g === gen.n) {
+                                // 工具结果是**补记数据**（停止后服务端仍会补发），世代守卫若一并拦掉，
+                                // 那条工具行就永远停在「无结果」——所以它不参与世代失效；其余活动维持原守卫。
+                                if (a.type === 'toolDone' || g === gen.n) {
                                     post({ type: 'chatActivity', activity: a });
                                 }
                             },

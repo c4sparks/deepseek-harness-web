@@ -181,6 +181,9 @@ export interface ChatStore {
   planState: Signal<{ active: boolean; pending: boolean } | null>
   /** 会话目标(投影 goal)；null=无目标/能力缺失。goal bar 常驻条数据源（形状按官方 GoalProjection） */
   goalState: Signal<{ objective: string; phase: string } | null>
+  /** 上游「设置→对话显示」的只读镜像：compact=定稿收起成折叠头(上游默认)，normal=过程行平铺。
+   *  全局偏好，**不随会话切换清空**（见 store/prefs）。 */
+  transcriptView: Signal<'normal' | 'compact'>
   /** 官方 waterfall 提问弹窗（输入框上方）：pending 时让用户选择/提交/取消/关闭；null=无 */
   pendingQuestion: Signal<{ rpcId?: string; sessionId?: string; questions: QuestionSpec[] } | null>
   /** 主动触底请求计数：用户发送/重新生成/恢复会话时 +1（MessageList 消费后清零并强制滚到底） */

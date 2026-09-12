@@ -245,6 +245,8 @@ export type HostToViewMessage =
       agentPreset?: string
       agentPresetLocked?: boolean
     }
+  // 上游显示偏好（全局，与会话无关）：单独一条轻消息，实时跟随只推它，不重拉 chatInfo 那串 RPC
+  | { type: 'chatPrefs'; transcriptView?: 'normal' | 'compact' }
   | { type: 'draft'; text?: string }
   | { type: 'chatHistory'; messages?: HistoryMessage[]; sessionId?: string }
   | {

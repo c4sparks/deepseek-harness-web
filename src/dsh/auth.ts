@@ -130,7 +130,9 @@ const ARGS_KEY_BY_METHOD: Record<string, string> = {
     'session/list': '_request',
 };
 /** 无参 remote（payload 必须为 { args: {} }）。 */
-const NO_ARGS_METHODS = new Set<string>(['session/modelCatalog', 'agentPresets/list']);
+// settings/describe 与 modelCatalog 同族：远端签名无参，多包一层 request 会被网关拒
+// （"Remote payload must contain exactly one plain-object args field"）。
+const NO_ARGS_METHODS = new Set<string>(['session/modelCatalog', 'agentPresets/list', 'settings/describe']);
 /** 平铺 args 的方法（payload 对象直接作为 args 的字段集）。 */
 const FLAT_ARGS_METHODS = new Set<string>(['$events/result', 'agentPresets/select']);
 

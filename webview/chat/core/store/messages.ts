@@ -78,6 +78,18 @@ export function createMessages(host: ChatHost): MessagesSlice {
   // 当前"流式进行中"的 assistant 行(至多一个);无则 undefined
   const activeAssistantIndex = (): number =>
     messages.value.findIndex((r) => r.kind === 'assistant' && !r.done)
+  /** 含该 callId 的 assistant 行（**不要求未定稿**）：补记类事件回落到已存在的行时用。
+   *  不能退回 ensureAssistant()——它找不到活跃行会**新建一个空行**，等于平白多出一行。 */
+  const assistantRowOfCall = (callId: string | undefined): ChatRow | undefined => {
+    if (!callId) return undefined
+    for (let i = messages.value.length - 1; i >= 0; i -= 1) {
+      const r = messages.value[i]
+      if (r.kind === 'assistant' && r.chain.some((c) => c.kind === 'tool' && c.callId === callId)) {
+        return r
+      }
+    }
+    return undefined
+  }
   const ensureAssistant = (prompt = ''): ChatRow | undefined => {
     let idx = activeAssistantIndex()
     if (idx === -1) {
@@ -129,7 +141,9 @@ export function createMessages(host: ChatHost): MessagesSlice {
   }
   function activity(a: ViewActivity | undefined): void {
     if (!a) return
-    const row = ensureAssistant()
+    // 工具结果是**补记数据**：停止之后服务端仍会补发，而它要落到的行往往已经定稿
+    // （停止时已发完成帧）。所以先按 callId 回溯**已存在**的行，找不到才退回活跃行。
+    const row = (a.type === 'toolDone' ? assistantRowOfCall(a.callId) : undefined) ?? ensureAssistant()
     if (!row || row.kind !== 'assistant') return
     if (a.type === 'tool') {
       // 追加一条工具调用：raw name + 标题 + 参数摘要；流式中 status running，toolDone 到达后置 ok/error
@@ -251,11 +265,13 @@ export function createMessages(host: ChatHost): MessagesSlice {
     const statusBadge = turnStatusBadge(end?.kind) || undefined
     // error 时把服务端返回的原始错误消息附上（不翻译）
     const endMsg = end?.kind === 'error' && end?.message ? end.message : ''
-    // 收敛仍 running 的工具：正常完成但缺 result → ok；被打断/出错 → stopped（模型通用兜底）
-    const abnormal = !!end?.kind && end.kind !== 'completed'
+    // 收敛仍 running 的工具：该调用所在回合已关闭而它仍没有结果 → **一律**视为「被中断」。
+    // 上游在 step/turn closed 且该调用无结果时合成一份等价结果（content 空、isError、
+    // error.code='interrupted'），再由该码映射成 stopped —— **与 turn 的结束原因无关**：
+    // 正常 completed 也不会让「缺结果的调用」变成 ok。
     const chain = row.chain.map((c): DshTurnProcessItem =>
       c.kind === 'tool' && c.status === 'running'
-        ? { ...c, status: (abnormal ? 'stopped' : 'ok') as 'ok' | 'stopped', error: c.error }
+        ? { ...c, status: 'stopped' as const, error: c.error ?? 'interrupted' }
         : c
     )
     replace(row.key, {

@@ -35,7 +35,11 @@ import {
     dshEvents,
     listAgentPresets as listAgentPresetsRpc,
     selectAgentPreset as selectAgentPresetRpc,
+    readTranscriptView as readTranscriptViewRpc,
+    getCachedTranscriptView as getCachedTranscriptViewRpc,
+    subscribeTranscriptView as subscribeTranscriptViewRpc,
     type DshAgentPresetRoster,
+    type DshTranscriptView,
 } from '../dsh';
 import { sessionDisplayTitle } from '../dsh/official/session-title';
 
@@ -753,6 +757,24 @@ export class DshService {
     /** 列出 dsh 支持的 agent 模式（当前会话仍按投影 agentPreset 单独读） */
     async listAgentPresets(): Promise<DshAgentPresetRoster> {
         return listAgentPresetsRpc();
+    }
+
+    /**
+     * 读上游「设置 → 对话显示」（紧凑/标准）。
+     * 只读透传：读不到返回 undefined，调用方应保留上次值，别拿它当默认值（那会把读失败伪装成用户选择）。
+     */
+    async readTranscriptView(): Promise<DshTranscriptView | undefined> {
+        return readTranscriptViewRpc();
+    }
+
+    /** 最近一次读到的对话显示形态（新面板回填用，省一次 RPC） */
+    getCachedTranscriptView(): DshTranscriptView | undefined {
+        return getCachedTranscriptViewRpc();
+    }
+
+    /** 订阅上游「设置 → 对话显示」变更（emit 实时跟随 + 重连后重读对齐）；返回退订函数 */
+    subscribeTranscriptView(cb: (value: DshTranscriptView) => void): () => void {
+        return subscribeTranscriptViewRpc(cb);
     }
 
     /** 切换当前会话的 agent 模式（仅空白会话可切，后端会拒绝已开始的会话） */

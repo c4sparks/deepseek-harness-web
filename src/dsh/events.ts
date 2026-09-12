@@ -5,6 +5,8 @@
 //   - 服务端下发 ready（clientId）与 waterfall（event/eventId/agentId/request）帧；
 //   - 应答方通过 unary `$events/result` 回传 outcome。
 // 本模块负责维护一条可重连的 $events 流，并按会话把请求投递给聊天层。
+// 另有 emit 帧（上游广播，无 agentId、无需应答）走 subscribeStream，给非会话作用域的订阅者
+// （如设置文档变更）——两条通道各自分发，互不影响。
 import { openMuxStream, sendRemoteEventResult } from './api';
 import { jsonPreview } from './trace';
 
@@ -39,6 +41,14 @@ export interface DshSessionEventHandlers {
     onCancel?: (eventId: string) => void;
 }
 
+/** 非会话作用域（emit 帧）的 $events 回调。 */
+export interface DshStreamEventHandlers {
+    /** 上游广播的一条 emit：事件名与 args 原样透传（形状由订阅方自行解析） */
+    onEmit?: (event: string, args: readonly unknown[]) => void;
+    /** 流（重）连成功。断线期间错过的 emit 不会补发，订阅方应借此重读一次对齐 */
+    onReady?: () => void;
+}
+
 interface RemoteInvocation {
     readonly clientId: string;
     readonly eventId: string;
@@ -67,6 +77,7 @@ class RemoteEventHub {
     private generation = 0;
     private clientId: string | undefined;
     private readonly handlers = new Map<string, Set<DshSessionEventHandlers>>();
+    private readonly streamHandlers = new Set<DshStreamEventHandlers>();
     private readonly pending = new Map<string, RemoteInvocation>();
 
     /** 订阅某个 agent/session 在等待期间的审批/提问事件。 */
@@ -87,6 +98,15 @@ class RemoteEventHub {
             if (current.size === 0) {
                 this.handlers.delete(sessionId);
             }
+        };
+    }
+
+    /** 订阅非会话作用域的 emit 事件（订阅即确保流已拉起）。 */
+    subscribeStream(handlers: DshStreamEventHandlers): () => void {
+        void this.ensureStarted();
+        this.streamHandlers.add(handlers);
+        return () => {
+            this.streamHandlers.delete(handlers);
         };
     }
 
@@ -146,6 +166,7 @@ class RemoteEventHub {
         this.generation += 1;
         this.pending.clear();
         this.handlers.clear();
+        this.streamHandlers.clear();
         this.control?.cancel();
         this.control = undefined;
     }
@@ -246,13 +267,17 @@ class RemoteEventHub {
             }
         }
         const frame = value as
-            | { type?: string; clientId?: string; eventId?: string; event?: string; agentId?: string; request?: Record<string, unknown> }
+            | { type?: string; clientId?: string; eventId?: string; event?: string; agentId?: string; request?: Record<string, unknown>; args?: unknown }
             | undefined;
         if (!frame || typeof frame !== 'object') {
             return;
         }
         if (frame.type === 'ready' && typeof frame.clientId === 'string') {
             this.clientId = frame.clientId;
+            // 重连后对齐：断线期间的 emit 不会补发，交给订阅方自己重读一次
+            for (const handler of this.streamHandlers) {
+                handler.onReady?.();
+            }
             return;
         }
         if (frame.type === 'cancel' && typeof frame.eventId === 'string') {
@@ -261,6 +286,14 @@ class RemoteEventHub {
                 for (const handler of set) {
                     handler.onCancel?.(frame.eventId);
                 }
+            }
+            return;
+        }
+        // emit 帧：上游广播，无 agentId、无需应答（与 waterfall 的审批/提问是两条独立通道）
+        if (frame.type === 'emit' && typeof frame.event === 'string') {
+            const args = Array.isArray(frame.args) ? frame.args : [];
+            for (const handler of this.streamHandlers) {
+                handler.onEmit?.(frame.event, args);
             }
             return;
         }

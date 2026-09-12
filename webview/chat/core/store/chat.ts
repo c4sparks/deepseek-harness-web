@@ -1,6 +1,6 @@
 // 聊天页核心状态(信号 store)的装配层：只做切片创建与接线，不含行为逻辑。
 // 行模型在 messages，输入区在 composer，目录在 catalogs，选择器在 selectors，提问弹窗在 question，
-// 会话状态在 status，历史恢复在 history，发送动作在 outbox，宿主消息归约器在 reducer；
+// 会话状态在 status，全局显示偏好在 prefs，历史恢复在 history，发送动作在 outbox，宿主消息归约器在 reducer；
 // 跨切片依赖全部由本层注入（切片之间不互相 import）。
 // 组件只读 store 上的信号并渲染;要发宿主一律走 store 动作(内部 host.post)。
 import type { ChatHost } from '../host'
@@ -12,6 +12,7 @@ import { createSelectors } from './selectors'
 import { createQuestion } from './question'
 import { createAttachments } from './attachments'
 import { createStatus } from './status'
+import { createPrefs } from './prefs'
 import { createHistory } from './history'
 import { createOutbox } from './outbox'
 import { createReducer } from './reducer'
@@ -33,11 +34,14 @@ export function createChatStore(host: ChatHost): ChatStore {
   const selectors = createSelectors(host, messages.store.showNotice)
   const question = createQuestion(host)
   const attachments = createAttachments(host)
+  // 显示偏好：全局量，故不参与下面的 reset（见 store/prefs 文件头）
+  const prefs = createPrefs()
 
   // 3. 发送动作（跨输入区 + 目录 + 消息域，依赖注入）
   const outbox = createOutbox({ host, composer, catalogs, messages })
 
   // 4. 全量清空：跨切片唯一入口。各切片只清自己的量，这里按固定顺序串联。
+  //    不含 prefs：上游显示形态是全局偏好，换会话不该重置。
   const reset = (): void => {
     messages.resetRows()
     composer.reset()
@@ -50,7 +54,7 @@ export function createChatStore(host: ChatHost): ChatStore {
 
   // 5. 历史恢复与归约器（都需要 reset）
   const history = createHistory({ messages, resetAll: reset })
-  const reducer = createReducer({ messages, composer, catalogs, selectors, question, status, attachments, outbox, history, reset })
+  const reducer = createReducer({ messages, composer, catalogs, selectors, question, status, attachments, prefs, outbox, history, reset })
 
   // 显式列举装配（不用展开）：字段漏装配被返回类型拦截，字段重复在编译期直接报错。
   return {
@@ -115,5 +119,7 @@ export function createChatStore(host: ChatHost): ChatStore {
     attachmentCache: attachments.store.attachmentCache,
     requestAttachment: attachments.store.requestAttachment,
     goalState: status.store.goalState,
+    // 全局显示偏好（上游「设置→对话显示」）
+    transcriptView: prefs.store.transcriptView,
   }
 }
