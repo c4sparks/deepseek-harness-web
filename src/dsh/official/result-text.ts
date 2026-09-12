@@ -50,6 +50,45 @@ export function readToolResult(data: Record<string, unknown>): ToolResultPayload
 }
 
 /**
+ * 结果内容块里是否含图片块。
+ *
+ * 用途是**搬运决策**，不是卡判定：含图片时宿主改发「原始内容块 + 只含 text 的干净文本」，
+ * 让渲染层自己按上游口径校验与展示（附件引用是给渲染层用的数据，不是给人读的文本）。
+ * 卡的判定（工具名、信封形状、引用合法性等）一律留在渲染侧，改渲染不动宿主。
+ * @param content - tool/result 的 message.content。
+ * @returns 是否至少有一个 `type === 'image'` 的块。
+ */
+export function hasImageBlock(content: unknown): boolean {
+    if (!Array.isArray(content)) {
+        return false;
+    }
+    return content.some((block) => (block as { type?: unknown } | undefined)?.['type'] === 'image');
+}
+
+/**
+ * 只拼 text 块（其余块不参与）。
+ *
+ * 与 `resultText()` 的区别：后者把非 text 块序列化成 pretty JSON —— 对图片块而言那是把
+ * 附件引用对象整段倒进「输出」区（既不可读、也不是它的用途）。
+ * @param content - tool/result 的 message.content。
+ * @returns 各 text 块按序拼接的文本（可能为空串）。
+ */
+export function textOnly(content: unknown): string {
+    const parts: string[] = [];
+    if (Array.isArray(content)) {
+        for (const block of content) {
+            const b = block as { type?: unknown; text?: unknown };
+            if (b['type'] === 'text' && typeof b['text'] === 'string') {
+                parts.push(b['text']);
+            }
+        }
+    } else if (typeof content === 'string') {
+        parts.push(content);
+    }
+    return parts.join('\n');
+}
+
+/**
  * 展平工具结果的内容块为展示文本。
  * @param content - tool/result 的 message.content（块数组；非数组时按字符串兜底）
  * @param error - tool/result 的结构化错误（name/code），仅在无内容时兜底

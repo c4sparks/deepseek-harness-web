@@ -1,29 +1,14 @@
-// 提问卡展开体（官方 ui-tool AskQuestionCard 复刻）：对话行只做「问题↔回复」记录。
-// answered=问题→答案列表(空答 ask.skipped)；unanswered=结论(已取消/已中断)+问题列表；
-// pending=官方 waterfall 交互在输入框上方弹窗，对话行此处理原输出/参数兜底。
+// 提问卡展开体（官方 ui-tool AskQuestionCard 复刻）：只渲染两种**有记录**的形态 ——
+// answered=问题→答案列表(空答 ask.skipped)；unanswered=结论(已取消/已中断)+问题列表。
+// 「无记录可展示」（进行中 / 问答配对不上 / 结果坏形）**不在这里兜底**：由 ToolRow 落回通用「输入/输出」区。
 import { html } from 'htm/preact'
-import type { DshTurnProcessItem } from '../../core/store/chat'
 import type { AskCard } from '../../core/ask-card'
 import { askLabels } from '../../core/ask-labels'
 
-type AskChainItem = Extract<DshTurnProcessItem, { kind: 'tool' }>
-
-export function AskCardBody({ card, item }: { card: AskCard; item: AskChainItem }) {
+export function AskCardBody({ card }: { card: AskCard }) {
   const labels = askLabels()
-  if (card.pending) {
-    // pending 时交互在 composer 上方 waterfall 弹窗；对话行此处理输出/原始参数兜底
-    let jsonText = item.argsRaw ?? ''
-    if (jsonText) {
-      try {
-        jsonText = JSON.stringify(JSON.parse(jsonText), null, 2)
-      } catch {
-        /* 原样 */
-      }
-    }
-    return html`${item.output ? html`<pre class="chain-tool-out">${item.output}</pre>` : null}
-      ${jsonText ? html`<pre class="chain-tool-json">${jsonText}</pre>` : null}`
-  }
   const t = card.transcript
+  // ToolRow 的派发条件就是「transcript 非 null」；此处返回 null 只是防御，别让未来改派发时静默变空
   if (t === null) return null
   if (t.mode === 'unanswered') {
     return html`<div class="ask-card">

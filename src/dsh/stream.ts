@@ -1,11 +1,13 @@
-// dsh 0.1.2-rc.1 流式对话：session/follow 驱动的 waitTurn 与 ask 系列。
+// 流式对话：session/follow 驱动的 waitTurn 与 ask 系列（适配上游 0.1.5-rc.2）。
 import { openMuxStream } from "./api";
+import { expandAssistantStream } from "./official/assistant-stream";
 import { deriveTurnTokenUsage, deriveTurnFacts, type TurnLikeEvent } from "./official/turn-stats";
 import { parseExitStatus } from "./official/exit-status";
-import { readToolResult, resultText } from "./official/result-text";
+import { hasImageBlock, readToolResult, resultText, textOnly } from "./official/result-text";
 import { toolStatusOf } from "./official/tool-status";
 import { contextForm, contextProvenance } from "./official/context-projection";
-import { readRequestPrompt, requestShowsPrompt, requestToolsKey } from "./official/request-prompt";
+import { readSystemPrompt } from "./official/system-prompt";
+import { traceTool, jsonPreview } from "./trace";
 import {
     eventText,
     readFollowSnapshot,
@@ -55,6 +57,8 @@ export interface DshActivity {
     signal?: string;
     /** tool/result.data.meta 原文透传（web_fetch 的 statusCode/截断、web_search 的 sources/answer 等卡数据源；未知形状原样带） */
     meta?: unknown;
+    /** 结果原始内容块（**仅当结果含图片块时**带；图片块只含附件引用，字节由渲染层按需另取） */
+    blocks?: unknown;
 }
 /** 过程折叠计数（对齐官方 turn-process 的三个计数：toolCallCount=非 subagent 工具调用数；
  *  messageCount=最终答复前带文本的中间 assistant 消息数；subagentCount=名字识别为 subagent 委派的调用数。
@@ -79,7 +83,7 @@ export interface DshContext {
 }
 /**
  * 一次模型请求的系统提示词（上游 `system-prompt` 节点的数据源）。
- * 取自 `request/header` 的 `header.system` —— 该请求**实际发给模型**的完整 system；
+ * 取自 `system/message` 事件 —— 该请求**实际发给模型**的完整 system；
  * 与 agent-instructions 的注入事件不是一回事（后者只说明"注入了一份指令文件"）。
  */
 export interface DshSystemPrompt {
@@ -124,8 +128,13 @@ interface StreamingOpts {
     onQuestion?: (q: DshQuestionRequest) => void;
     /** 上下文注入行（source.kind !== 'user' 的 user/message：技能/召回…；系统提示词走 onSystemPrompt） */
     onContext?: (c: DshContext) => void;
-    /** 模型请求的系统提示词（`request/header`；上游在同回合开头渲染一条可折叠行） */
+    /** 模型请求的系统提示词（`system/message`；上游在同回合开头渲染一条可折叠行） */
     onSystemPrompt?: (s: DshSystemPrompt) => void;
+    /**
+     * 正文整段覆盖为 full（非追加）。上游的增量帧是**瞬态**数据：一次尝试被放弃时（模型流抛错，
+     * 没有持久结算事件）它已流出的半截文本必须撤回。仅靠增量回调收不回来，故单开一个覆盖入口。
+     */
+    onTextReset?: (full: string) => void;
 }
 interface TurnResult {
     text: string;
@@ -148,7 +157,23 @@ function round1(n: number | undefined): number | undefined {
     return Math.round(n * 10) / 10;
 }
 
-/** 上游原始帧日志（验证 0.1.2-rc.1 事件 schema 用）。启用：扩展进程 env DSH_RAWLOG=1（紧凑）或 =full（完整 JSON）。 */
+/**
+ * 单个事件的容错边界：一条事件处理失败只记一行，不打断整轮。
+ * 观测/日志类代码绝不能把数据流带崩 —— 任何一条事件坏掉都不该影响其余事件。
+ * @param what - 出错位置的短标签（写进日志用）。
+ * @param fn - 实际处理逻辑。
+ */
+function guard(what: string, fn: () => void): void {
+    try {
+        fn();
+    } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`[dsh-guard] ${what} 处理失败（已跳过该事件，不影响整轮）：${msg}`);
+        traceTool(`host guard ${what} error=${msg}`);
+    }
+}
+
+/** 上游原始帧日志（验证 0.1.5-rc.2 事件 schema 用）。启用：扩展进程 env DSH_RAWLOG=1（紧凑）或 =full（完整 JSON）。 */
 function rawLog(src: string, value: unknown): void {
     const mode = process.env['DSH_RAWLOG'];
     if (!mode) {
@@ -160,14 +185,14 @@ function rawLog(src: string, value: unknown): void {
             const proj = v.projections?.values ?? {};
             const n = Array.isArray(v.records) ? v.records.length : 0;
             if (mode === 'full') {
-                console.log(`[dsh-raw] ${src} snapshot ` + JSON.stringify(value).slice(0, 200_000));
+                console.log(`[dsh-raw] ${src} snapshot ` + jsonPreview(value, 200_000));
             } else {
                 console.log(`[dsh-raw] ${src} snapshot projKeys=${Object.keys(proj).join(',') || '(none)'} records=${n}`);
             }
             return;
         }
         if (mode === 'full') {
-            console.log(`[dsh-raw] ${src} ` + JSON.stringify(value).slice(0, 200_000));
+            console.log(`[dsh-raw] ${src} ` + jsonPreview(value, 200_000));
         } else {
             const keys = v && v.data ? Object.keys(v.data).join(',') : '';
             console.log(`[dsh-raw] ${src} ${String(v?.type ?? 'frame')}${typeof v?.seq === 'number' ? ' seq=' + v.seq : ''}${keys ? ' data=[' + keys + ']' : ''}`);
@@ -177,10 +202,12 @@ function rawLog(src: string, value: unknown): void {
     }
 }
 /**
- * 会话回合等待（适配 dsh v0.1.2-rc.1）。
- * 打开一次 session/follow，把 snapshot + 实时事件里 seq>baselineSeq 的事件转成增量回调：
- *   - assistant/chunk data.chunk.type==='text-delta' → onDelta 并拼全文；
- *   - data.chunk.type==='reasoning-delta' → onReasoning（按 data.step）；
+ * 会话回合等待（适配上游 0.1.5-rc.2）。
+ * 打开一次 session/follow，把 snapshot + 实时事件里 seq>baselineSeq 的事件转成增量回调。
+ * 请求必须带 assistantStream: true —— 0.1.5 新增的 opt-in，不开则服务端不下发实时增量帧。
+ *   - 实时增量走 assistant-stream 帧（start/chunk/end）：frame.chunk.type==='text-delta' → onDelta 并拼全文；
+ *     'reasoning-delta' → onReasoning（step 取自 start 帧缓存）。该帧没有 seq，故不参与 baselineSeq 过滤。
+ *   - assistant/chunk 是内部标签：wire 上已无此事件，历史侧（session.ts）把结算事件的 data.stream 归一到它。
  *   - step/start、tool/call → onActivity；turn/end（reason.kind==='error' 且无文本）→ 上抛错误；
  * 统计：assistant/message 的 usage，或结束瞬间快照的 tokenUsage/sessionStats 投影。
  * 说明：该版本的审批/提问走客户端 $events（waterfall），不在会话事件流里；
@@ -239,8 +266,102 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
         }, 400);
         // 本轮统计口径：只取本轮 assistant/message 事件自带的 usage，不并入会话级投影，
         // 也不自行累计步数（steps 只展示，不回填到本轮数字里）。
-        // 系统提示词(request/header)的跨事件状态：供上游那套「这条行要不要渲染」的判定
-        let prevPrompt: { system: string; toolsKey: string } | undefined;
+        // 系统提示词的跨事件状态：同一个 (turn, step) 只渲染一次
+        // （上游 `system/message` 只在该请求有非空 system 时 append，同一回合内可能来多条）
+        let lastSystem: { turn?: number; step?: number } | undefined;
+        // 活跃的实时增量 attempt：turn/step 只随 start 帧到达，chunk 帧没有，故在此缓存；
+        // 后三项对齐上游 ClientAssistantStream 的增量生命周期，缺一项就会让正文静默错位：
+        //   index   下一个期望的 chunk 序号（上游以 index 跳变判定丢帧）
+        //   trusted 为假时丢弃该 attempt 的增量，等结算事件用整条文本覆盖（宁可拿不到，不显示错值）
+        //   base    本 attempt 开始时的正文长度，被放弃/重开时回滚到此
+        let liveAttempt: {
+            attemptId?: string;
+            turn?: number;
+            step?: number;
+            index: number;
+            trusted: boolean;
+            base: number;
+            /** 本 attempt 开始时是否已有结算。用于回滚时区分「正文已被权威文本覆盖」的情形。 */
+            sealedAtStart: boolean;
+        } | undefined;
+        // 增量帧的 revision 必须逐帧 +1；跳变说明中间丢过帧（上游 transport 同口径，那边直接判废重连）
+        let streamRevision: number | undefined;
+        /** 撤回本 attempt 已流出的正文：截到长度 to，并让 UI 整段覆盖（增量已发出去，只能覆盖收回）。 */
+        const resetText = (to: number): void => {
+            if (to >= text.length) {return;}
+            text = text.slice(0, to);
+            // sawDeltas 的语义是「正文来自增量」，必须同步回退：收尾判断是
+            // `errorAtEnd && !sawDeltas && !sawAssistantMessage && !text`，若它仍为真值，
+            // 失败回合会被当成「有内容」而不上抛错误，界面留下一个空回答。
+            sawDeltas = text.length > 0;
+            opts.onTextReset?.(text);
+        };
+        // 回滚前先判断该 attempt 期间有没有发生过结算：结算会把正文换成服务端整条文本（权威），
+        // 此时再回滚到 attempt 起点，反而会把已确认的正文一并抹掉。
+        const rollbackAttempt = (attempt: NonNullable<typeof liveAttempt>): void => {
+            if (sawAssistantMessage === attempt.sealedAtStart) {resetText(attempt.base);}
+        };
+        // 一条增量进统计与回 UI —— 实时帧与快照回放共用，避免两处口径漂移（同一逻辑只写一份）
+        const applyChunk = (chunk: Record<string, unknown>, time: number | undefined, step: number | undefined): void => {
+            officialEvents.push({ type: 'assistant/chunk', time, data: { chunk } });
+            const chunkType = chunk['type'];
+            const chunkText = chunk['text'];
+            if (chunkType === CHUNK_TEXT && typeof chunkText === 'string') {
+                text += chunkText;
+                sawDeltas = true;
+                messageTime ??= time;
+                onDelta(chunkText);
+            } else if (chunkType === CHUNK_REASONING && typeof chunkText === 'string') {
+                const index = chunk['index'];
+                opts.onReasoning?.(chunkText, step, typeof index === 'number' ? index : undefined);
+            }
+        };
+        const handleAssistantFrame = (frame: Record<string, unknown>): void => {
+            const kind = frame['type'];
+            const revision = typeof frame['revision'] === 'number' ? (frame['revision'] as number) : undefined;
+            // 首帧无基线时接受并立基线；此后必须逐帧 +1
+            const revisionOk = revision === undefined || streamRevision === undefined || revision === streamRevision + 1;
+            if (revision !== undefined) {streamRevision = revision;}
+            if (kind === 'start') {
+                // 已有活跃 attempt 又见 start：上一个从未收到 end（丢帧，或上游放弃后未通知）。
+                // 上游此时 rebaseline；这里退一步——撤回它未确认的增量，再开新 attempt。
+                if (liveAttempt) {rollbackAttempt(liveAttempt);}
+                liveAttempt = {
+                    attemptId: stringOf(frame['attemptId']) ?? undefined,
+                    turn: typeof frame['turn'] === 'number' ? (frame['turn'] as number) : undefined,
+                    step: typeof frame['step'] === 'number' ? (frame['step'] as number) : undefined,
+                    index: 0,
+                    trusted: revisionOk,
+                    base: text.length,
+                    sealedAtStart: sawAssistantMessage,
+                };
+                return;
+            }
+            if (kind === 'end') {
+                // abandoned = 该尝试没有持久结算事件（上游 abandon() 的语义：模型流抛错），其增量
+                // 必须撤回，否则半截文本会冒充一条正常回答留在界面上。
+                const outcome = frame['outcome'] as Record<string, unknown> | undefined;
+                if (outcome?.['kind'] === 'abandoned' && liveAttempt) {
+                    rollbackAttempt(liveAttempt);
+                }
+                // committed 时结算事件 assistant/message 先于 end 到达，收尾由 handle 的对应分支负责
+                liveAttempt = undefined;
+                return;
+            }
+            if (kind !== 'chunk') {return;}
+            const rawChunk = frame['chunk'];
+            if (rawChunk === null || typeof rawChunk !== 'object') {return;}
+            const frameIndex = typeof frame['index'] === 'number' ? (frame['index'] as number) : undefined;
+            // 无 start 就来的 chunk（控制器后挂载）上游直接忽略；index 跳变则判丢帧
+            if (!liveAttempt || frameIndex !== liveAttempt.index || !revisionOk) {
+                if (liveAttempt) {liveAttempt.trusted = false;}
+                return;
+            }
+            liveAttempt.index += 1;
+            if (!liveAttempt.trusted) {return;}
+            const time = typeof frame['time'] === 'number' ? (frame['time'] as number) : undefined;
+            applyChunk(rawChunk as Record<string, unknown>, time, liveAttempt.step);
+        };
         const handle = (raw: RawEvent): void => {
             if (raw.seq <= baselineSeq) {
                 return;
@@ -314,15 +435,13 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
                     }
                     break;
                 }
-                case 'request/header': {
-                    // 上游 system-prompt 节点的数据源：该请求**实际发给模型**的 system。
-                    // 判据与历史侧共用 official/request-prompt.ts（同一逻辑只写一份）。
-                    const { system, reason } = readRequestPrompt(d);
-                    const toolsKey = requestToolsKey(d);
-                    const shows = requestShowsPrompt(prevPrompt, system, toolsKey, reason, d['startsSeries'] === true);
-                    prevPrompt = { system, toolsKey };
-                    if (shows && system !== '') {
-                        opts.onSystemPrompt?.({ text: system, reason });
+                case 'system/message': {
+                    // 上游 0.1.5 起 system 的载体是这条独立事件（旧版在 request/header 的 header.system，
+                    // 该字段新版已删）。读法与去重共用 official/system-prompt.ts（同一逻辑只写一份）。
+                    const sp = readSystemPrompt(d);
+                    if (sp.text !== '' && (lastSystem?.turn !== sp.turn || lastSystem?.step !== sp.step)) {
+                        lastSystem = { turn: sp.turn, step: sp.step };
+                        opts.onSystemPrompt?.({ text: sp.text });
                     }
                     break;
                 }
@@ -361,10 +480,18 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
                     // 结果文本（供 Terminal/Read 等卡展示输出）：按上游 schema 解包后展平，
                     // 非 text 块序列化为 pretty JSON。配对 id 在 message.source.callId，不在顶层
                     const payload = readToolResult(d);
-                    let output = resultText(payload.blocks, d['error'] as { name?: unknown; code?: unknown } | undefined);
+                    // 含图片块的结果：发原始内容块（只有附件引用，无字节）+ 只含 text 的干净文本，
+                    // 让渲染侧自己校验与展示（附件引用不该被序列化进「输出」区）
+                    const blocks = payload.blocks;
+                    const hasImage = hasImageBlock(blocks);
+                    let output = hasImage
+                        ? textOnly(blocks)
+                        : resultText(blocks, d['error'] as { name?: unknown; code?: unknown } | undefined);
                     // 退出状态：先于截断解析（marker 在输出末尾，截断会切掉）；再从展示输出剥掉 marker
                     if (process.env['DSH_RAWLOG']) {
-                        console.log('[dsh-debug] tool/result callId=' + String(payload.callId) + ' meta=' + JSON.stringify(d['meta']).slice(0, 400) + ' blocks=' + JSON.stringify(payload.blocks ?? '').slice(0, 300));
+                        // meta 只有部分工具带（read / web_search / web_fetch 成功时），缺失时**安全序列化**
+                        // （旧写法 JSON.stringify(d['meta']).slice(...) 会抛 TypeError，见 jsonPreview 注释）
+                        console.log('[dsh-debug] tool/result callId=' + String(payload.callId) + ' meta=' + jsonPreview(d['meta'], 400) + ' blocks=' + jsonPreview(payload.blocks ?? '', 300));
                     }
                     const status = parseExitStatus(output);
                     output = status.output;
@@ -374,6 +501,14 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
                         output = output.slice(0, 8000) + '\n…(输出过长已截断)';
                     }
                     const errCode = (d['error'] as { code?: string } | undefined)?.code;
+                    traceTool('host result callId=' + String(payload.callId) + ' blocks=' + (Array.isArray(payload.blocks) ? payload.blocks.length : '(非数组)') + ' outputLen=' + output.length + ' isError=' + String(payload.isError) + ' code=' + String(errCode));
+                    if (process.env['DSH_RAWLOG']) {
+                        // 工具行「有行、展开却空」时的第一现场：这一行说明宿主到底有没有把结果发出去、
+                        // callId 是否为空（为空则 webview 无法与 tool/call 建的行配对，行会一直挂着 running，
+                        // 直到回合结束被兜底成 ok 且没有 output）。
+                        console.log('[dsh-debug] toolDone callId=' + String(payload.callId) + ' status=' + toolStatusOf(errCode, payload.isError) + ' outputLen=' + output.length + ' errCode=' + String(errCode));
+                    }
+                    traceTool('host activity toolDone callId=' + String(payload.callId) + ' status=' + toolStatusOf(errCode, payload.isError) + ' outputLen=' + output.length + ' errCode=' + String(errCode));
                     opts.onActivity?.({
                         type: 'toolDone',
                         step: typeof d['step'] === 'number' ? d['step'] : undefined,
@@ -385,6 +520,8 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
                         exitCode,
                         signal,
                         meta: d['meta'],
+                        // 仅含图片块的结果才带（体积小：信封文本 + 附件引用，无字节）
+                        ...(hasImage ? { blocks } : {}),
                     });
                     break;
                 }
@@ -410,7 +547,7 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
         let control: { cancel: () => void } = { cancel: () => {} };
         void openMuxStream(
             'session/follow',
-            { args: { request: { address: { kind: 'session', sessionId }, maxMessages: 5000 } } },
+            { args: { request: { address: { kind: 'session', sessionId }, maxMessages: 5000, assistantStream: true } } },
             {
                 onItem: (value) => {
                     rawLog('follow', value); // 实验抓帧：env DSH_RAWLOG=1/full
@@ -418,20 +555,60 @@ async function waitTurn(sessionId: string, baselineSeq: number, onDelta: (d: str
                     if (!v) {
                         return;
                     }
+                    // 实时增量帧：0.1.5 起顶层为 { type:'assistant-stream', frame }，增量在 frame.chunk。
+                    // 该帧没有 seq，不能走下面的 toRawEvent（那条路要求 seq，会把本帧判为无效直接丢掉）。
+                    if (v['type'] === 'assistant-stream') {
+                        const frame = v['frame'];
+                        if (frame !== null && typeof frame === 'object') {
+                            guard('assistant-stream', () => handleAssistantFrame(frame as Record<string, unknown>));
+                        }
+                        return;
+                    }
                     if (v['type'] === 'snapshot') {
+                        // 本次 follow 的增量基线：后续帧的 revision 要从这里续上（上游 transport 同口径）
+                        const baseline = v['assistantStream'] as Record<string, unknown> | undefined;
+                        const baselineRevision = baseline?.['revision'];
+                        if (typeof baselineRevision === 'number') {streamRevision = baselineRevision;}
                         // 会话级投影(tokenUsage/sessionStats)仅供 UI 底部累计条,不经此口径混入本轮
                         const records = Array.isArray(v['records']) ? v['records'] : [];
                         for (const r of records) {
                             const e = toRawEvent(r);
                             if (e) {
-                                handle(e);
+                                guard('snapshot-record', () => handle(e));
+                            }
+                        }
+                        // follow 打开时若已有活跃 attempt，它的 start 帧不会重放（上游本就从基线起始），
+                        // 故 turn/step 与期望序号都得取自基线：否则后续 chunk 帧的 reasoning 丢掉 step，
+                        // 且 index 校验从第一帧就对不上，会把整段增量判废。
+                        const attempt = baseline?.['activeAttempt'] as Record<string, unknown> | undefined;
+                        if (attempt) {
+                            const nextIndex = typeof attempt['nextIndex'] === 'number' ? (attempt['nextIndex'] as number) : 0;
+                            const step = typeof attempt['step'] === 'number' ? (attempt['step'] as number) : undefined;
+                            liveAttempt = {
+                                attemptId: stringOf(attempt['attemptId']) ?? undefined,
+                                turn: typeof attempt['turn'] === 'number' ? (attempt['turn'] as number) : undefined,
+                                step,
+                                index: nextIndex,
+                                trusted: true,
+                                base: text.length,
+                                sealedAtStart: sawAssistantMessage,
+                            };
+                            // 回放基线里已生成、尚未结算的增量 —— 否则「打开一个正在生成的会话」时，
+                            // 接入时刻之前已生成的部分整段不显示。上游 replace() 同此：展开 stream 后只取
+                            // 前 nextIndex 个（更靠后的成员还没真流出去）。排在 records 之后，与上游把合成
+                            // live-chunk 排在 durable 条目之后的次序一致。
+                            // 本轮若已有结算事件，正文已被整条文本覆盖，再回放会重复，故跳过。
+                            if (!sawAssistantMessage) {
+                                for (const member of expandAssistantStream(attempt['stream']).slice(0, Math.max(0, nextIndex))) {
+                                    applyChunk(member.chunk, member.time, step);
+                                }
                             }
                         }
                         return;
                     }
                     const e = toRawEvent(v);
                     if (e) {
-                        handle(e);
+                        guard('event:' + e.type, () => handle(e));
                     }
                 },
                 onError: (err) => finish(new Error(`DSH 会话流错误：${err.message}`)),

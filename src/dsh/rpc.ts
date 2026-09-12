@@ -170,15 +170,18 @@ export interface DshCommandExec {
     commandId?: string;
     result?: { kind?: 'success' | 'error'; text?: string };
 }
-/** 执行一条斜杠命令（适配 dsh v0.1.2-rc.1）。上游接口：`commands/execute`，
- *  args 形参为 agentId / line / images（agent 作用域的命令远程；如 /permission <preset>）。 */
+/** 执行一条斜杠命令（适配 dsh v0.1.5-rc.2）。上游接口：`commands/execute`，
+ *  args 形参为 agentId / line / **submittedAttachments**（agent 作用域的命令远程；如 /permission <preset>）。
+ *  上游 0.1.5 起第三个形参由 `images: EncodedImageAttachment[]` 改为 `submittedAttachments: CommandSubmitAttachment[]`
+ *  （元素形如 `{ type:'image', mediaType, data, name? }` 或 `{ type:'file', receiptId }`）；形参名不符会被网关的
+ *  描述符校验直接拒掉。本插件不随命令提交附件，传空数组。 */
 export async function runSessionCommand(sessionId: string, line: string): Promise<DshCommandExec | undefined> {
     const method = 'commands/execute';
     const body: RpcRequest = {
         type: 'client-request',
         rpcId: crypto.randomUUID(),
         method,
-        payload: { args: { agentId: sessionId, line, images: [] } },
+        payload: { args: { agentId: sessionId, line, submittedAttachments: [] } },
     };
     const json = JSON.stringify(body);
     return new Promise<DshCommandExec | undefined>((resolve, reject) => {
@@ -322,7 +325,7 @@ export async function probeDsh(port: number): Promise<DshProbeResult> {
         return { ok: false, endpoint, reason: `端口 ${port} 不可连接` };
     }
 }
-// ---------- 能力门控（保留接口；v0.1.2-rc.1 的流走 /api/remote.mux） ----------
+// ---------- 能力门控（保留接口；v0.1.5-rc.2 的流走 /api/remote.mux） ----------
 export interface DshCapabilities {
     version?: string;
     mux: boolean;

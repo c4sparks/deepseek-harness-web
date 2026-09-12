@@ -9,6 +9,7 @@ import type { CatalogsSlice } from './catalogs'
 import type { SelectorsSlice } from './selectors'
 import type { QuestionSlice } from './question'
 import type { StatusSlice } from './status'
+import type { AttachmentsSlice } from './attachments'
 import type { OutboxSlice } from './outbox'
 import type { HistorySlice } from './history'
 
@@ -19,6 +20,7 @@ export interface ReducerDeps {
   selectors: SelectorsSlice
   question: QuestionSlice
   status: StatusSlice
+  attachments: AttachmentsSlice
   outbox: OutboxSlice
   history: HistorySlice
   /** 清空全部切片（clear 帧）。 */
@@ -30,7 +32,7 @@ export interface ReducerSlice {
 }
 
 export function createReducer(deps: ReducerDeps): ReducerSlice {
-  const { messages, composer, catalogs, selectors, question, status, outbox, history, reset } = deps
+  const { messages, composer, catalogs, selectors, question, status, attachments, outbox, history, reset } = deps
 
   function onHostMessage(m: HostToViewMessage): void {
     switch (m.type) {
@@ -54,10 +56,18 @@ export function createReducer(deps: ReducerDeps): ReducerSlice {
         question.closeQuestion(m.rpcId)
         break
       case 'chatChunk':
-        messages.chunk(m.text ?? '')
+        messages.chunk(m.text ?? '', m.replace)
         break
       case 'chatDone':
         messages.finish(m.stats, m.time, m.text, m.end, m.counts)
+        break
+      case 'attachmentBytes':
+        attachments.receiveAttachment(
+          m.attachmentId,
+          m.error !== undefined || (m.mediaType ?? '') === '' || (m.data ?? '') === ''
+            ? { state: 'error', error: m.error ?? '图片字节为空' }
+            : { state: 'ready', mediaType: m.mediaType as string, data: m.data as string }
+        )
         break
       case 'filePicked':
         if (m.path) composer.store.addAttachment(m.path)

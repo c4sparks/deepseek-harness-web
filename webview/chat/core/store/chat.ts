@@ -10,6 +10,7 @@ import { createComposer } from './composer'
 import { createCatalogs } from './catalogs'
 import { createSelectors } from './selectors'
 import { createQuestion } from './question'
+import { createAttachments } from './attachments'
 import { createStatus } from './status'
 import { createHistory } from './history'
 import { createOutbox } from './outbox'
@@ -31,6 +32,7 @@ export function createChatStore(host: ChatHost): ChatStore {
   const status = createStatus()
   const selectors = createSelectors(host, messages.store.showNotice)
   const question = createQuestion(host)
+  const attachments = createAttachments(host)
 
   // 3. 发送动作（跨输入区 + 目录 + 消息域，依赖注入）
   const outbox = createOutbox({ host, composer, catalogs, messages })
@@ -43,11 +45,12 @@ export function createChatStore(host: ChatHost): ChatStore {
     selectors.reset()
     catalogs.reset()
     question.reset()
+    attachments.reset()
   }
 
   // 5. 历史恢复与归约器（都需要 reset）
   const history = createHistory({ messages, resetAll: reset })
-  const reducer = createReducer({ messages, composer, catalogs, selectors, question, status, outbox, history, reset })
+  const reducer = createReducer({ messages, composer, catalogs, selectors, question, status, attachments, outbox, history, reset })
 
   // 显式列举装配（不用展开）：字段漏装配被返回类型拦截，字段重复在编译期直接报错。
   return {
@@ -106,6 +109,9 @@ export function createChatStore(host: ChatHost): ChatStore {
     sessionCwd: status.store.sessionCwd,
     statsLine: status.store.statsLine,
     planState: status.store.planState,
+    // 附件大类
+    attachmentCache: attachments.store.attachmentCache,
+    requestAttachment: attachments.store.requestAttachment,
     goalState: status.store.goalState,
   }
 }

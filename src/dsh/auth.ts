@@ -1,9 +1,9 @@
 // dsh 端点状态与浏览器鉴权 cookie。
 // DSH 协议层：端点/鉴权/RPC/commands/probe/端口/mux（高层会话与流式方法见同目录 session.ts/stream.ts）。
-// DSH 本地服务的 JSON-RPC 客户端 —— 适配 dsh v0.1.2-rc.1。
+// DSH 本地服务的 JSON-RPC 客户端 —— 适配 dsh v0.1.5-rc.2。
 //
 // ── 适配的 dsh 版本与上游接口映射（dsh 升级时按此表核对；勿按 0.1.1点号协议写）──
-//   “wire 协议”基线 = dsh v0.1.2-rc.1（typert gateway）
+//   “wire 协议”基线 = dsh v0.1.5-rc.2（typert gateway）
 //
 //   1. RPC 信封：POST /api/<method>，body { type:'client-request', rpcId, method, payload }，
 //      应答 { type:'server-response', rpcId, result:{ ok, value|error } }（packages/client/connection）。
@@ -40,7 +40,7 @@ export function endpointBaseUrl(ep: DshEndpoint = currentEndpoint): string {
 export function endpointAuthUrl(ep: DshEndpoint = currentEndpoint): string {
     return ep.authUrl ?? endpointBaseUrl(ep);
 }
-// ---------- 鉴权 cookie（dsh v0.1.2-rc.1+ 的 /api 与 WS 都需要） ----------
+// ---------- 鉴权 cookie（dsh 的 /api 与 WS 都需要鉴权 cookie） ----------
 const authCookies = new Map<number, string>();
 const loginInFlight = new Map<number, Promise<boolean>>();
 const RPC_TIMEOUT_MS = 15000;
@@ -98,7 +98,7 @@ async function loginForEndpoint(ep: DshEndpoint): Promise<boolean> {
     loginInFlight.delete(ep.port);
     return ok;
 }
-/** 确保当前/指定端点已拿到鉴权 cookie（dsh v0.1.2-rc.1+）。无 authUrl 返回 false。 */
+/** 确保当前/指定端点已拿到鉴权 cookie（dsh 各版）。无 authUrl 返回 false。 */
 export async function ensureEndpointAuth(ep: DshEndpoint = currentEndpoint): Promise<boolean> {
     return loginForEndpoint(ep);
 }

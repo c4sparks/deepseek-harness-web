@@ -15,8 +15,8 @@ export interface MessagesSlice {
   reasoning(text: string, step?: number, index?: number): void
   /** 上下文注入入链（instructions 形态跳过）。 */
   contextRow(c: LiveContext | undefined, time?: number): void
-  /** 正文增量。 */
-  chunk(delta: string): void
+  /** 正文增量；replace 为真时以整段覆盖当前回答（撤回被放弃尝试的瞬态增量）。 */
+  chunk(delta: string, replace?: boolean): void
   /** 回合收尾：时间/全文/终态角标/用量/counts，并收敛仍 running 的工具。 */
   finish(
     stats?: Record<string, unknown>,
@@ -159,6 +159,7 @@ export function createMessages(host: ChatHost): MessagesSlice {
           exitCode: a.exitCode ?? c.exitCode,
           signal: a.signal ?? c.signal,
           meta: a.meta ?? c.meta,
+          blocks: a.blocks ?? c.blocks,
         }
       })
       replace(row.key, { ...row, chain })
@@ -199,7 +200,7 @@ export function createMessages(host: ChatHost): MessagesSlice {
       : [...chain, { kind: 'reasoning' as const, key: rowKey++, step, index, text: rText }]
     replace(row.key, { ...row, chain: next })
   }
-  function chunk(delta: string): void {
+  function chunk(delta: string, replaceText?: boolean): void {
     const idx = activeAssistantIndex()
     if (idx === -1) {
       push({
@@ -219,7 +220,8 @@ export function createMessages(host: ChatHost): MessagesSlice {
     const row = messages.value[idx]
     if (row.kind === 'assistant') {
       // 正文开始 = 过程定稿：链允许自动收起（组件据 bodyStarted/done 决定折叠）
-      replace(row.key, { ...row, text: row.text + delta, bodyStarted: row.bodyStarted || delta !== '' })
+      const text = replaceText ? delta : row.text + delta
+      replace(row.key, { ...row, text, bodyStarted: row.bodyStarted || text !== '' })
     }
   }
   function finish(

@@ -1,4 +1,4 @@
-// dsh 0.1.2-rc.1 agent 模式（preset roster）：远端 agentPresets/list 读取，
+// dsh 0.1.5-rc.2 agent 模式（preset roster）：远端 agentPresets/list 读取，
 // agentPresets/select 仅可在空白会话上切换（已开始会话后端会拒绝）。
 import { rpcCall } from './rpc';
 
@@ -18,12 +18,12 @@ export interface DshAgentPresetRoster {
     authorable: boolean;
 }
 
-/** 读取 dsh 支持的 agent 模式列表（适配 0.1.2-rc.1；远端无参 list）。 */
+/** 读取 dsh 支持的 agent 模式列表（适配 0.1.5-rc.2；远端无参 list）。 */
 export async function listAgentPresets(): Promise<DshAgentPresetRoster> {
     return rpcCall<DshAgentPresetRoster>('agentPresets.list', {});
 }
 
-/** 给空白会话切换 agent 模式（适配 0.1.2-rc.1；远端 select(session, agentPreset)）。 */
+/** 给空白会话切换 agent 模式（适配 0.1.5-rc.2；远端 select(session, agentPreset)）。 */
 export async function selectAgentPreset(sessionId: string, agentPreset: string): Promise<string> {
     return rpcCall<string>('agentPresets.select', { agentId: sessionId, agentPreset });
 }

@@ -29,6 +29,7 @@ import {
     type SessionMessageItem,
     rpcCall,
     runSessionCommand,
+    readSessionAttachment,
     modelCatalog,
     workspaceList,
     dshEvents,
@@ -508,7 +509,7 @@ export class DshService {
 
     /**
      * 列出全部工作区（含归档）。
-     * 适配 dsh v0.1.2-rc.1：该版本没有 `workspace.list` 远程方法，工作区枚举由 api.workspaceList()
+     * 适配 dsh v0.1.5-rc.2：该版本没有 `workspace.list` 远程方法，工作区枚举由 api.workspaceList()
      * 经 `workspace/follow`（/api/remote.mux 流）的 baseline 帧返回（详见 src/dsh/api.ts 中 workspaceList 的 JSDoc）。
      */
     async listWorkspaces(): Promise<{ items: WorkspaceView[]; archivedSessionIds: string[] }> {
@@ -763,6 +764,16 @@ export class DshService {
         return selectAgentPresetRpc(sid, agentPreset);
     }
 
+    /**
+     * 读取图片附件字节（会话内**被引用过**的附件；供聊天页图片卡按需取，见 webview 的附件大类）。
+     * @param attachmentId - 结果 image 块里的 `attachment.attachmentId` 原值（不透明，不解析）。
+     * @returns 媒体类型 + 裸 base64。
+     */
+    async readImageAttachment(attachmentId: string): Promise<{ mediaType: string; data: string }> {
+        const sid = await this.getSession();
+        return readSessionAttachment(sid, attachmentId);
+    }
+
     /** 切换权限预设：执行 /permission 斜杠命令（走 commands/execute 斜杠端点，勿用 session.prompt 文本） */
     async setPermissionPreset(preset: string): Promise<void> {
         if (!(await this.ensureRunning())) {
@@ -801,8 +812,12 @@ export class DshService {
             onActivity?: (a: DshActivity) => void;
             onApproval?: (a: DshApproval) => void;
             onQuestion?: (q: DshQuestionRequest) => void;
+            /** 提问已失效（$events 流断，pending 作废）：UI 应关掉对应弹窗，别留成死窗口 */
+            onQuestionClosed?: (rpcId: string) => void;
             onContext?: (c: DshContext) => void;
             onSystemPrompt?: (s: DshSystemPrompt) => void;
+            /** 正文整段覆盖（上游瞬态增量被放弃时撤回半截文本，见 stream.ts 的 attempt 生命周期） */
+            onTextReset?: (full: string) => void;
             isCancelled?: () => boolean;
         } = {}
     ): Promise<{ text: string; stats: DshReplyStats; time?: number; end?: { kind: string; message?: string }; counts?: DshTurnCounts }> {
@@ -825,6 +840,11 @@ export class DshService {
                     sessionId: request.agentId,
                     questions: request.questions,
                 });
+            },
+            // $events 流断时上游会给每个 pending 提问回调一次：此刻它已无法应答，
+            // 让 UI 关掉弹窗（否则用户点取消只会得到「未找到对应的提问」）
+            onCancel: (eventId) => {
+                opts.onQuestionClosed?.(eventId);
             },
         });
         try {

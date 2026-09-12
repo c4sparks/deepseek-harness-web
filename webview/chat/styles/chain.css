@@ -69,16 +69,6 @@
   .chain-row-title { font-weight: 600; color: var(--vscode-foreground, #ddd); }
   /* 展开体与上方可点击行留 2px 区分（思考全文框 / 工具展开体同一口径） */
   .chain-disclosure-body { margin: 2px 0; }
-  .chain-tool-json {
-    margin: 3px 2px; padding: 6px 8px; overflow-x: auto;
-    background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.3));
-    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
-    border-radius: 6px;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 11px; line-height: 1.5; white-space: pre;
-    color: var(--vscode-descriptionForeground, #bbb);
-  }
-
   /* 标签后的正文预览：收起态单行——占满剩余宽度，宽度不足才省略；不整段折行(全文靠展开) */
   .chain-row-preview {
     flex: 1 1 auto; min-width: 0;
@@ -91,17 +81,6 @@
   .chain-row-preview.is-error { color: var(--vscode-errorForeground, #f14c4c); }
   /* 展开且仍在流式：独立内滚容器(靠后覆盖 is-open 的 full 高) */
   .chain-reason.is-live { max-height: 160px; overflow-y: auto; }
-
-  /* 工具真实输出（tool/result）：原样展示，不翻译不装饰。提问卡的兜底路径仍在用 */
-  .chain-tool-out {
-    margin: 3px 2px; padding: 6px 8px; overflow-x: auto;
-    background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.3));
-    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
-    border-radius: 6px;
-    font-family: var(--vscode-editor-font-family, monospace);
-    font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
-    color: var(--vscode-foreground, #ddd);
-  }
 
   /* 工具通用卡的「输入 / 输出」分区（ioCard：标签 + 内容两列网格）。
      输入=调用参数(pretty JSON)，输出=调用结果；两段之间一条 hairline。 */
@@ -536,3 +515,33 @@
 
   /* 收起行「标题 · 摘要」之间的分隔点（官方 sep 圆点） */
   .chain-sep { flex: none; width: 2px; height: 2px; margin: 0 3px; border-radius: 1px; background: var(--vscode-descriptionForeground, #999); }
+
+  /* ===== 附件大类：图廊（子类卡共用的取件展示层）=====
+     尺寸由 AttachmentGallery 按固有宽高内联给出（长边 240 封顶、不放大、比例越界 cover 裁切）。 */
+  .att-gallery { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+  .att-item {
+    display: block; padding: 0; border: none; background: transparent; cursor: zoom-in;
+    border-radius: 8px; overflow: hidden; line-height: 0;
+  }
+  .att-item:focus-visible { outline: 1px solid var(--vscode-focusBorder, #007fd4); outline-offset: 2px; }
+  .att-item.is-loading, .att-item.is-error {
+    cursor: default; min-width: 120px; min-height: 40px; padding: 10px 12px; line-height: 1.5;
+    border: 0.5px dashed var(--vscode-panel-border, rgba(255,255,255,0.2));
+  }
+  .att-item.is-error { cursor: pointer; }
+  .att-note { color: var(--vscode-descriptionForeground, #999); font-size: 12px; }
+  .att-lightbox {
+    position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+    padding: 24px; background: rgba(0,0,0,0.72); cursor: zoom-out;
+  }
+  .att-lightbox img { max-width: 92vw; max-height: 88vh; border-radius: 8px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
+
+  /* ===== 图片卡（read_image 结果；标签 + 图廊 + 信封文本）===== */
+  .img-card {
+    display: flex; flex-direction: column; gap: 8px;
+    margin: 4px 0 4px 4px; padding: 12px 14px;
+    background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.3));
+    border-radius: 12px; font-size: 13px;
+  }
+  .img-label { color: var(--vscode-foreground, #ddd); font-family: var(--vscode-editor-font-family, monospace); font-size: 12px; word-break: break-all; }
+  .img-meta { color: var(--vscode-descriptionForeground, #999); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }

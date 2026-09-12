@@ -1,4 +1,4 @@
-// dsh 0.1.2-rc.1 的 Remote Event（$events）监听器。
+// dsh 0.1.5-rc.2 的 Remote Event（$events）监听器。
 //
 // rc.1 移除旧 /api/respond 后，审批与提问改为：
 //   - 通过 /api/remote.mux 打开逻辑流 `$events`（payload { args: {} }）；
@@ -6,6 +6,7 @@
 //   - 应答方通过 unary `$events/result` 回传 outcome。
 // 本模块负责维护一条可重连的 $events 流，并按会话把请求投递给聊天层。
 import { openMuxStream, sendRemoteEventResult } from './api';
+import { jsonPreview } from './trace';
 
 export interface DshRemoteApprovalRequest {
     readonly clientId: string;
@@ -186,6 +187,17 @@ class RemoteEventHub {
                 settled = true;
                 if (this.generation === generation) {
                     this.clientId = undefined;
+                    // 流断了 = 这些提问此刻已无法应答（拒绝也送不到服务端）。先通知各 handler
+                    // 关掉弹窗再清表：否则弹窗会留成一个「点了没反应」的死窗口——用户点取消
+                    // 只会得到「未找到对应的提问」并把整轮对话停掉。
+                    // 重连后上游会重放仍挂起的提问，那时会重新弹出，用户照样能答。
+                    for (const eventId of this.pending.keys()) {
+                        for (const set of this.handlers.values()) {
+                            for (const handler of set) {
+                                handler.onCancel?.(eventId);
+                            }
+                        }
+                    }
                     this.pending.clear();
                 }
                 resolve();
@@ -226,7 +238,7 @@ class RemoteEventHub {
         if (logMode) {
             const f = value as { type?: string; event?: string; eventId?: string; agentId?: string } | undefined;
             if (logMode === 'full') {
-                console.log(`[dsh-raw] events ` + JSON.stringify(value).slice(0, 200_000));
+                console.log(`[dsh-raw] events ` + jsonPreview(value, 200_000));
             } else {
                 console.log(
                     `[dsh-raw] events ${String(f?.type ?? 'frame')}${f?.event ? ' event=' + f.event : ''}${f?.eventId ? ' eventId=' + f.eventId : ''}${f?.agentId ? ' agentId=' + f.agentId : ''}`

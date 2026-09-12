@@ -1,6 +1,6 @@
 // DSH 网页的本地认证代理。
 //
-// dsh v0.1.2-rc.1 起，网页端登录把 HttpOnly + SameSite=Strict 的 dsh-auth-* cookie
+// dsh v0.1.5-rc.2 起，网页端登录把 HttpOnly + SameSite=Strict 的 dsh-auth-* cookie
 // 写回浏览器；VS Code Webview 的 iframe 处于 vscode-webview:// 跨站上下文，既无法保存
 // 该 HttpOnly cookie，也不会在跳回干净 / 时携带它，直接 iframe `/?token=` 必然收到
 // “dsh web authentication required”。本模块在扩展宿主内监听 127.0.0.1 随机端口，

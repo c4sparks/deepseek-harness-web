@@ -38,6 +38,8 @@ export type DshTurnProcessItem =
       signal?: string
       /** tool/result.data.meta 原文透传（web_fetch statusCode / web_search sources/answer 等卡数据源） */
       meta?: unknown
+      /** 结果原始内容块（**仅当结果含图片块时**带；图片块只含附件引用，字节由附件层按需另取） */
+      blocks?: unknown
       /** ask_user_question 的 RPC 交互数据（chatQuestion 配对挂到该工具行：rpcId/sessionId/带选项的 questions） */
       question?: { rpcId?: string; sessionId?: string; questions?: QuestionSpec[] }
     }
@@ -96,6 +98,17 @@ export type ChatRow =
   | { kind: 'question'; key: number; rpcId: string; sessionId?: string; questions: QuestionSpec[]; disabled: boolean }
   | { kind: 'notice'; key: number; text: string; command?: string; tone?: 'error' | 'ok' }
 
+/** 附件字节缓存条目（附件大类）：loading 取件中 / ready 就绪 / error 失败（可重试）。 */
+export interface AttachmentEntry {
+  state: 'loading' | 'ready' | 'error'
+  /** 就绪时的媒体类型（如 image/png） */
+  mediaType?: string
+  /** 就绪时的**裸 base64**（无 data: 前缀，渲染时自行拼） */
+  data?: string
+  /** 失败原因（原样展示） */
+  error?: string
+}
+
 /** 输入框引用贴片（@ 选出，不进正文；发送时转成引用行）。 */
 export interface RefChip {
   key: number
@@ -150,6 +163,8 @@ export interface ChatStore {
   pendingQuestion: Signal<{ rpcId?: string; sessionId?: string; questions: QuestionSpec[] } | null>
   /** 主动触底请求计数：用户发送/重新生成/恢复会话时 +1（MessageList 消费后清零并强制滚到底） */
   scrollPend: Signal<number>
+  /** 附件字节缓存（附件大类，按 attachmentId；子类卡渲染时读） */
+  attachmentCache: Signal<Record<string, AttachmentEntry>>
   permNameOf: Map<string, string>
   // 动作
   send(): void
@@ -167,6 +182,8 @@ export interface ChatStore {
   addImage(img: ImageAttachment): void
   removeImage(i: ImageAttachment): void
   addAttachment(p: string): void
+  /** 按 attachmentId 懒取附件字节（已就绪/在飞时不重复发；失败可重试） */
+  requestAttachment(attachmentId: string): void
   removeAttachment(p: string): void
   /** 添加一条 @ 引用贴片（文件/目录/会话） */
   addRef(kind: RefChip['kind'], label: string, token: string, detail?: string): void

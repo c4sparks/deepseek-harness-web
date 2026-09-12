@@ -90,6 +90,7 @@ export function createHistory(deps: HistoryDeps): HistorySlice {
                       exitCode: h.exitCode,
                       signal: h.signal,
                       meta: h.meta,
+                      blocks: h.blocks,
                     }
           ),
           counts: {

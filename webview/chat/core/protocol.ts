@@ -40,7 +40,7 @@ export interface ChatModelGroup {
 export interface ChatModelInfo {
   current?: { provider?: string; model?: string; reasoningEffort?: string }
   groups?: ChatModelGroup[]
-  /** 上游对加载失败 provider/组的提示（0.1.2-rc.1 形状未定型，原样透传，UI 只显示组数） */
+  /** 上游对加载失败 provider/组的提示（上游形状未定型，原样透传，UI 只显示组数） */
   failures?: unknown[]
 }
 
@@ -104,7 +104,9 @@ export type DshHistoryTurnProcessItem =
       provenance: { role: 'inject' | 'recall'; label: string | null }
       form: string | null
     }
-  | { kind: 'tool'; name: string; title?: string; summary?: string; argsRaw?: string; callId?: string; status: 'ok' | 'error' | 'stopped'; error?: string; output?: string; exitCode?: number; signal?: string; meta?: unknown }
+  | { kind: 'tool'; name: string; title?: string; summary?: string; argsRaw?: string; callId?: string; status: 'ok' | 'error' | 'stopped'; error?: string; output?: string; exitCode?: number; signal?: string; meta?: unknown
+      /** 结果原始内容块（**仅当结果含图片块时**带；图片块只含附件引用，字节由附件层按需另取） */
+      blocks?: unknown }
 
 /** 单次工具/思考/步骤 活动（宿主 tool/call、tool/result、step/start 透传） */
 export interface ViewActivity {
@@ -124,6 +126,8 @@ export interface ViewActivity {
   signal?: string
   /** tool/result.data.meta 原文透传（web_fetch 的 statusCode、web_search 的 sources/answer 等卡数据源） */
   meta?: unknown
+  /** 结果原始内容块（仅含图片块的结果才带） */
+  blocks?: unknown
 }
 
 /** 历史会话里的一条上下文注入（source.kind !== 'user' 的 user/message：系统提示词/技能/召回…），对齐官方 ContextInjectionRow。 */
@@ -199,7 +203,9 @@ export type HostToViewMessage =
       questions?: QuestionSpec[]
     }
   | { type: 'questionClosed'; rpcId?: string }
-  | { type: 'chatChunk'; text?: string }
+  // replace 为真时以整段覆盖当前回答，而非追加：上游把增量帧当瞬态数据，尝试被放弃（模型流
+  // 抛错）时要撤回已流出的半截文本，仅靠追加无法收回
+  | { type: 'chatChunk'; text?: string; replace?: boolean }
   | {
       type: 'chatDone'
       text?: string
@@ -211,6 +217,8 @@ export type HostToViewMessage =
       counts?: TurnCounts
     }
   | { type: 'filePicked'; path?: string }
+  // 附件字节（附件大类）：结果帧只带附件引用，渲染层要显示时按 id 向宿主懒取
+  | { type: 'attachmentBytes'; attachmentId: string; mediaType?: string; data?: string; error?: string }
   | {
       type: 'chatInfo'
       projections?: Record<string, unknown>
@@ -263,6 +271,7 @@ export type ViewToHostMessage =
   | { type: 'chatSelectModel'; provider: string; model: string; reasoningEffort?: string }
   | { type: 'chatSelectMode'; agentPreset: string }
   | { type: 'pickFile' }
+  | { type: 'attachmentReq'; attachmentId: string }
   // 自绘标题栏专属
   | { type: 'titleAction'; cmd: string }
   | {

@@ -1,7 +1,8 @@
 // 提问卡纯函数模型（对齐官方 ui-tool `toolviews/ask-question-row.tsx` 的 questionEntries/answerEntries/pairAnswers + 状态裁决）。
 // 从 tool item（name/argsRaw/output/status/error）派生 AskQuestionCard 需要的卡数据：
-//   待答(pending) → 等待回答；已回答(ok) → {answered}/{total} 已回答 + 问题→答案记录；
+//   待答(运行中) → 等待回答；已回答(ok) → {answered}/{total} 已回答 + 问题→答案记录；
 //   ASK_CANCELLED → 已取消 + 未答问题；ASK_ABORTED → 已中断 + 未答问题。
+// 记录取不到时 transcript 为 null、摘要为空串，由 ToolRow 落回通用「输入/输出」区 + 通用摘要。
 // 照抄官方逻辑（含 best-effort 计数兜底），不自行翻译/不编造。
 
 import { askLabels, type AskLabels } from './ask-labels'
@@ -25,9 +26,15 @@ export interface AskTranscript {
 }
 
 export interface AskCard {
-  /** 收起行状态摘要（等待回答 / n/N 已回答 / 已取消 / 已中断） */
+  /**
+   * 收起行状态摘要（等待回答 / n/N 已回答 / 已取消 / 已中断）。
+   * 算不出时为空串 —— 调用方（ToolRow）此时回落到通用摘要（上游取 `model.summary`），不留空。
+   */
   summary: string
-  pending: boolean
+  /**
+   * 问答记录；null = **没有可展示的记录**（进行中 / 问题与答案配不上对 / 结果文本坏形）。
+   * 此时不渲染提问卡体，由 ToolRow 落回通用「输入/输出」区（与上游 `transcript === null` 同口径）。
+   */
   transcript: AskTranscript | null
   /**
    * 行状态覆盖（上游 `AskQuestionRow` 对两个 code 显式改写 state，此处同口径）：
@@ -151,13 +158,12 @@ export function askCardModel(item: {
   if (item.name !== 'ask_user_question') return null
   const labels: AskLabels = askLabels()
   if (item.status === 'running') {
-    return { summary: labels.waiting, pending: true, transcript: null }
+    return { summary: labels.waiting, transcript: null }
   }
   if (item.error === 'ASK_CANCELLED') {
     const questions = questionEntries(item.argsRaw)
     return {
       summary: labels.cancelled,
-      pending: false,
       state: 'ok', // 用户自己取消：不是失败（上游同）
       transcript: questions === null
         ? null
@@ -168,7 +174,6 @@ export function askCardModel(item: {
     const questions = questionEntries(item.argsRaw)
     return {
       summary: labels.interrupted,
-      pending: false,
       state: 'stopped', // 回合被打断：琥珀「已中断」，不是失败（上游同）
       transcript: questions === null
         ? null
@@ -183,14 +188,27 @@ export function askCardModel(item: {
       if (paired !== null) {
         return {
           summary: labels.answered(answered, answers.length),
-          pending: false,
-          transcript: { mode: 'answered', questions: paired.map((q) => ({ id: q.id, question: q.question, answers: q.answers })) },
+              transcript: { mode: 'answered', questions: paired.map((q) => ({ id: q.id, question: q.question, answers: q.answers })) },
         }
       }
       // 严格配对失败 → best-effort 计数兜底
       const summary = answeredSummary(item.output)
-      return { summary: summary ?? '', pending: false, transcript: null }
+      return { summary: summary ?? '', transcript: null }
     }
   }
-  return { summary: '', pending: false, transcript: null }
+  // 结果文本取不到（answers 都解析不出）时，参数里的**问题清单仍是可信的** → 用它渲染可读的问题列表。
+  // 上游此处落回通用「输入/输出」区的原始 JSON；本插件按真机反馈改成可读（偏离，理由记 docs/design/06）。
+  // 连问题都读不出（参数坏形/缺失）才交回 ToolRow，落通用区保留原始数据。
+  const questions = questionEntries(item.argsRaw)
+  if (questions === null) {
+    return { summary: '', transcript: null }
+  }
+  return {
+    summary: labels.unread,
+    transcript: {
+      mode: 'unanswered',
+      questions: questions.map((q) => ({ id: q.id, question: q.question })),
+      verdict: labels.unreadDetail,
+    },
+  }
 }

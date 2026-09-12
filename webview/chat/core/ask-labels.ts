@@ -8,6 +8,13 @@ export interface AskLabels {
   interruptedDetail: string
   answered: (answered: number, total: number) => string
   skipped: string
+  /**
+   * 结果文本取不到（`output` 缺失/坏形）时，提问卡仍能读出参数里的问题清单，
+   * 此时用「未取到回答」呈现问题列表 —— 上游无此态（它落回通用「输入/输出」区的原始 JSON），
+   * 属本插件有意偏离，理由与去向见 docs/design/06。
+   */
+  unread: string
+  unreadDetail: string
 }
 
 /** 官方 zh：`ask.rowTitle` / `ask.waiting` / `ask.cancelled{Detail}` / `ask.interrupted{Detail}` / `ask.answered` / `ask.skipped`。 */
@@ -21,5 +28,7 @@ export function askLabels(): AskLabels {
     interruptedDetail: '本轮已中断，未提交回答',
     answered: (answered: number, total: number) => `${answered}/${total} 已回答`,
     skipped: '未回答',
+    unread: '未取到回答',
+    unreadDetail: '本条提问没有拿到回答数据，以下是当时问的问题',
   }
 }

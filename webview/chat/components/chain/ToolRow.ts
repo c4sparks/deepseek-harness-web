@@ -1,6 +1,7 @@
 // 工具行（ToolRow，纯分发器）：收起 = 一行(图标 + 标题 + 摘要 + 状态)，展开按卡体分派。
 // 分派顺序照上游 ToolRow 的瀑布（先到先得，一个调用只渲染一张卡）：
-//   提问卡 → 终端卡 → 差异卡 → 读文件卡 → 搜索卡 → web 卡 → 通用「输入/输出」卡（兜底）
+//   提问卡 → 终端卡 → 差异卡 → 图片卡 → 读文件卡 → 搜索卡 → web 卡 → 通用「输入/输出」卡（兜底）
+// 提问卡只在取到问答记录时接管；取不到（进行中/配对不上/结果坏形）同样落到通用卡（上游同口径）。
 // 各卡体独立文件，改一种不影响其它。
 // 铁律：文案/结构与上游一致，不自行翻译、不编造展示。
 import { html } from 'htm/preact'
@@ -14,8 +15,10 @@ import { askCardModel } from '../../core/ask-card'
 import { diffCardModel } from '../../core/diff-card'
 import { readCardModel } from '../../core/read-card'
 import { searchCardModel } from '../../core/search-card'
+import { imageCardModel } from '../../core/image-card'
 import { WebCard } from './WebCard'
 import { AskCardBody } from './AskCardBody'
+import { ImageCard } from './ImageCard'
 import { TerminalBlock } from './TerminalBlock'
 import { DiffCard } from './DiffCard'
 import { ReadCard } from './ReadCard'
@@ -31,6 +34,7 @@ export function ToolRow({ item, store }: { item: Tool; store: ChatStore }) {
   const terminal = terminalCardModel(item, cwd)
   const diff = diffCardModel(item)
   const read = readCardModel(item, cwd)
+  const image = imageCardModel(item, cwd)
   const search = searchCardModel(item)
   const web = webCardModel(item)
 
@@ -63,8 +67,11 @@ export function ToolRow({ item, store }: { item: Tool; store: ChatStore }) {
   //   非路径摘要经 relativizeToCwd 原样返回，不受影响。
   //   **不做 basename**：工作区外的文件仍显示全路径（与上游一致）；卡片内部路径同样按上游
   //   （读卡相对化 / 差异卡 verbatim / 搜索卡原样），见 docs/design/09 §4。
-  const fallbackSummary =
-    ask !== null ? ask.summary : relativizeToCwd(item.summary ?? terminal?.description ?? '', cwd)
+  const genericSummary = relativizeToCwd(item.summary ?? terminal?.description ?? '', cwd)
+  // 提问行摘要照上游 `presentation?.summary ?? answeredSummary() ?? model.summary`：前两级在 ask-card 算出
+  // （等待回答 / n 分之 m 已回答 / 已取消 / 已中断），算不出来时（结果坏形、未知错误码）**回落到通用摘要**
+  // （`工具名 · 参数首行`）—— 上游此处即取 model.summary，不把摘要位留空。
+  const fallbackSummary = ask !== null && ask.summary !== '' ? ask.summary : genericSummary
   const headSummary = failureLine !== null ? failureLine || undefined : fallbackSummary || undefined
   const failureStyled = failureLine !== null && failureLine !== ''
 
@@ -87,36 +94,22 @@ export function ToolRow({ item, store }: { item: Tool; store: ChatStore }) {
       ${open && body !== null ? html`<div class="chain-disclosure-body">${body}</div>` : null}
     </div>`
 
-  // ---- 提问卡（ask_user_question）：只做问答记录；交互在 composer 上方 waterfall 弹窗 ----
-  if (ask !== null) return wrap(html`<${AskCardBody} card=${ask} item=${item} />`)
-
-  // ---- 终端卡（bash / pwsh / shell）----
-  if (terminal !== null) return wrap(html`<${TerminalBlock} card=${terminal} store=${store} />`)
-
-  // ---- 差异卡（write / edit：文件改动）----
-  if (diff !== null) return wrap(html`<${DiffCard} card=${diff} store=${store} />`)
-
-  // ---- 读文件卡（read：带行号的文件内容）----
-  if (read !== null) return wrap(html`<${ReadCard} card=${read} store=${store} />`)
-
-  // ---- 搜索卡（grep / glob）----
-  if (search !== null) return wrap(html`<${SearchCard} card=${search} store=${store} />`)
-
-  // ---- web 卡（web_fetch / web_search）----
-  if (web !== null) return wrap(html`<${WebCard} card=${web} />`)
-
-  // ---- 通用兜底：ioCard 形态 —— 「输入」(调用参数 pretty JSON) + 「输出」(调用结果) ----
-  let bodyText = item.argsRaw ?? ''
-  if (bodyText) {
-    try {
-      bodyText = JSON.stringify(JSON.parse(bodyText), null, 2)
-    } catch {
-      /* 原样 */
+  /**
+   * 通用「输入/输出」区（ioCard）：非专属卡的工具走它；提问卡没有问答记录时也落回它。
+   * 写成**函数**是刻意的：终端/差异/读文件/搜索/web 各有专属卡，若在分派前先算好，等于
+   * 给它们每次都白解析一遍参数 JSON（大 diff 的参数可以很大）。
+   */
+  const ioBody = (): unknown => {
+    let bodyText = item.argsRaw ?? ''
+    if (bodyText) {
+      try {
+        bodyText = JSON.stringify(JSON.parse(bodyText), null, 2)
+      } catch {
+        /* 原样 */
+      }
     }
-  }
-  const outputText = item.output ?? ''
-  const ioBody =
-    bodyText !== '' || outputText !== ''
+    const outputText = item.output ?? ''
+    return bodyText !== '' || outputText !== ''
       ? html`<div class="chain-io-card">
           ${bodyText !== ''
             ? html`<div class="chain-io-section">
@@ -133,5 +126,32 @@ export function ToolRow({ item, store }: { item: Tool; store: ChatStore }) {
             : null}
         </div>`
       : null
-  return wrap(ioBody)
+  }
+
+  // ---- 提问卡（ask_user_question）：只做问答记录；交互在 composer 上方 waterfall 弹窗 ----
+  // **有问答记录才出提问卡**；无记录（运行中 / 问答配对不上 / 结果坏形）落回通用「输入/输出」区。
+  // **只影响 ask 行**：其余卡的分派与渲染一字未动。
+  if (ask !== null) return wrap(ask.transcript === null ? ioBody() : html`<${AskCardBody} card=${ask} />`)
+
+  // ---- 终端卡（bash / pwsh / shell）----
+  if (terminal !== null) return wrap(html`<${TerminalBlock} card=${terminal} store=${store} />`)
+
+  // ---- 差异卡（write / edit：文件改动）----
+  if (diff !== null) return wrap(html`<${DiffCard} card=${diff} store=${store} />`)
+
+  // ---- 图片卡（read_image：结果里带图片附件引用）----
+  // 卡只在「已结算成功 + 工具是 read_image + 内容全由 text/image 构成 + 有信封文本」时出（见 core/image-card）
+  if (image !== null) return wrap(html`<${ImageCard} card=${image} store=${store} />`)
+
+  // ---- 读文件卡（read：带行号的文件内容）----
+  if (read !== null) return wrap(html`<${ReadCard} card=${read} store=${store} />`)
+
+  // ---- 搜索卡（grep / glob）----
+  if (search !== null) return wrap(html`<${SearchCard} card=${search} store=${store} />`)
+
+  // ---- web 卡（web_fetch / web_search）----
+  if (web !== null) return wrap(html`<${WebCard} card=${web} />`)
+
+  // ---- 通用兜底：其余工具都用上面的 ioBody（「输入」调用参数 pretty JSON + 「输出」调用结果）----
+  return wrap(ioBody())
 }

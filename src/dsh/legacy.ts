@@ -57,7 +57,7 @@ async function postRespond(
         req.end(JSON.stringify(body));
     });
 }
-/** 审批应答（仅兼容旧版 dsh 的 /api/respond；dsh v0.1.2-rc.1 无该端点，调用会失败并提示去面板）。 */
+/** 审批应答（仅兼容旧版 dsh 的 /api/respond；dsh v0.1.5-rc.2 无该端点，调用会失败并提示去面板）。 */
 export async function respondApproval(
     sessionId: string,
     approvalId: string,

@@ -9,6 +9,7 @@ import { DshService, DshNoWorkspaceError } from './api/dshService';
 import { ChatInputService } from './chatInputService';
 import { type DshContentPart, type DshReplyStats } from './dsh';
 import { DshPanel } from './dshPanel';
+import { traceTool } from './dsh/trace';
 import {
     applyNativeTitlebarContext,
     TITLEBAR_MODE,
@@ -115,7 +116,7 @@ function getChatContent(): string {
                 input.focus();
             } else if (m.type === 'chatChunk') {
                 if (!aiEl) { appendMsg('ai', ''); aiEl = messages.lastElementChild.querySelector('.body'); }
-                aiText += m.text || '';
+                aiText = m.replace ? (m.text || '') : aiText + (m.text || '');
                 aiEl.textContent = aiText;
             } else if (m.type === 'chatDone') {
                 aiEl = null;
@@ -669,6 +670,12 @@ function setupChatWebview(
                                     });
                                 }
                             },
+                            // $events 流断了：该提问已无法应答，关掉弹窗（留着只会让用户点了报错）
+                            onQuestionClosed: (rpcId) => {
+                                if (g === gen.n) {
+                                    post({ type: 'questionClosed', rpcId });
+                                }
+                            },
                             onContext: (c) => {
                                 if (g === gen.n) {
                                     post({ type: 'chatContext', context: c });
@@ -677,6 +684,11 @@ function setupChatWebview(
                             onSystemPrompt: (s) => {
                                 if (g === gen.n) {
                                     post({ type: 'chatSystemLine', text: s.text });
+                                }
+                            },
+                            onTextReset: (full) => {
+                                if (g === gen.n) {
+                                    post({ type: 'chatChunk', text: full, replace: true });
                                 }
                             },
                         }
@@ -750,6 +762,16 @@ function setupChatWebview(
                         `未能单独取消提问（${(e as Error).message}），已改为停止本轮对话`
                     );
                     stopTurn();
+                }
+            })();
+        } else if (msg.type === 'attachmentReq') {
+            // 附件大类：webview 按 attachmentId 懒取字节；失败也回帧（渲染侧显示失败态并可重试）
+            void (async () => {
+                try {
+                    const img = await dsh.readImageAttachment(msg.attachmentId);
+                    post({ type: 'attachmentBytes', attachmentId: msg.attachmentId, mediaType: img.mediaType, data: img.data });
+                } catch (e) {
+                    post({ type: 'attachmentBytes', attachmentId: msg.attachmentId, error: e instanceof Error ? e.message : String(e) });
                 }
             })();
         } else if (msg.type === 'chatSelectModel') {

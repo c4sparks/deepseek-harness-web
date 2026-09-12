@@ -1,18 +1,19 @@
-// dsh 0.1.2-rc.1 会话域：follow 事件模型/快照、session/model 操作、workspace 枚举。
+// dsh 0.1.5-rc.2 会话域：follow 事件模型/快照、session/model 操作、workspace 枚举。
 import * as crypto from "node:crypto";
 import { openMuxStream, rpcCall } from "./api";
 import { deriveTurnTokenUsage, deriveTurnFacts, type TurnLikeEvent } from "./official/turn-stats";
 import { expandChunkRows } from "./official/chunk-rows";
+import { expandAssistantStream } from "./official/assistant-stream";
 import { parseExitStatus } from "./official/exit-status";
-import { readToolResult, resultText } from "./official/result-text";
+import { hasImageBlock, readToolResult, resultText, textOnly } from "./official/result-text";
 import { toolStatusOf } from "./official/tool-status";
 import { contextForm, contextProvenance, isContextMessage } from "./official/context-projection";
-import { readRequestPrompt, requestShowsPrompt, requestToolsKey } from "./official/request-prompt";
-// ---------- 会话事件模型（dsh v0.1.2-rc.1 follow 载荷形状） ----------
+import { readSystemPrompt } from "./official/system-prompt";
+// ---------- 会话事件模型（dsh v0.1.5-rc.2 follow 载荷形状） ----------
 export type DshContentPart =
     | { type: 'text'; text: string }
     | { type: 'image'; mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'; data: string; name?: string };
-/** 一条原始会话事件（v0.1.2-rc.1 的 follow/snapshot 载荷轻量表示）。 */
+/** 一条原始会话事件（v0.1.5-rc.2 的 follow/snapshot 载荷轻量表示）。 */
 export interface RawEvent {
     type: string;
     seq: number;
@@ -70,10 +71,13 @@ interface FollowSnapshot {
     hasMore: boolean;
 }
 /**
- * 打开一次 session/follow 并读到 snapshot 后即取消（适配 dsh v0.1.2-rc.1）。
+ * 打开一次 session/follow 并读到 snapshot 后即取消（适配上游 0.1.5-rc.2）。
  * 上游：session-controller 的流式远程 `session/follow`，首帧 snapshot 形如
  *   { header, cursor, records: SessionHistoryRecord[], hasMore, projections:{ asOfSeq, values } }，
- *   之后是实时事件帧。records 可能含 { type:'chunks' } 打包行，本方法只取可展开为 RawEvent 的部分。
+ *   之后是实时事件帧。请求必须带 assistantStream: true：该开关是 0.1.5 新增的 opt-in，
+ *   不开则服务端既不下发实时增量帧、snapshot 也不带 assistantStream 基线（实时侧同理，见 stream.ts）。
+ *   records 现在清一色是 { type:'event', event } 包装：0.1.5-rc.2 的 { type:'chunks' } packing 行
+ *   与独立 assistant/chunk 事件都已被上游移除，增量改为内嵌进结算事件的 data.stream（下面展开）。
  * @param maxMessages snapshot 里返回的“消息对齐”记录上限（调大以覆盖较长会话）。
  */
 export async function readFollowSnapshot(sessionId: string, maxMessages = 5000, timeoutMs = 10_000): Promise<FollowSnapshot> {
@@ -100,7 +104,7 @@ export async function readFollowSnapshot(sessionId: string, maxMessages = 5000, 
         const timer = setTimeout(() => finish(undefined, new Error('DSH 读取会话快照超时')), timeoutMs);
         void openMuxStream(
             'session/follow',
-            { args: { request: { address: { kind: 'session', sessionId }, maxMessages } } },
+            { args: { request: { address: { kind: 'session', sessionId }, maxMessages, assistantStream: true } } },
             {
                 onItem: (value) => {
                     const v = value as Record<string, unknown> | undefined;
@@ -115,10 +119,29 @@ export async function readFollowSnapshot(sessionId: string, maxMessages = 5000, 
                             for (const e of expandChunkRows(r)) {
                                 events.push(e as RawEvent);
                             }
-                        } else {
-                            const e = toRawEvent(r);
-                            if (e) {events.push(e);}
+                            continue;
                         }
+                        const e = toRawEvent(r);
+                        if (!e) {continue;}
+                        // 上游 0.1.5 起，增量内嵌在结算事件的 data.stream（0.1.5-rc.2 的独立 assistant/chunk
+                        // 与 chunkrow packing 均已消失）。这里还原成内部标签 assistant/chunk，下游的文本累加
+                        // 与计时统计便无需区分两种编码。seq 借用结算事件的、并把合成事件排在它之前：
+                        // 增量本无持久 seq，而 Array.sort 自 ES2019 起保证稳定，借此保住既有次序
+                        // （先逐块累加，再由 assistant/message 分支用整条文本覆盖）。
+                        // assistant/attempt 是未提交可见消息的失败/取消尝试，其 stream 正是半截回答的来源。
+                        if (e.type === 'assistant/message' || e.type === 'assistant/attempt') {
+                            const turn = e.data?.['turn'];
+                            const step = e.data?.['step'];
+                            for (const tsc of expandAssistantStream(e.data?.['stream'])) {
+                                events.push({
+                                    type: 'assistant/chunk',
+                                    seq: e.seq,
+                                    time: tsc.time,
+                                    data: { turn, step, chunk: tsc.chunk },
+                                });
+                            }
+                        }
+                        events.push(e);
                     }
                     events.sort((a, b) => a.seq - b.seq);
                     const proj = (v['projections'] as { values?: Record<string, unknown> } | undefined)?.values ?? {};
@@ -160,7 +183,7 @@ export async function readFollowSnapshot(sessionId: string, maxMessages = 5000, 
     });
 }
 /**
- * 恢复用消息历史（适配 dsh v0.1.2-rc.1）。
+ * 恢复用消息历史（适配 dsh v0.1.5-rc.2）。
  * 上游：该版本无 `session.history` RPC；本方法经 `session/follow` 快照的 records 提取
  * “消息对齐”事件（SessionHistoryRecord），仅保留表层 human user/message 与 assistant/message，
  * 供恢复会话 UI 渲染（不含系统 plugin 注入消息与增量帧）。
@@ -177,7 +200,9 @@ export type DshHistoryTurnProcessItem =
         provenance: { role: 'inject' | 'recall'; label: string | null };
         form: string | null;
     }
-    | { kind: 'tool'; name: string; callId?: string; argsRaw?: string; status: 'running' | 'ok' | 'error' | 'stopped'; error?: string; output?: string; exitCode?: number; signal?: string; meta?: unknown };
+    | { kind: 'tool'; name: string; callId?: string; argsRaw?: string; status: 'running' | 'ok' | 'error' | 'stopped'; error?: string; output?: string; exitCode?: number; signal?: string; meta?: unknown;
+        /** 结果原始内容块（**仅当结果含图片块时**带） */
+        blocks?: unknown };
 /** 过程折叠计数（官方口径，见 stream.ts DshTurnCounts 注释） */
 export type HistoryCounts = { toolCallCount: number; messageCount: number; subagentCount: number };
 export type SessionMessageItem =
@@ -226,7 +251,8 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
     {
         let cursor: number | undefined;
         let pending: string | undefined;
-        let prev: { system: string; toolsKey: string } | undefined;
+        // 系统提示词的跨事件状态：同一个 (turn, step) 只挂一次（见 stream.ts 同名字段）
+        let lastSystem: { turn?: number; step?: number } | undefined;
         for (const e of snap.events) {
             const d = e.data ?? {};
             const t = typeof d['turn'] === 'number' ? (d['turn'] as number) : undefined;
@@ -235,15 +261,14 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
                 if (pending !== undefined) { promptByTurn.set(t, pending); pending = undefined; }
             } else if (e.type === 'turn/end' && t !== undefined) {
                 cursor = undefined;
-            } else if (e.type === 'request/header') {
-                // 判据与实时侧共用 official/request-prompt.ts（同一逻辑只写一份）
-                const { system, reason } = readRequestPrompt(d);
-                const toolsKey = requestToolsKey(d);
-                const shows = requestShowsPrompt(prev, system, toolsKey, reason, d['startsSeries'] === true);
-                prev = { system, toolsKey };
-                if (shows && system !== '') {
-                    if (cursor !== undefined) { promptByTurn.set(cursor, system); }
-                    else { pending = system; }
+            } else if (e.type === 'system/message') {
+                // 上游 0.1.5 起 system 的载体是这条独立事件（旧版在 request/header 的 header.system）。
+                // 读法与去重共用 official/system-prompt.ts（与实时侧同一逻辑只写一份）
+                const sp = readSystemPrompt(d);
+                if (sp.text !== '' && (lastSystem?.turn !== sp.turn || lastSystem?.step !== sp.step)) {
+                    lastSystem = { turn: sp.turn, step: sp.step };
+                    if (cursor !== undefined) { promptByTurn.set(cursor, sp.text); }
+                    else { pending = sp.text; }
                 }
             }
         }
@@ -414,7 +439,7 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
     const turnChain = new Map<number, DshHistoryTurnProcessItem[]>();
     const turnToolsByCall = new Map<number, Map<string, DshHistoryTurnProcessItem>>();
     const turnReplyTexts = new Map<number, number>(); // 该回合 content 含文本块(回复正文)的 assistant/message 数
-    const finishTool = (turn: number, callId: string | undefined, status: 'ok' | 'error' | 'stopped', error?: string, output?: string, exitCode?: number, signal?: string, meta?: unknown): void => {
+    const finishTool = (turn: number, callId: string | undefined, status: 'ok' | 'error' | 'stopped', error?: string, output?: string, exitCode?: number, signal?: string, meta?: unknown, blocks?: unknown): void => {
         const byCall = turnToolsByCall.get(turn);
         let item: DshHistoryTurnProcessItem | undefined = callId ? byCall?.get(callId) : undefined;
         if (!item) {
@@ -431,6 +456,7 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
             if (exitCode !== undefined) { item.exitCode = exitCode; }
             if (signal !== undefined) { item.signal = signal; }
             if (meta !== undefined) { item.meta = meta; }
+            if (blocks !== undefined) { item.blocks = blocks; }
         }
     };
     for (const e of snap.events) {
@@ -474,10 +500,14 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
             const payload = readToolResult(d);
             const errCode = (d['error'] as { code?: string } | undefined)?.code;
             // 结果文本（供 Terminal 卡展示输出）：块数组展平，非 text 块序列化为 pretty JSON
-            const output = resultText(payload.blocks, d['error'] as { name?: unknown; code?: unknown } | undefined);
+            // 含图片块的结果：发原始内容块（只有附件引用）+ 只含 text 的干净文本，渲染侧自己校验与展示
+            const hasImage = hasImageBlock(payload.blocks);
+            const output = hasImage
+                ? textOnly(payload.blocks)
+                : resultText(payload.blocks, d['error'] as { name?: unknown; code?: unknown } | undefined);
             // 退出状态：从输出末尾 marker 解析（Terminal 卡 Pill 展示），并从展示输出剥掉 marker
             const status = parseExitStatus(output);
-            finishTool(turn, payload.callId, toolStatusOf(errCode, payload.isError), errCode, status.output || undefined, status.exitCode, status.signal, d['meta']);
+            finishTool(turn, payload.callId, toolStatusOf(errCode, payload.isError), errCode, status.output || undefined, status.exitCode, status.signal, d['meta'], hasImage ? payload.blocks : undefined);
         }
     }
     // 兜底状态(running→ok/stopped) + 计数 + 挂到该回合最后一条 assistant
@@ -515,7 +545,7 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
 }
 
 /**
- * 会话核心投影（适配 dsh v0.1.2-rc.1）。
+ * 会话核心投影（适配 dsh v0.1.5-rc.2）。
  * 上游：无 `session.history` 投影；经 `session/follow` 快照的 projections.values 返回。
  * 实测键：title / goal / sessionStats / tokenUsage / permissions / modelSelection /
  * sessionListMetadata / todos / plan / contextPressure 等（rc1 web 组合注册的投影）。
@@ -525,7 +555,7 @@ export async function getSessionProjections(sessionId: string): Promise<Record<s
     const snap = await readFollowSnapshot(sessionId);
     return snap.projections;
 }
-// ---------- 会话操作（适配 dsh v0.1.2-rc.1；对应 session-controller 远程方法，载荷统一
+// ---------- 会话操作（适配 dsh v0.1.5-rc.2；对应 session-controller 远程方法，载荷统一
 //   args{ request: Session*Request }，见 rc1 源码 packages/api/session-controller/src/types.ts） ----------
 /** 新建会话（上游 `session/create`；request 的 workspaceId / cwd 二选一）→ sessionId。 */
 export async function createSession(opts: { workspaceId?: string; cwd?: string } = {}): Promise<string> {
@@ -534,9 +564,38 @@ export async function createSession(opts: { workspaceId?: string; cwd?: string }
     });
     return value.sessionId;
 }
+// ---------- 附件（图片）字节 ----------
+/** 一次图片附件读取的返回：媒体类型 + base64 字节（无 `data:` 前缀）。 */
+export interface DshImageAttachment {
+    mediaType: string;
+    data: string;
+}
+
+/**
+ * 读取会话里**被引用过**的图片附件字节（上游 `session.attachment`，请求 `{sessionId, attachmentId}`）。
+ *
+ * 上游会遍历会话事件校验该附件确被本会话引用，未被引用/找不到时返回 `session/attachment-invalid`
+ * （附带 `reason`）——错误原样上抛，不吞、不猜。
+ * @param sessionId - 会话 id。
+ * @param attachmentId - 结果 image 块里 `attachment.attachmentId` 的原值（不透明，不要解析）。
+ * @returns 媒体类型与 base64 字节。
+ */
+export async function readSessionAttachment(sessionId: string, attachmentId: string): Promise<DshImageAttachment> {
+    const value = await rpcCall<{ attachment?: { mediaType?: unknown }; data?: unknown }>('session.attachment', {
+        sessionId,
+        attachmentId,
+    });
+    const mediaType = typeof value?.attachment?.mediaType === 'string' ? value.attachment.mediaType : '';
+    const data = typeof value?.data === 'string' ? value.data : '';
+    if (mediaType === '' || data === '') {
+        throw new Error('DSH 返回的图片附件形状不符（缺 mediaType 或 data）');
+    }
+    return { mediaType, data };
+}
+
 /**
  * 向会话发送消息（上游 `session/prompt`，SessionPromptRequest）。
- * v0.1.2-rc.1 起 request 必须带客户端 mint 的 requestId（uuid，user/message 事件会回显）；
+ * v0.1.5-rc.2 起 request 必须带客户端 mint 的 requestId（uuid，user/message 事件会回显）；
  * mode='queue' 表示进 agent 队列。content 支持文本 + 图片（data URL base64）块。
  */
 export async function sendPrompt(sessionId: string, content: DshContentPart[]): Promise<void> {
@@ -565,7 +624,7 @@ export async function selectModel(sessionId: string, provider: string, model: st
     });
 }
 /**
- * 模型目录（适配 dsh v0.1.2-rc.1）。
+ * 模型目录（适配 dsh v0.1.5-rc.2）。
  * 上游接口：session-controller 远程方法 `session/modelCatalog`（无参，payload { args:{} }），
  * 返回 ModelCatalog { default, routableProviders, groups[{ id,name,models[{id,name,description,
  * reasoning:{efforts[]}}] }], failures }（见 rc1 packages/api/session-controller/src/types.ts）。
@@ -583,7 +642,7 @@ export async function modelCatalog(): Promise<{
             reasoning?: { efforts?: Array<{ id: string; name: string }>; defaultEffort?: string };
         }>;
     }>;
-    /** 上游对加载失败 provider/组的提示，形状以 0.1.2-rc.1 返回为准（仅透传、UI 只显示组数） */
+    /** 上游对加载失败 provider/组的提示，形状以 0.1.5-rc.2 返回为准（仅透传、UI 只显示组数） */
     failures?: unknown[];
 }> {
     return rpcCall('session.modelCatalog', {});
@@ -599,7 +658,7 @@ export interface WorkspaceItem {
     updatedAt?: string;
 }
 /**
- * 工作区列表（适配 dsh v0.1.2-rc.1）。
+ * 工作区列表（适配 dsh v0.1.5-rc.2）。
  * 该版本的 workspace-controller 不再提供独立的 `workspace.list` 远程方法；
  * 枚举改由流式 remote `workspace/follow`（斜杠端点，走 /api/remote.mux）提供：
  * 打开流后服务端首帧 value 形如
