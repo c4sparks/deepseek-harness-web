@@ -2,6 +2,12 @@
 
 All notable changes to the "deepseek-harness-web" extension will be documented in this file.
 
+## [0.1.11] - 2026-09-14
+
+### 修复
+
+- 卡片内容显示优化
+
 ## [0.1.10] - 2026-09-14
 
 ### 变更

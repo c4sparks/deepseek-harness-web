@@ -1,6 +1,7 @@
 // 工具行（ToolRow，纯分发器）：收起 = 一行(图标 + 标题 + 摘要 + 状态)，展开按卡体分派。
 // 分派顺序照上游 ToolRow 的瀑布（先到先得，一个调用只渲染一张卡）：
-//   提问卡 → 终端卡 → 差异卡 → 图片卡 → 读文件卡 → 搜索卡 → web 卡 → 通用「输入/输出」卡（兜底）
+//   交付文件行 → 提问卡 → 终端卡 → 差异卡 → 图片卡 → 读文件卡 → 搜索卡 → web 卡 → 通用「输入/输出」卡（兜底）
+// 交付文件（`present`）是**专属行**：自带头部与展开体，不走上面的通用头（见 PresentRow）。
 // 提问卡只在取到问答记录时接管；取不到（进行中/配对不上/结果坏形）同样落到通用卡（上游同口径）。
 // 各卡体独立文件，改一种不影响其它。
 // 铁律：文案/结构与上游一致，不自行翻译、不编造展示。
@@ -17,6 +18,7 @@ import { readCardModel } from '../../core/read-card'
 import { searchCardModel } from '../../core/search-card'
 import { imageCardModel } from '../../core/image-card'
 import { WebCard } from './WebCard'
+import { PresentRow } from './PresentRow'
 import { AskCardBody } from './AskCardBody'
 import { ImageCard } from './ImageCard'
 import { TerminalBlock } from './TerminalBlock'
@@ -140,6 +142,10 @@ export function ToolRow({ item, store }: { item: Tool; store: ChatStore }) {
         </div>`
       : null
   }
+
+  // ---- 交付文件（`present`）----
+  // 专属行：四态标记 + 可见状态词 + 声明路径，展开体只有结果正文。**先于通用头返回**（自带头部）。
+  if (item.name === 'present') return html`<${PresentRow} item=${item} />`
 
   // ---- 提问卡（ask_user_question）：只做问答记录；交互在 composer 上方 waterfall 弹窗 ----
   // **有问答记录才出提问卡**；无记录（运行中 / 问答配对不上 / 结果坏形）落回通用「输入/输出」区。

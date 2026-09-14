@@ -164,7 +164,6 @@ export function toolIconOfTool(name: string): string {
     plan: 'list-unordered',
     ask_user_question: 'question',
     todo_write: 'checklist',
-    present: 'package',
   }
   return map[name] ?? 'wrench'
 }
@@ -194,7 +193,8 @@ export function deriveToolSummary(argsRaw: string | undefined, name?: string): s
     return todoSummary(rec)
   }
   // 交付文件（`present`）：摘要 = 声明的那几个文件路径，原样列出、用 `, ` 连接（与上游同）。
-  // 参数流式截断/坏形时原样显示 —— 行首已有状态标签，这里不重复写"已交付"这类词。
+  // 状态词由交付文件行自己给（行里是「状态词 + 路径」两段，见 present-card），这里只出路径串；
+  // 参数流式截断/坏形时原样显示原始串。
   if (lower === 'present') {
     return presentSummary(rec, argsRaw)
   }
@@ -245,10 +245,10 @@ function todoSummary(args: Record<string, unknown>): string {
 }
 
 /**
- * 交付文件（`present`）的摘要：把参数里的 `files[].path` 原样列出、用 `, ` 连接。
+ * 交付文件（`present`）的**路径串**：把参数里的 `files[].path` 原样列出、用 `, ` 连接。
  *
  * 与上游同一口径：参数流式截断/坏形时**原样显示原始串**（宁可难看也不要静默空着），
- * 没有 `files` 数组同理。行首已有状态标签，所以这里不重复写"已交付/正在交付"这类词。
+ * 没有 `files` 数组同理。行上还有状态词（另给），这里只负责路径这一段。
  */
 function presentSummary(args: Record<string, unknown>, argsRaw: string): string {
   const files = args['files']

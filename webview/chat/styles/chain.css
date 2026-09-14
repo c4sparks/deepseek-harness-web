@@ -58,6 +58,7 @@
   }
   .chain-tool-dot.is-error { color: var(--vscode-errorForeground, #f14c4c); }
   .chain-tool-dot.is-warning { color: var(--vscode-charts-yellow, #cca700); }
+  .chain-tool-dot.is-done { color: var(--vscode-charts-green, #89d185); }
   /* ③ 行状态的读屏文字：视觉隐藏（点与掠光都是 colour-only 且 aria-hidden） */
   .chain-row-state {
     position: absolute; width: 1px; height: 1px; overflow: hidden;
@@ -162,6 +163,46 @@
   .chain-io-divider {
     flex: none; height: 0.5px;
     background: var(--vscode-panel-border, rgba(255,255,255,0.12));
+  }
+
+  /* ===== 交付文件行（present）=====
+     这一行自带头部：四态标记 + 「交付文件」+ **可见状态词与声明路径**；展开体是结果正文。
+     没有正文时不可展开（无箭头、不可点，见 PresentRow），所以补一个静态头部样式。 */
+  .chain-row-head.is-static { cursor: default; }
+  .chain-row-head.is-static:hover { background: none; }
+  /* 摘要位是「状态词 + 路径」两段：状态词固定不缩，路径占满剩余并在不足时省略 */
+  .chain-row-head .chain-present-summary {
+    flex: 1 1 auto; display: flex; align-items: center; gap: 6px; min-width: 0;
+    font-size: 11px; line-height: 1.5;
+  }
+  .chain-present-state { flex: none; color: var(--vscode-descriptionForeground, #999); }
+  .chain-present-paths {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--vscode-descriptionForeground, #999);
+  }
+  /* 展开体：只有结果正文（等宽、浅底、保留换行，超宽断行不横滚） */
+  .chain-present-output {
+    margin: 0 0 0 4px; padding: 8px 10px;
+    border: 0.5px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
+    border-radius: 12px;
+    background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.3));
+    color: var(--vscode-foreground, #ddd);
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11px; line-height: 1.55;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  /* 进行中的标记是像素追光块（上游状态点的进行中形态）：8 个 2px 方块轮流点亮，
+     离散台阶、不做补间。动效尊重系统「减少动态效果」。 */
+  .chain-tool-dot-matrix { flex: none; color: var(--vscode-charts-blue, #4daafc); }
+  .chain-tool-dot-cell { fill: currentColor; opacity: 0.15; animation: chain-dot-chase 1s infinite; }
+  @keyframes chain-dot-chase {
+    0%, 12.4% { opacity: 1; }
+    12.5%, 24.9% { opacity: 0.6; }
+    25%, 37.4% { opacity: 0.35; }
+    37.5%, 100% { opacity: 0.15; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .chain-tool-dot-cell { animation: none; opacity: 1; }
   }
 
   /* 侧栏再窄也不换行：链/思考/工具收起行的文字一律单行省略 */

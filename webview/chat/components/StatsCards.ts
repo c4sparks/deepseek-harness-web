@@ -13,14 +13,19 @@ import {
   formatTokensPerSecond,
 } from '../core/format'
 
-/** Token 总用量 = 四个互斥桶之和（上游同口径）。 */
+/** 三个输入侧计费桶之和（上游 `billedInput` 口径）：既是缓存命中率的分母，也是「有没有 token 活动」的一半。 */
+function billedInput(u: TokenUsageView): number {
+  return (u.uncachedInputTokens ?? 0) + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0)
+}
+
+/** Token 总用量 = 三个输入桶 + 输出（四个桶互斥）。 */
 function totalTokens(u: TokenUsageView): number {
-  return (u.uncachedInputTokens ?? 0) + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0) + (u.outputTokens ?? 0)
+  return billedInput(u) + (u.outputTokens ?? 0)
 }
 
 /** 缓存命中率：分母 = 未缓存输入 + 缓存读 + 缓存写（上游 billedInput 口径）。 */
 function cacheHit(u: TokenUsageView): string {
-  const billed = (u.uncachedInputTokens ?? 0) + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0)
+  const billed = billedInput(u)
   return typeof u.cacheReadTokens === 'number' && billed > 0 ? cacheHitPercent(u.cacheReadTokens, billed) : ''
 }
 
@@ -61,11 +66,15 @@ export function StatsCards({ store }: { store: ChatStore }) {
     }
   }, [open])
 
+  const billed = usage === null ? 0 : billedInput(usage)
   const tokens = usage === null ? 0 : totalTokens(usage)
   const hit = usage === null ? '' : cacheHit(usage)
   const tps = stats === null ? '' : tpsOf(stats)
-  // 没有任何统计也没用量 → 整条不渲染（上游：steps 为 0 且无 token 时不渲染）
-  if ((stats === null || (stats.steps ?? 0) === 0) && tokens === 0) return null
+  const steps = stats?.steps ?? 0
+  // 门控照上游两条：① **有 token 活动**（输入侧计费或输出 > 0）才出用量卡 —— 投影在、但四个桶全零
+  // （新建会话）时出一张只写着卡名的空卡是错的；② 步数为 0 且没有用量 → 整条不渲染。
+  const hasTokens = usage !== null && (billed > 0 || (usage.outputTokens ?? 0) > 0)
+  if (steps === 0 && !hasTokens) return null
 
   const countsText = stats === null ? '' : `${String(stats.turns ?? 0)} 轮 ${String(stats.steps ?? 0)} 步`
   const timeRows: unknown[] = []
@@ -85,23 +94,28 @@ export function StatsCards({ store }: { store: ChatStore }) {
   if (usage !== null) {
     // 精确计数用千分位（上游同：明细卡给的是可核对的整数，不是缩写）
     const exact = (v: number | undefined): string => (typeof v === 'number' ? v.toLocaleString('en-US') : '')
+    // 缓存命中排**首行**（上游同序：命中率 → 输入三桶 → 输出）
+    if (hit !== '') usageRows.push(row('缓存命中', `${hit}%`))
     if (typeof usage.uncachedInputTokens === 'number') usageRows.push(row('未缓存输入', `${exact(usage.uncachedInputTokens)} tok`))
     if (typeof usage.cacheReadTokens === 'number') usageRows.push(row('缓存读取', `${exact(usage.cacheReadTokens)} tok`))
-    if (typeof usage.cacheWriteTokens === 'number') usageRows.push(row('缓存写入', `${exact(usage.cacheWriteTokens)} tok`))
+    // 缓存写入整场为 0 时不出这一行（上游同：那一行只在非零时出现）
+    if (typeof usage.cacheWriteTokens === 'number' && usage.cacheWriteTokens !== 0) usageRows.push(row('缓存写入', `${exact(usage.cacheWriteTokens)} tok`))
     if (typeof usage.outputTokens === 'number') usageRows.push(row('输出', `${exact(usage.outputTokens)} tok`))
-    if (hit !== '') usageRows.push(row('缓存命中', `${hit}%`))
   }
   const timeTitle = countsText !== '' ? countsText : '会话统计'
-  const usageTitle = tokens > 0 ? `${formatCompactTokens(tokens)} tok` : 'Token 用量'
+  // 门控已保证 hasTokens，故主读数一定是数字（不再回落到卡名那种"有卡没值"的形态）
+  const usageTitle = `${formatCompactTokens(tokens)} tok`
 
-  /** 一张卡：pill（图标 + 主读数 + 次读数）+ 点开后向上展开的明细。浮层挂在**自己这一格**里，左对齐自己的 pill。 */
+  /** 一张卡：pill（图标 + 主读数 + 次读数）+ 点开后向上展开的明细。浮层挂在**自己这一格**里，左对齐自己的 pill。
+   *  `popValue` 是明细卡标题右侧的精确读数（上游用量明细卡就在标题旁给可核对的整数）。 */
   const card = (
     kind: 'time' | 'usage',
     icon: string,
     title: string,
     headline: string,
     secondary: string,
-    rows: unknown[]
+    rows: unknown[],
+    popValue = ''
   ): unknown => html`<span class="sp-wrap" key=${kind}>
     <button type="button" class="sp-pill" title=${title} aria-haspopup="dialog" aria-expanded=${open === kind}
       aria-label=${secondary !== '' ? `${headline} · ${secondary}` : headline}
@@ -114,18 +128,21 @@ export function StatsCards({ store }: { store: ChatStore }) {
     </button>
     ${open === kind
       ? html`<div class="sp-pop" role="dialog" aria-label=${title}>
-          <div class="sp-pop-title">${title}</div>
+          <div class="sp-pop-title">${title}${popValue !== ''
+            ? html`<span class="sp-pop-value">${popValue}</span>`
+            : null}</div>
           ${rows}
         </div>`
       : null}
   </span>`
 
   return html`<div class="stats-cards" ref=${rootRef}>
-    ${timeRows.length > 0
+    ${steps > 0
       ? card('time', 'dashboard', '会话统计', timeTitle, tps !== '' ? `${tps} tok/s` : '', timeRows)
       : null}
-    ${usageRows.length > 0
-      ? card('usage', 'database', 'Token 用量', usageTitle, hit !== '' ? `缓存命中 ${hit}%` : '', usageRows)
+    ${hasTokens
+      ? card('usage', 'database', 'Token 用量', usageTitle, hit !== '' ? `缓存命中 ${hit}%` : '', usageRows,
+          `${tokens.toLocaleString('en-US')} tok`)
       : null}
   </div>`
 }

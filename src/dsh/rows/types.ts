@@ -16,6 +16,8 @@ export type DshRowItem =
         argsRaw?: string;
         status: 'running' | 'ok' | 'error' | 'stopped';
         error?: string;
+        /** 错误名（`tool/result.data.error.name`）；交付文件行拿它和错误码拼兜底正文 */
+        errorName?: string;
         output?: string;
         exitCode?: number;
         signal?: string;

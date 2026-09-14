@@ -33,6 +33,8 @@ export type DshTurnProcessItem =
       argsRaw?: string
       status: 'running' | 'ok' | 'error' | 'stopped'
       error?: string
+      /** 错误名（`tool/result.data.error.name`）；交付文件行的兜底正文用它和错误码拼 */
+      errorName?: string
       /** tool/result 的结果文本（Terminal/Read 等展开卡展示输出） */
       output?: string
       /** 退出码（输出末尾 marker 解析；Terminal 卡 Pill 展示；输出已剥 marker） */

@@ -228,6 +228,7 @@ export function buildRows(events: readonly DshStreamEvent[]): DshStreamRow[] {
         const payload = readToolResult(data);
         const error = data['error'] as { name?: unknown; code?: unknown } | undefined;
         const errCode = typeof error?.code === 'string' ? error.code : undefined;
+        const errName = typeof error?.name === 'string' ? error.name : undefined;
         const withImage = hasImageBlock(payload.blocks);
         // 含图片块时只留干净文本（图片字节由附件层按需取），原始块另带
         const raw = withImage ? textOnly(payload.blocks) : resultText(payload.blocks, error);
@@ -249,6 +250,7 @@ export function buildRows(events: readonly DshStreamEvent[]): DshStreamRow[] {
                 ...c,
                 status: toolStatusOf(errCode, payload.isError),
                 error: errCode,
+                errorName: errName,
                 output: output !== '' ? output : c.output,
                 exitCode: exit.exitCode,
                 signal: exit.signal,

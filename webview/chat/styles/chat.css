@@ -771,7 +771,12 @@
     box-shadow: 0 4px 14px rgba(0,0,0,0.4);
     font-size: 12px; line-height: 20px; color: var(--vscode-descriptionForeground, #ccc);
   }
-  .sp-pop-title { margin-bottom: 6px; font-weight: 600; color: var(--vscode-foreground, #ddd); }
+  .sp-pop-title {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+    margin-bottom: 6px; font-weight: 600; color: var(--vscode-foreground, #ddd);
+  }
+  /* 明细卡标题右侧的精确读数（可核对的整数，与下面各行的缩写/千分位同源） */
+  .sp-pop-value { font-weight: 400; font-variant-numeric: tabular-nums; color: var(--vscode-descriptionForeground, #ccc); }
   .sp-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 2px 0; }
   .sp-v { font-variant-numeric: tabular-nums; color: var(--vscode-foreground, #ddd); }
 
