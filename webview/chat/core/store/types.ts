@@ -2,6 +2,7 @@
 // 独立成文件是为了让各切片能 Pick<ChatStore, K> 而不与 store/chat.ts 形成环；
 // 依赖方向固定为 chat.ts 与各切片 → types.ts。
 import type { Signal } from '@preact/signals'
+import type { DshTurnProcess as DshRowProcess, DshPresentedFile } from '../../../../src/dsh/rows/types'
 import type {
   HostToViewMessage,
   ImageAttachment,
@@ -13,11 +14,12 @@ import type {
   SlashSkillInfo,
   AtFileRef,
   AtSessionRef,
+  TodoItem,
 } from '../protocol'
 
 // ---------- 消息行模型(不可变替换,组件用 stable key) ----------
 
-/** 一条 assistant 回合的过程动作（官方"回合过程"里的成员；reasoning 或 tool 各一条，按发生顺序）。 */
+/** 一条 assistant 回合的过程动作（上游"回合过程"里的成员；reasoning 或 tool 各一条，按发生顺序）。 */
 export type DshTurnProcessItem =
   | { kind: 'reasoning'; key: number; step?: number; index?: number; text: string }
   | {
@@ -52,6 +54,13 @@ export type DshTurnProcessItem =
       provenance: { role: 'inject' | 'recall'; label: string | null }
       form: string | null
     }
+  | {
+      kind: 'text'
+      key: number
+      step?: number
+      /** **非回答步**的输出文本（过程文本）：一回合只开一条行时，中间步的正文靠它才显示得出来 */
+      text: string
+    }
 
 /** 过程折叠计数（三个计数：toolCallCount=非 subagent 工具调用数；
  *  messageCount=最终答复前带文本的中间 assistant 消息数；subagentCount=subagent 委派数） */
@@ -63,6 +72,14 @@ export interface TurnCounts {
 
 export type ChatRow =
   | { kind: 'user'; key: number; text: string; images: ImageAttachment[]; time: string; refs?: Array<{ kind: RefChip['kind']; label: string }>;
+      /** 提交标识：本面板发出的消息带它，服务端回显的 `user/message` 会带回同一个值。
+       *  **认领在宿主侧**（见 docs/design/08 §8）：页面这个字段是留作对照与后续节点下发的，
+       *  页面自身不据此判重。历史恢复的行没有它。 */
+      rpcId?: string;
+      /** 该次提交**没有成功送到服务端**（宿主回 `chatError`）。这类行永远不会被服务端回显认领，
+       *  故必须与「还在等回显」的乐观行区分开：前者只是列表里的历史，后者才代表「本轮在跑」——
+       *  不区分的话 `processing` 会因为它恒为真（发消息失败后输入区一直卡在处理中）。 */
+      failed?: boolean;
       /** 历史恢复来的图片附件引用（字节不在事件里，由附件层按需取）；实时路径的图在 `images`（内联 base64） */
       imageRefs?: AttachmentRef[];
       /** 随该消息发出的文件（文件上送）：只留显示信息与本地路径，点它用编辑器打开 */
@@ -94,10 +111,18 @@ export type ChatRow =
       status?: string
       /** 过程链：思考/工具按发生顺序排列（折叠窗口成员） */
       chain: DshTurnProcessItem[]
-      /** 过程折叠计数（官方口径）；定稿前为 0，chatDone 附 counts 后回填 */
+      /** 过程折叠计数（上游口径）；定稿前为 0，chatDone 附 counts 后回填 */
       counts: TurnCounts
       /** 正文首 chunk 是否已到达（正文开始 = 过程定稿，链可收起） */
       bodyStarted: boolean
+      /** 折叠判定的事实（宿主下发，见 docs/design/08 §12）：回答锚点非空 = 末步是有回答内容的定稿步 */
+      process?: DshRowProcess
+      /** 回答锚点的事件序号：仅在「显示层」用于「从此处分叉」的禁用判定与传参（宿主侧 fork 的 atSeq） */
+      seq?: number
+      /** 回答锚点的消息标识：消息反馈（👍/👎）的目标；缺失即该条不提供反馈 */
+      messageId?: string
+      /** 本回合模型声明的交付文件（宿主事件带来；缺失 = 本回合没有声明，此时不渲染那一区） */
+      presentedFiles?: DshPresentedFile[]
     }
   | { kind: 'approval'; key: number; approvalId: string; description: string; toolName?: string }
   | { kind: 'question'; key: number; rpcId: string; sessionId?: string; questions: QuestionSpec[]; disabled: boolean }
@@ -155,6 +180,32 @@ export interface SelectorState {
   modeLocked: boolean
 }
 
+/** 会话统计投影（`sessionStats`）：都是绝对量（毫秒 / 计数），没有比例字段。缺项即"没这项统计"。 */
+export interface SessionStatsView {
+  /** 含至少一个 `step/end` 的不同回合数 */
+  turns?: number
+  /** `step/end` 数（含失败/取消） */
+  steps?: number
+  /** `step/start` → `assistant/message` 之和 */
+  llmMs?: number
+  /** `tool/call` → `tool/result` 按 callId 配对之和 */
+  toolMs?: number
+  /** 首 token 延迟合计与其步数（平均要自己除） */
+  ttftMs?: number
+  ttftSteps?: number
+  /** 首 token → 消息 的解码时长与输出 token（算速度要自己除） */
+  decodeMs?: number
+  decodeTokens?: number
+}
+
+/** Token 用量投影（`tokenUsage`）：四个**互斥桶**，覆盖整份会话日志的累计值。 */
+export interface TokenUsageView {
+  uncachedInputTokens?: number
+  outputTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+}
+
 export interface ChatStore {
   // 信号
   messages: Signal<ChatRow[]>
@@ -162,7 +213,7 @@ export interface ChatStore {
   processing: Signal<boolean>
   /** 过渡态：恢复历史/切工作区等无明确进度等待（驱动 composer 禁用 + 占位/骨架）。null=空闲 */
   busy: Signal<'loading' | 'switching' | null>
-  /** 当前会话工作区根路径；'' = 未知。终端卡的 cwd 标签在工具调用未带 workdir 时用它兜底（官方同口径） */
+  /** 当前会话工作区根路径；'' = 未知。终端卡的 cwd 标签在工具调用未带 workdir 时用它兜底（上游同口径） */
   sessionCwd: Signal<string>
   text: Signal<string>
   attachments: Signal<StagedFile[]>
@@ -172,21 +223,48 @@ export interface ChatStore {
   focusTick: Signal<number>
   sel: Signal<SelectorState>
   openPopup: Signal<'perm' | 'model' | 'mode' | 'modelSearch' | null>
-  statsLine: Signal<{ text: string; title: string }>
+  /** 会话统计投影（`sessionStats` 原文）：输入框下方「会话统计」卡的数据源；null=没有这项统计 */
+  sessionStats: Signal<SessionStatsView | null>
+  /** Token 用量投影（`tokenUsage` 原文）：输入框下方「Token 用量」卡的数据源；null=没有用量 */
+  tokenUsage: Signal<TokenUsageView | null>
   /** 「/」菜单目录(host 命令+技能)；null=尚未拉到 */
   slashCatalog: Signal<{ commands: SlashCommandInfo[]; skills: SlashSkillInfo[] } | null>
   /** 「@」引用候选(文件/目录+会话)；null=尚未拉到/换会话清空；query=该候选对应的查询串 */
   atCatalog: Signal<{ query: string; files: AtFileRef[]; sessions: AtSessionRef[] } | null>
   /** plan 协作状态(投影 plan)；null=未启用/无该能力 */
   planState: Signal<{ active: boolean; pending: boolean } | null>
-  /** 会话目标(投影 goal)；null=无目标/能力缺失。goal bar 常驻条数据源（形状按官方 GoalProjection） */
+  /** 会话目标(投影 goal)；null=无目标/能力缺失。goal bar 常驻条数据源（形状按上游 GoalProjection） */
   goalState: Signal<{ objective: string; phase: string } | null>
-  /** 官方 waterfall 提问弹窗（输入框上方）：pending 时让用户选择/提交/取消/关闭；null=无 */
+  /** 任务清单（宿主从 `todo/write` 事件折叠后整表下发）：输入框上方常驻卡片的数据源；
+   *  空数组 = 没有清单（卡片整块不渲染）。它不是行 —— 清单不属于任何一个回合 */
+  todos: Signal<TodoItem[]>
+  /** 上游「设置→对话显示」的只读镜像：compact=定稿收起成折叠头(上游默认)，normal=过程行平铺。
+   *  全局偏好，**不随会话切换清空**（见 store/prefs）。 */
+  transcriptView: Signal<'normal' | 'compact'>
+  /** 渲染源开关（宿主下发，见 docs/design/08 §11）：true = 页面只认宿主下发的「行」，
+   *  忽略旧的渲染指令（两条通路二选一，不能同时改列表）。 */
+  /** 上游 waterfall 提问弹窗（输入框上方）：pending 时让用户选择/提交/取消/关闭；null=无 */
   pendingQuestion: Signal<{ rpcId?: string; sessionId?: string; questions: QuestionSpec[] } | null>
-  /** 主动触底请求计数：用户发送/重新生成/恢复会话时 +1（MessageList 消费后清零并强制滚到底） */
+  /** 主动触底请求计数：用户发送/恢复会话时 +1（MessageList 消费后清零并强制滚到底） */
   scrollPend: Signal<number>
   /** 附件字节缓存（附件大类，按 attachmentId；子类卡渲染时读） */
   attachmentCache: Signal<Record<string, AttachmentEntry>>
+  // ---- 消息反馈（👍/👎） ----
+  /** 当前会话已记录的评价（messageId → 评价 + 版本）；懒加载，换会话清空 */
+  feedbackItems: Signal<ReadonlyMap<string, { rating: 'positive' | 'negative'; version: string }>>
+  /** 「提交反馈」弹窗；null = 未打开 */
+  feedbackDialog: Signal<{ messageId: string; rating: 'positive' | 'negative'; category: string | null; note: string; submitting: boolean; errorCode: string | null } | null>
+  /** 结果提示（成功/失败），显示后由组件自行计时清除 */
+  feedbackToast: Signal<{ text: string; tone: 'ok' | 'error'; id: number } | null>
+  /** 分类 id 全表（宿主下发一次） */
+  feedbackCategories: Signal<readonly string[]>
+  /** 首次悬停/聚焦时读一次反馈表（懒加载，见 store/feedback） */
+  ensureFeedbackLoaded(): void
+  /** 点 👍/👎：同一评价 = 撤回，否则开弹窗（与上游同判定） */
+  chooseFeedback(messageId: string, rating: 'positive' | 'negative'): void
+  editFeedbackDialog(patch: { category?: string | null; note?: string }): void
+  submitFeedbackDialog(): void
+  closeFeedbackDialog(): void
   permNameOf: Map<string, string>
   // 动作
   send(): void
@@ -198,7 +276,8 @@ export interface ChatStore {
   /** 执行一条 dsh 斜杠命令(发宿主 slashRun；清空输入) */
   runSlash(text: string): void
   suggestion(p: string): void
-  regenerate(p: string, images?: ImageAttachment[]): void
+  /** 从某条回答分叉出新会话（建子会话与切换在宿主）；seq = 该回答的事件序号 */
+  forkAt(seq: number): void
   copy(text: string): void
   pickFile(): void
   addImage(img: ImageAttachment): void

@@ -22,6 +22,7 @@ export interface TurnMetrics {
     tokensPerSecond?: number;
 }
 
+
 export interface TurnLikeEvent {
     type: string;
     time?: number;
@@ -30,6 +31,8 @@ export interface TurnLikeEvent {
         step?: unknown;
         message?: { source?: { provider?: string; model?: string } };
         usage?: Record<string, unknown>;
+        /** 结算事件的内嵌流（用量可能只在这里上报，见下方取值） */
+        stream?: unknown;
         chunk?: { type?: string; text?: string; block?: { type?: string; text?: string } };
         reason?: { kind?: string };
     };
@@ -83,8 +86,8 @@ function normalizeAttempt(usage: Record<string, unknown>, route?: { provider: st
         if (cacheRead !== undefined && cacheWrite !== undefined && prompt !== knownPrompt) {return undefined;}
         exactTotal = total;
     } else {
-        // 官方 strict：未给 exact total 时必须 cacheRead、cacheWrite 都有才可证；
-        // 否则整组不下发（官方因此对这类回合不显示用量图标，仅显示用时）
+        // 上游 strict：未给 exact total 时必须 cacheRead、cacheWrite 都有才可证；
+        // 否则整组不下发（上游因此对这类回合不显示用量图标，仅显示用时）
         if (cacheRead === undefined || cacheWrite === undefined) {return undefined;}
         const d = sumAll([knownPrompt, output]);
         if (d === undefined) {return undefined;}
@@ -138,6 +141,8 @@ export function deriveTurnTokenUsage(events: readonly TurnLikeEvent[]): Map<numb
     for (const e of events) {
         const d = e.data ?? {};
         if (e.type !== 'assistant/message' || typeof d.turn !== 'number') {continue;}
+        // 用量**只认事件自带的 `data.usage`**（上游 `settleMessage` 组装节点时即取这一个字段）：
+        // 缺就是没有 —— 不从那一条流里另找来源，否则会在上游隐藏的回合里算出用量与速度。
         const usage = d.usage;
         const source = d.message?.source;
         const route =
@@ -147,7 +152,7 @@ export function deriveTurnTokenUsage(events: readonly TurnLikeEvent[]): Map<numb
         const attempt =
             usage && typeof usage === 'object' ? normalizeAttempt(usage as Record<string, unknown>, route) : undefined;
         if (attempt === undefined) {
-            // 该回合存在缺 usage / 不可证的 attempt：官方整组不下发
+            // 该回合存在缺 usage / 不可证的 attempt：上游整组不下发
             invalidTurns.add(d.turn);
             continue;
         }
@@ -195,11 +200,14 @@ export function deriveTurnFacts(events: readonly TurnLikeEvent[]): {
     let turnStart: number | undefined;
     let stepStartAt: number | undefined;
     let firstTokenAt: number | undefined;
+    /** 本轮**最低** step：上游 TTFT 固定取它，它没有首 token 就整轮没有 TTFT（不回退到更高的 step）。 */
+    let firstStepOfTurn: number | undefined;
     for (const e of events) {
         const t = e.time;
         const d = e.data ?? {};
         if (e.type === 'turn/start') {
             turnStart = t;
+            firstStepOfTurn = undefined;
             continue;
         }
         if (e.type === 'turn/end') {
@@ -211,6 +219,9 @@ export function deriveTurnFacts(events: readonly TurnLikeEvent[]): {
         if (e.type === 'step/start') {
             stepStartAt = t;
             firstTokenAt = undefined;
+            if (firstStepOfTurn === undefined && typeof d.step === 'number') {
+                firstStepOfTurn = d.step;
+            }
             continue;
         }
         if (e.type === 'assistant/chunk' && isTokenDelta(d.chunk as ChunkLike) && firstTokenAt === undefined) {
@@ -220,9 +231,16 @@ export function deriveTurnFacts(events: readonly TurnLikeEvent[]): {
         if (e.type !== 'assistant/message' || typeof d.turn !== 'number') {continue;}
         const step = typeof d.step === 'number' ? d.step : 1;
         const fold = folds.get(d.turn) ?? { decodeMs: 0, out: 0, sampled: false };
-        if (firstTokenAt !== undefined && stepStartAt !== undefined && typeof t === 'number' && firstTokenAt > stepStartAt) {
-            const ttftMs = firstTokenAt - stepStartAt;
-            if (fold.best === undefined || step < fold.best.step) {fold.best = { step, ttftMs };}
+        // TTFT **固定取本轮最低 step**（上游 `firstStepTtftMs` 的语义）：那个 step 没有首 token
+        // 就整轮没有 TTFT，**不回退**到更高的 step —— 否则会在上游隐藏的回合里显示出来。
+        if (
+            (firstStepOfTurn === undefined || step === firstStepOfTurn) &&
+            firstTokenAt !== undefined &&
+            stepStartAt !== undefined &&
+            typeof t === 'number' &&
+            firstTokenAt > stepStartAt
+        ) {
+            fold.best = { step, ttftMs: firstTokenAt - stepStartAt };
         }
         const outN = usageNum(d.usage ?? {}, 'outputTokens');
         if (firstTokenAt !== undefined && typeof t === 'number' && t > firstTokenAt && isCount(outN) && outN > 0) {

@@ -49,6 +49,8 @@ export function initSelfDrawnTitlebar(api: SelfDrawnTitlebarApi): void {
     workspaceId: string
     name: string
     current: boolean
+    /** false = 这一行不能"在此新开会话"（「未分组」没有工作区实体） */
+    newable: boolean
   }
   interface WsSessionItem {
     sessionId: string
@@ -61,6 +63,25 @@ export function initSelfDrawnTitlebar(api: SelfDrawnTitlebarApi): void {
   const wsDropdownExpanded = new Set<string>()
   const wsDropdownSessions = new Map<string, WsSessionItem[]>()
   const wsSessionsRequested = new Set<string>()
+  /** 已点过"展开其余 N 个会话"的分组（每组一份本地状态，打开下拉即重置） */
+  const wsSessionsExpanded = new Set<string>()
+
+  /** 每组先列几条普通会话（与网页端同一上限；空白会话不占额）与溢出条数。 */
+  const COLLAPSED_SESSION_LIMIT = 5
+  function cappedSessionRows(sessions: WsSessionItem[]): { rows: WsSessionItem[]; hiddenCount: number } {
+    let ordinary = 0
+    const rows = sessions.filter((s) => {
+      if (s.blank) {
+        return true
+      }
+      if (ordinary >= COLLAPSED_SESSION_LIMIT) {
+        return false
+      }
+      ordinary += 1
+      return true
+    })
+    return { rows, hiddenCount: sessions.length - rows.length }
+  }
 
   // ---- 面板态（浏览器/本地/刷新按钮显隐，对齐原生 view/title 的 when）----
   let wsPanelOpen = false
@@ -154,16 +175,24 @@ export function initSelfDrawnTitlebar(api: SelfDrawnTitlebarApi): void {
     const curWs = wsDropdownList.find((w) => w.current)
     const frag = document.createDocumentFragment()
     const appendSessionRows = (w: WsDropdownItem, sessions: WsSessionItem[]): void => {
-      frag.appendChild(
-        makeWsRow('wsnew', {
-          id: w.workspaceId,
-          icon: 'add',
-          iconClass: 'ws-session-icon',
-          text: '在此工作区新开会话',
-        })
-      )
-      for (const s of sessions) {
-        if (!wsSessionMatches(s, q)) continue
+      // 「未分组」没有工作区实体 → 不给"在此新开会话"（新会话必须归属某个工作区）
+      if (w.newable !== false) {
+        frag.appendChild(
+          makeWsRow('wsnew', {
+            id: w.workspaceId,
+            icon: 'add',
+            iconClass: 'ws-session-icon',
+            text: '在此工作区新开会话',
+          })
+        )
+      }
+      // 每组最多先列 5 条普通会话（空白会话不占额），其余折成一行"展开其余 N 个会话"。
+      // 与网页端同一口径（它对每个工作区用同一个上限 + 本地溢出控件）。
+      const visible = sessions.filter((s) => wsSessionMatches(s, q))
+      const isExpanded = wsSessionsExpanded.has(w.workspaceId)
+      const capped = cappedSessionRows(visible)
+      const shown = isExpanded ? visible : capped.rows
+      for (const s of shown) {
         // 当前会话标「当前」+ 选中图标，置顶直观看到正在用的新会话/历史会话
         frag.appendChild(
           makeWsRow('session', {
@@ -174,6 +203,17 @@ export function initSelfDrawnTitlebar(api: SelfDrawnTitlebarApi): void {
             iconClass: 'ws-session-icon',
             text: s.title,
             desc: s.current ? '当前' : s.running ? '运行中' : '恢复',
+          })
+        )
+      }
+      if (capped.hiddenCount > 0) {
+        frag.appendChild(
+          makeWsRow('wsmore', {
+            id: w.workspaceId,
+            icon: isExpanded ? 'chevron-up' : 'chevron-down',
+            iconClass: 'ws-caret',
+            text: isExpanded ? '收起' : `展开其余 ${capped.hiddenCount} 个会话`,
+            cls: 'ws-more-row',
           })
         )
       }
@@ -291,6 +331,14 @@ export function initSelfDrawnTitlebar(api: SelfDrawnTitlebarApi): void {
         wsDropdownExpanded.add(id)
       }
       renderWsDropdown()
+    } else if (act === 'wsmore' && id) {
+      // 「展开其余 N 个会话 / 收起」：只切这一组的本地展开态，不重新拉数据
+      if (wsSessionsExpanded.has(id)) {
+        wsSessionsExpanded.delete(id)
+      } else {
+        wsSessionsExpanded.add(id)
+      }
+      renderWsDropdown()
     } else if (act === 'wsnew' && id) {
       vscode.postMessage({ type: 'wsDropdown', op: 'wsnew', workspaceId: id })
       closeWsDropdown()
@@ -362,16 +410,18 @@ export function initSelfDrawnTitlebar(api: SelfDrawnTitlebarApi): void {
         applyPanelState()
       }
     } else if (type === 'wsDropdownList') {
-      const dl = m as { workspaces?: Array<{ workspaceId: string; name: string; current?: boolean }> }
+      const dl = m as { workspaces?: Array<{ workspaceId: string; name: string; current?: boolean; newable?: boolean }> }
       wsDropdownList = (dl.workspaces ?? []).map((w) => ({
         workspaceId: w.workspaceId,
         name: w.name,
         current: !!w.current,
+        newable: w.newable !== false,
       }))
       // 会话缓存/展开状态/拉取标记随列表刷新
       wsDropdownExpanded.clear()
       wsDropdownSessions.clear()
       wsSessionsRequested.clear()
+      wsSessionsExpanded.clear()
       renderWsDropdown()
     } else if (type === 'wsDropdownSessions') {
       const ds = m as { workspaceId?: string; sessions?: Array<{ sessionId: string; title: string; running: boolean; blank: boolean; current?: boolean }> }

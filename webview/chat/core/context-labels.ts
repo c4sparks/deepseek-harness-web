@@ -1,5 +1,5 @@
 // 上下文注入/召回行的展示字典（文案取字典原文，不自造同义词；适配上游 0.1.5-rc.2）。
-// 与 terminal.ts terminalLabels() 同一套路：只放官方原文，参数插值用函数。
+// 与 terminal.ts terminalLabels() 同一套路：只放上游原文，参数插值用函数。
 
 export interface ContextLabels {
   contextInjection: string

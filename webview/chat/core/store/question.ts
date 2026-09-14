@@ -1,4 +1,4 @@
-// 提问弹窗切片：官方 waterfall 交互（输入框上方）的 pending 数据与应答。
+// 提问弹窗切片：上游 waterfall 交互（输入框上方）的 pending 数据与应答。
 // 与消息行上的提问「记录」行无关（那部分在聚合层的消息域）。
 import { signal } from '@preact/signals'
 import type { ChatHost } from '../host'

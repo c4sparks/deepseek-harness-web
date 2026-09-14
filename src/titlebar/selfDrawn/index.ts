@@ -40,6 +40,8 @@ interface SelfWorkspaceRow {
     workspaceId: string;
     name: string;
     current: boolean;
+    /** 该行能否"在此新开会话"（「未分组」不行：它没有工作区实体，见 SelfDrawnTitlebarCtx.ungroupedRow） */
+    newable?: boolean;
 }
 
 /** 自绘标题栏模块需要的宿主能力(由 extension.ts 组装实现,全注入、不 import 内部) */
@@ -64,6 +66,11 @@ export interface SelfDrawnTitlebarCtx {
     ensureReadyForList(): Promise<void>;
     /** 取当前工作区 id(共享层) */
     getCurrentWorkspaceId(): string | undefined;
+    /**
+     * 「未分组」那一行；没有这类会话时返回 undefined。
+     * 它的 `workspaceId` 是**伪标识**：`sessions` 与 `session` 两个 op 都会走到"不设工作区"的分支。
+     */
+    ungroupedRow(): Promise<SelfWorkspaceRow | undefined>;
 }
 
 /** panelState 广播构造器:DshPanel 面板开/关或 viewMode 变化 → 通知自绘标题栏 webview 显隐按钮 */
@@ -105,6 +112,11 @@ export function installSelfDrawnTitlebarMessages(
                             name: ctx.displayName(w),
                             current: w.workspaceId === currentId,
                         }));
+                        // 「未分组」排在最后（与网页端的分组顺序一致）：没有这一类会话时不占位
+                        const ungrouped = await ctx.ungroupedRow();
+                        if (ungrouped !== undefined) {
+                            rows.push(ungrouped);
+                        }
                         ctx.post({ type: 'wsDropdownList', currentId, workspaces: rows });
                     } else if (op === 'sessions' && msg.workspaceId) {
                         const sessions = await ctx.listWorkspaceSessions(String(msg.workspaceId));

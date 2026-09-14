@@ -22,7 +22,7 @@ export interface TriggerRow {
   description: string
   /** 可选输入提示（如 permission 的 "<preset>"）。 */
   hint?: string
-  /** pick 后应插入到输入框的文本（@ 引用用：carry 官方 mention token）；缺省则由框架按 name 生成 */
+  /** pick 后应插入到输入框的文本（@ 引用用：carry 上游 mention token）；缺省则由框架按 name 生成 */
   value?: string
   /** 过滤/命中用文本（默认 name）；@ 用全路径/会话id 命中，而展示仍用短名 */
   searchText?: string

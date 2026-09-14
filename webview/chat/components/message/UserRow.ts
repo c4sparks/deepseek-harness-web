@@ -53,9 +53,6 @@ export function UserRow({ row, store, latest }: { row: Extract<ChatRow, { kind: 
       time: row.time,
       copyable: !!row.text,
       onCopy: () => store.copy(row.text),
-      regenable: !!row.text,
-      hideRegen: true, // 提问行只保留复制
-      onRegen: () => store.regenerate(row.text, row.images),
     })}
   </div></div>`
 }

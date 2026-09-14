@@ -1,7 +1,7 @@
 // 展示层纯函数(无状态/DOM):工具名中文化、消息统计与底部统计条文案。
 // 与旧 chat.ts 逻辑一致,供组件与 store 复用。
 
-/** turn/end 终止状态角标：先不翻译，直接回显官方 reason.kind 原值（completed/未知返回空）。与 src/dsh/session.ts 一致。 */
+/** turn/end 终止状态角标：直接回显上游 reason.kind 原值（completed 或无值返回空）。与 src/dsh/session.ts 一致。 */
 export function turnStatusBadge(kind: string | undefined): string {
   return kind && kind !== 'completed' ? kind : ''
 }
@@ -99,6 +99,8 @@ const TOOL_TITLES: Record<string, string> = {
   plan: 'plan',
   subagent: 'subagent',
   ask_user_question: '提问',
+  todo_write: '更新任务清单',
+  present: '交付文件',
 }
 
 /** 无专属标题的工具统一用「工具调用」。 */
@@ -137,7 +139,7 @@ export function toolTitle(name: string): string {
   return TOOL_TITLES[name] ?? GENERIC_TOOL_TITLE
 }
 
-/** raw 工具名 → 展示图标 codicon（无 codicon- 前缀；按官方 variant 归类，未知兜底 wrench）。 */
+/** raw 工具名 → 展示图标 codicon（无 codicon- 前缀；按上游 variant 归类，未知兜底 wrench）。 */
 export function toolIconOfTool(name: string): string {
   const map: Record<string, string> = {
     bash: 'terminal',
@@ -161,6 +163,8 @@ export function toolIconOfTool(name: string): string {
     findings: 'graph-line',
     plan: 'list-unordered',
     ask_user_question: 'question',
+    todo_write: 'checklist',
+    present: 'package',
   }
   return map[name] ?? 'wrench'
 }
@@ -170,20 +174,30 @@ export function toolIconOfTool(name: string): string {
  *  取首个命中字符串的首行，超长截断）。无/解析失败返回 ''。 */
 export function deriveToolSummary(argsRaw: string | undefined, name?: string): string {
   if (!argsRaw) return ''
+  const lower = (name ?? '').toLowerCase()
   let obj: unknown
   try {
     obj = JSON.parse(argsRaw)
   } catch {
-    return ''
+    // 参数还在流式（截断）或坏形：交付文件这一行按上游**原样显示原始串**，其余保持空摘要
+    return lower === 'present' ? clipLine(firstLine(argsRaw)) : ''
   }
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return ''
   const rec = obj as Record<string, unknown>
-  const lower = (name ?? '').toLowerCase()
   const isCmd = lower === 'bash' || lower === 'pwsh' || lower === 'powershell' || lower === 'shell' || lower === 'python' || lower === 'code' || lower.endsWith('exec')
   const isRead = lower === 'read' || lower === 'read_image' || lower === 'readtextfile' || lower.includes('fetch') || lower.includes('http')
   const isSearch = lower === 'web_search' || lower === 'search' || lower === 'grep' || lower === 'glob'
   // 文件写入/编辑是独立变体（摘要取路径、**不加「工具名 · 」前缀**）；漏了这行它们会被当成 others 加前缀
   const isWrite = lower === 'write' || lower === 'edit' || lower === 'str_replace_editor' || lower === 'apply_patch'
+  // 任务清单：摘要不是"某个字符串字段"，而是从整表里算出的计数 + 当前项（见 todoSummary）
+  if (lower === 'todo_write') {
+    return todoSummary(rec)
+  }
+  // 交付文件（`present`）：摘要 = 声明的那几个文件路径，原样列出、用 `, ` 连接（与上游同）。
+  // 参数流式截断/坏形时原样显示 —— 行首已有状态标签，这里不重复写"已交付"这类词。
+  if (lower === 'present') {
+    return presentSummary(rec, argsRaw)
+  }
   if (!isCmd && !isRead && !isSearch && !isWrite) {
     // 无专属标题的工具：无偏好键，取首个非空字符串值，再兜底原始参数首行；
     // 摘要带「工具名 · 」前缀（真实工具名由摘要承载，标题统一是「工具调用」）
@@ -205,6 +219,49 @@ export function deriveToolSummary(argsRaw: string | undefined, name?: string): s
     }
   }
   return ''
+}
+
+/**
+ * 任务清单摘要（`todo_write` 的参数是**整表**，摘要得从表里算）：
+ * `已完成/总数 已完成` + 首个进行中项的内容；并行时再缀 `+N`（多于一项在进行）。
+ *
+ * 与上游同口径：计数与当前项**分开**取 —— 当前项缺失只损失那一截，计数照给。
+ * 内容不合法（缺字段/空白串）就不点名：被拒的调用参数会原样留在行上，不该当成好事渲染。
+ */
+function todoSummary(args: Record<string, unknown>): string {
+  const raw = args['todos']
+  if (!Array.isArray(raw)) return ''
+  const items = raw.filter(
+    (t): t is { content?: unknown; status?: unknown } => t !== null && typeof t === 'object'
+  )
+  if (items.length === 0) return ''
+  const done = items.filter((t) => t['status'] === 'completed').length
+  const active = items.filter((t) => t['status'] === 'in_progress')
+  const head = `${done}/${items.length} 已完成`
+  const first = active[0]?.['content']
+  if (typeof first !== 'string' || first.trim() === '') return head
+  const named = `${head} · ${clipLine(firstLine(first))}`
+  return active.length > 1 ? `${named} +${active.length - 1}` : named
+}
+
+/**
+ * 交付文件（`present`）的摘要：把参数里的 `files[].path` 原样列出、用 `, ` 连接。
+ *
+ * 与上游同一口径：参数流式截断/坏形时**原样显示原始串**（宁可难看也不要静默空着），
+ * 没有 `files` 数组同理。行首已有状态标签，所以这里不重复写"已交付/正在交付"这类词。
+ */
+function presentSummary(args: Record<string, unknown>, argsRaw: string): string {
+  const files = args['files']
+  if (!Array.isArray(files)) {
+    return clipLine(firstLine(argsRaw))
+  }
+  const paths = files
+    .map((f) => {
+      const rec = f as { path?: unknown } | null | undefined;
+      return typeof rec?.path === 'string' ? rec.path : undefined;
+    })
+    .filter((p): p is string => p !== undefined);
+  return paths.length > 0 ? clipLine(paths.join(', ')) : clipLine(firstLine(argsRaw))
 }
 
 /** 取文本首行并去空白。 */
@@ -259,7 +316,37 @@ export function compactTokens(n: number | undefined): string {
   return String(n)
 }
 
-/** 单轮完成统计(chatDone.stats):只取官方字段,不自己测时/算 tok/s */
+/**
+ * 面板里的紧凑 token 数：`<1000` 原样、`<1e6` 用 K、否则用 M。
+ * 缩放后 **≥100 取整、<100 保留一位小数**（`477K`、`21.5K`、`1.2M`），单位前无空格。
+ */
+export function formatCompactTokens(n: number | undefined): string {
+  if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) return ''
+  const scaled = (v: number): string => (v >= 100 ? String(Math.round(v)) : String(Math.round(v * 10) / 10))
+  if (n < 1000) return String(n)
+  if (n < 1_000_000) return `${scaled(n / 1000)}K`
+  return `${scaled(n / 1_000_000)}M`
+}
+
+/**
+ * 耗时（秒）：`<60` 保留一位小数（`45.2秒`），否则取整成 `2分42秒`。
+ * 秒数非法返回空串（调用方据此不渲染那一行）。
+ */
+export function formatDurationCompact(sec: number | undefined): string {
+  if (typeof sec !== 'number' || !Number.isFinite(sec) || sec < 0) return ''
+  // 分界按**原值**判（不按舍入后的结果）：59.96 秒仍属"不足一分钟"，显示 60秒 而不是 1分0秒
+  if (sec < 60) return `${String(Math.round(sec * 10) / 10)}秒`
+  const total = Math.round(sec)
+  return `${String(Math.floor(total / 60))}分${String(total % 60)}秒`
+}
+
+/** 输出速度：≥10 取整、<10 保留一位小数（与用时口径一致）。 */
+export function formatTokensPerSecond(tps: number | undefined): string {
+  if (typeof tps !== 'number' || !Number.isFinite(tps) || tps < 0) return ''
+  return tps < 10 ? String(Math.round(tps * 10) / 10) : String(Math.round(tps))
+}
+
+/** 单轮完成统计(chatDone.stats):只取上游字段,不自己测时/算 tok/s */
 export function formatTurnStats(stats?: Record<string, unknown>): string {
   if (!stats) {
     return ''
@@ -295,46 +382,6 @@ export function formatTurnStats(stats?: Record<string, unknown>): string {
     parts.push(`推理 ${reasoning} tok`)
   }
   return parts.join(' · ')
-}
-
-/** 底部统计条(sessionStats + tokenUsage 投影)→ { text, title };均超长省略/悬停全文 */
-export function formatStatsLine(projections: Record<string, unknown>): { text: string; title: string } {
-  const s = (projections['sessionStats'] as Record<string, number> | undefined) ?? {}
-  const t = (projections['tokenUsage'] as Record<string, number> | undefined) ?? {}
-  const parts: string[] = []
-  const turns = s['turns'] as number | undefined
-  const steps = s['steps'] as number | undefined
-  if (typeof turns === 'number' && turns > 0) parts.push(`${turns} 轮`)
-  if (typeof steps === 'number' && steps > 0) parts.push(`${steps} 步`)
-  const llmMs = s['llmMs'] as number | undefined
-  const toolMs = s['toolMs'] as number | undefined
-  if (typeof llmMs === 'number' && llmMs > 0) parts.push(`LLM ${(llmMs / 1000).toFixed(1)}s`)
-  if (typeof toolMs === 'number' && toolMs > 0) parts.push(`工具调用 ${(toolMs / 1000).toFixed(1)}s`)
-  const ttftMs = s['ttftMs'] as number | undefined
-  const ttftSteps = s['ttftSteps'] as number | undefined
-  if (typeof ttftMs === 'number' && typeof ttftSteps === 'number' && ttftMs > 0 && ttftSteps > 0) {
-    parts.push(`首 token 平均 ${(ttftMs / ttftSteps / 1000).toFixed(1)}s`)
-  }
-  const decodeMs = s['decodeMs'] as number | undefined
-  const decodeTokens = s['decodeTokens'] as number | undefined
-  if (typeof decodeMs === 'number' && typeof decodeTokens === 'number' && decodeMs > 0 && decodeTokens > 0) {
-    parts.push(`${(decodeTokens / (decodeMs / 1000)).toFixed(0)} tok/s`)
-  }
-  const input = t['uncachedInputTokens'] as number | undefined
-  const cache = t['cacheReadTokens'] as number | undefined
-  const cacheWrite = t['cacheWriteTokens'] as number | undefined
-  const output = t['outputTokens'] as number | undefined
-  // 官方 billedInputTokens = uncached + cacheRead + cacheWrite；命中率分母用 billedInput
-  const billedInput = (input ?? 0) + (cache ?? 0) + (cacheWrite ?? 0)
-  if (typeof cache === 'number' && billedInput > 0) {
-    parts.push(`缓存命中 ${cacheHitPercent(cache, billedInput)}%`)
-  }
-  if (typeof input === 'number') parts.push(`输入 ${input} tok`)
-  if (typeof output === 'number') parts.push(`输出 ${output} tok`)
-  if (typeof cache === 'number' && cache > 0) parts.push(`缓存 ${cache} tok`)
-  if (typeof cacheWrite === 'number' && cacheWrite > 0) parts.push(`缓存写 ${cacheWrite} tok`)
-  const line = parts.join(' · ')
-  return { text: line, title: line }
 }
 
 /** dsh agent 模式展示名(MODE_NAMES) */

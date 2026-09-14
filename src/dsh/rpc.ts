@@ -14,8 +14,6 @@ import {
 } from "./auth";
 // ---------- RPC 传输 ----------
 const RPC_TIMEOUT_MS = 15_000;
-/** 等待 AI 回复的默认超时。 */
-const DEFAULT_REPLY_TIMEOUT_MS = 120_000;
 interface RpcRequest {
     type: 'client-request';
     rpcId: string;

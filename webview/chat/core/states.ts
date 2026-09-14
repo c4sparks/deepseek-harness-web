@@ -137,5 +137,5 @@ export const SpinnerVerbs: Record<'thinking' | 'tool' | 'loading', string[]> = {
   loading: ['正在加载…', '正在连接…', '正在同步…'],
 }
 
-/** 与官方文案一致：工具调用次数 / 中间消息数 折叠行用词。 */
+/** 与上游文案一致：工具调用次数 / 中间消息数 折叠行用词。 */
 export const foldSeparator = ' · '

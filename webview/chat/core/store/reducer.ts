@@ -9,9 +9,10 @@ import type { CatalogsSlice } from './catalogs'
 import type { SelectorsSlice } from './selectors'
 import type { QuestionSlice } from './question'
 import type { StatusSlice } from './status'
+import type { PrefsSlice } from './prefs'
 import type { AttachmentsSlice } from './attachments'
 import type { OutboxSlice } from './outbox'
-import type { HistorySlice } from './history'
+import type { FeedbackSlice } from './feedback'
 
 export interface ReducerDeps {
   messages: MessagesSlice
@@ -20,9 +21,10 @@ export interface ReducerDeps {
   selectors: SelectorsSlice
   question: QuestionSlice
   status: StatusSlice
+  prefs: PrefsSlice
   attachments: AttachmentsSlice
   outbox: OutboxSlice
-  history: HistorySlice
+  feedback: FeedbackSlice
   /** 清空全部切片（clear 帧）。 */
   reset(): void
 }
@@ -32,34 +34,23 @@ export interface ReducerSlice {
 }
 
 export function createReducer(deps: ReducerDeps): ReducerSlice {
-  const { messages, composer, catalogs, selectors, question, status, attachments, outbox, history, reset } = deps
+  const { messages, composer, catalogs, selectors, question, status, prefs, attachments, outbox, feedback, reset } = deps
 
   function onHostMessage(m: HostToViewMessage): void {
     switch (m.type) {
-      case 'chatActivity':
-        messages.activity(m.activity)
-        break
-      case 'chatReasoning':
-        messages.reasoning(m.text ?? '', m.step, m.index)
-        break
-      case 'chatContext':
-        messages.contextRow(m.context, m.context?.time)
-        break
       case 'chatApproval':
         messages.pushApproval(m.approvalId ?? '', m.description ?? '需要授权操作', m.toolName)
         break
       case 'chatQuestion':
-        // 官方 waterfall 提问弹窗（输入框上方）：pending 时置弹窗数据，用户选择/提交/取消/关闭。
+        // 上游 waterfall 提问弹窗（输入框上方）：pending 时置弹窗数据，用户选择/提交/取消/关闭。
         question.openQuestionDialog(m.rpcId, m.sessionId, m.questions ?? [])
         break
       case 'questionClosed':
         question.closeQuestion(m.rpcId)
         break
-      case 'chatChunk':
-        messages.chunk(m.text ?? '', m.replace)
-        break
-      case 'chatDone':
-        messages.finish(m.stats, m.time, m.text, m.end, m.counts)
+      case 'chatError':
+        // 本地提交失败（没有回合、没有行）：标掉那条乐观行并给错误，避免输入区一直卡在「处理中」
+        messages.failSubmission(m.rpcId, m.message ?? '发送失败')
         break
       case 'attachmentBytes':
         attachments.receiveAttachment(
@@ -92,15 +83,32 @@ export function createReducer(deps: ReducerDeps): ReducerSlice {
         }
         break
       }
+      case 'chatPrefs':
+        // 上游显示偏好（全局）：只改展示形态，不动会话数据；rowsSource 是渲染源开关（阶段 4）
+        prefs.apply(m.transcriptView)
+        break
+      case 'rows':
+        // 宿主下发的行（阶段 4，见 docs/design/08 §11）：渲染源切到宿主侧
+        messages.applyHostRows(m.rows, m.sessionId, m.turnActive)
+        // 反馈是**按会话**的：会话一变就丢弃上一会话的评价，否则标记会串到新会话的行上
+        feedback.onSession(m.sessionId)
+        // 本轮已结束（宿主说不在跑）→ 仍挂着的提问不可能还有效，收起弹窗。
+        // 上游**没有** resolved 类事件（只有 `user-questions/request`），弹窗的存活期只能由**回合生命周期**兜住；
+        // 不关的话用户点关闭会去取消一个已解决的提问 —— 报「未找到对应的提问」并把整轮又停一次（真机现象）。
+        if (m.turnActive === false) {
+          question.reset()
+        }
+        break
+      case 'todos':
+        // 任务清单（输入框上方的常驻条）：宿主已折好，页面只整表替换
+        status.applyTodos(m.todos)
+        break
+      case 'feedbackState':
+        // 消息反馈的列表/写入结果：全部交给反馈切片自行解释（含按会话丢弃迟到回帧）
+        feedback.apply(m)
+        break
       case 'draft':
         composer.appendDraft(m.text)
-        break
-      case 'chatHistory':
-        history.renderHistory(m.messages ?? [], m.sessionId)
-        break
-      case 'chatSystemLine':
-        // 上游 system-prompt 节点：插在该回合用户提问之前的一条可折叠行
-        messages.systemLine(m.text ?? '')
         break
       case 'clear':
         reset()

@@ -84,7 +84,7 @@ export function TurnStats({ usage }: { usage: Record<string, unknown> }) {
   if (!hasUsage && !hasTime) return null
   // 图标旁常显数值：用量=本轮总量(compact)，用时=本轮总用时(秒)
   const usageBadge = compactTokens(total)
-  // 时长按官方整秒向下取整：sub-second 显示 0秒；>=1 分钟显示 X分Y秒
+  // 时长按上游整秒向下取整：sub-second 显示 0秒；>=1 分钟显示 X分Y秒
   const wallText = (() => {
     if (wall === undefined) return ''
     const total = Math.floor(wall)

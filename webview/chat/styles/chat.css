@@ -515,6 +515,82 @@
     border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.35));
     background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2)));
   }
+  /* 回合尾部：本轮文件改动 + 交付文件（位置在回答正文之后、动作条之前） */
+  .turn-deliverables { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+  /* 本轮文件改动：一行标签 + 若干 chip（路径名，点它用编辑器打开） */
+  .dv-produced { display: flex; flex-direction: column; gap: 4px; }
+  .dv-label { font-size: 11px; color: var(--vscode-descriptionForeground, #999); }
+  .dv-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+  .dv-chip {
+    display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
+    padding: 2px 9px; border-radius: 999px; cursor: pointer; font: inherit; font-size: 11.5px;
+    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
+    background: transparent; color: var(--vscode-foreground, #ddd);
+  }
+  .dv-chip:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.22)); }
+  .dv-chip-ico { font-size: 12px; flex: none; color: var(--vscode-descriptionForeground, #999); }
+  .dv-more { font-size: 11px; color: var(--vscode-descriptionForeground, #999); }
+  /* 交付文件：卡片网格（窄栏自动落成一列）+ 超过四个时的展开/收起 */
+  .dv-presented { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .dv-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; min-width: 0; }
+  .dv-card {
+    display: flex; align-items: center; gap: 8px; min-width: 0; text-align: left;
+    padding: 6px 8px; border-radius: 8px; cursor: pointer; font: inherit;
+    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
+    background: transparent; color: var(--vscode-foreground, #ddd);
+  }
+  .dv-card:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.22)); }
+  .dv-card-ico { font-size: 16px; flex: none; color: var(--vscode-descriptionForeground, #999); }
+  .dv-card-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .dv-card-name { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dv-card-note { font-size: 11px; color: var(--vscode-descriptionForeground, #999); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dv-toggle {
+    align-self: flex-start; display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border: none; border-radius: 6px; cursor: pointer; font: inherit; font-size: 11.5px;
+    background: none; color: var(--vscode-textLink-foreground, #4daafc);
+  }
+  .dv-toggle:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.22)); }
+  .dv-toggle .codicon { font-size: 12px; line-height: 1; }
+  /* 任务清单卡（输入框上方常驻条）：位置紧贴输入框之上，整块不与输入区抢焦点 */
+  .todo-card {
+    flex: none; margin: 0 0 6px; overflow: hidden;
+    border: 0.5px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
+    border-radius: 12px;
+    background: var(--vscode-editorWidget-background, rgba(0,0,0,0.25));
+  }
+  .todo-body { display: flex; flex-direction: column; gap: 8px; padding: 6px 12px; }
+  .todo-head {
+    display: flex; align-items: center; gap: 10px; width: 100%;
+    padding: 0; border: none; background: transparent; text-align: left; cursor: pointer;
+    color: inherit; font: inherit;
+  }
+  .todo-lead { flex: none; font-size: 14px; line-height: 1; color: var(--vscode-descriptionForeground, #999); }
+  .todo-title {
+    flex: none; font-size: 13px; line-height: 24px; font-weight: 500;
+    color: var(--vscode-foreground, #ddd);
+  }
+  .todo-progress {
+    flex: 1 1 auto; min-width: 0; overflow: hidden;
+    font-size: 13px; line-height: 20px; color: var(--vscode-descriptionForeground, #999);
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .todo-chev { flex: none; font-size: 14px; line-height: 1; color: var(--vscode-descriptionForeground, #999); }
+  /* 列表：超过 180px 自身滚动（输入区上方的空间必须封顶，否则长清单把输入框挤出视野） */
+  .todo-list {
+    display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0;
+    list-style: none; max-height: 180px; overflow-y: auto;
+  }
+  .todo-item {
+    display: flex; align-items: center; gap: 10px; min-width: 0;
+    font-size: 13px; line-height: 20px; color: var(--vscode-descriptionForeground, #ccc);
+  }
+  .todo-glyph { flex: none; width: 16px; font-size: 14px; line-height: 1; text-align: center; }
+  /* 状态只看图标：进行中转圈（蓝）、已完成打勾（绿）、未开始空心圈（暗） */
+  .todo-item[data-status='in_progress'] .todo-glyph { color: var(--vscode-textLink-foreground, #4daafc); }
+  .todo-item[data-status='completed'] .todo-glyph { color: var(--vscode-testing-iconPassed, var(--vscode-charts-green, #89d185)); }
+  .todo-item[data-status='pending'] .todo-glyph { color: var(--vscode-descriptionForeground, #888); }
+  /* 单行省略：长任务名不换行（清单是速览，不是正文） */
+  .todo-content { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* 用量 / 用时 图标+弹窗 */
   .turn-meta { position: relative; display: flex; gap: 6px; margin-top: 3px; }
   .tm-btn {
@@ -637,7 +713,7 @@
   /* 用量/用时弹窗打开时保持动作区常显（TurnStats 打开会给所在 .msg 加 meta-open，防闪烁/消失） */
   .msg.meta-open .msg-meta { opacity: 1; }
   .msg-meta .time { font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-  /* 动作区(复制/重新生成/用量/用时)整段不压缩：窄栏时挤占左侧时间标签(出省略号)，不换行 */
+  /* 动作区(复制/分叉/反馈/用量/用时)整段不压缩：窄栏时挤占左侧时间标签(出省略号)，不换行 */
   .msg-meta .msg-actions { flex: none; min-width: 0; }
 
   /* 消息操作按钮 */
@@ -652,7 +728,7 @@
     color: var(--vscode-foreground, #ddd);
     background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground, rgba(128,128,128,0.22)));
   }
-  /* 用量/用时图标并入动作区(在重新生成按钮后)，覆盖 msg-actions button 默认外观 */
+  /* 用量/用时图标并入动作区(在复制/分叉/反馈之后)，覆盖 msg-actions button 默认外观 */
   .msg-actions .turn-meta { margin: 0; }
   .msg-actions .tm-btn {
     border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.18));
@@ -662,14 +738,42 @@
   .msg-actions .tm-btn:hover { background: rgba(255,255,255,0.08); color: var(--vscode-foreground, #ddd); }
   .msg-actions .tm-btn.active { color: var(--vscode-foreground, #ddd); background: rgba(128,128,128,0.25); }
 
-  /* 底部上游统计（左对齐，超长省略，悬停显示全文） */
-  #statsbar {
-    padding: 0 12px 4px; font-size: 11px; /* 顶部收紧，贴近输入框 */
+  /* 输入框下方的会话级信息：两张**互相独立**的卡（会话统计 / Token 用量）。
+     一条 pill 一个维度，各自点开自己的明细卡 —— 并成一行长文本既读不出重点、窄面板下还会被整体省略。 */
+  .stats-cards {
+    position: relative; display: flex; align-items: center; gap: 6px;
+    padding: 1px 12px 3px; font-size: 12px; line-height: 18px;
     color: var(--vscode-descriptionForeground, #888);
-    text-align: left; white-space: nowrap; overflow: hidden;
-    text-overflow: ellipsis; cursor: default;
   }
-  #statsbar:empty { padding: 0; }
+  .stats-cards:empty { padding: 0; }
+  .sp-wrap { position: relative; display: inline-flex; min-width: 0; }
+  .sp-pill {
+    display: inline-flex; align-items: center; gap: 4px; max-width: 100%;
+    padding: 0 6px; border: none; border-radius: 24px; cursor: pointer; font: inherit;
+    background: transparent; color: var(--vscode-descriptionForeground, #888);
+    white-space: nowrap; font-variant-numeric: tabular-nums;
+  }
+  .sp-pill:hover, .sp-pill[aria-expanded='true'] {
+    background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.22));
+    color: var(--vscode-foreground, #ccc);
+  }
+  .sp-ico { flex: none; font-size: 13px; line-height: 1; }
+  .sp-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* 分隔点与前后间距收窄：两段读数之间只留一点呼吸，别再撑开一整条 */
+  .sp-sep { flex: none; margin: 0 2px; color: var(--vscode-panel-border, rgba(255,255,255,0.3)); }
+  /* 明细卡：向上展开（常驻条在窗口底部，向下会被输入区/状态栏截断），左边缘对齐自己那张 pill */
+  .sp-pop {
+    position: absolute; left: 0; bottom: calc(100% + 8px); z-index: 100;
+    box-sizing: border-box; min-width: 220px; padding: 10px 12px;
+    border: 0.5px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
+    border-radius: 12px; /* 菜单面：与上游的浮层圆角一致 */
+    background: var(--vscode-editorWidget-background, rgba(30,30,30,0.98));
+    box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+    font-size: 12px; line-height: 20px; color: var(--vscode-descriptionForeground, #ccc);
+  }
+  .sp-pop-title { margin-bottom: 6px; font-weight: 600; color: var(--vscode-foreground, #ddd); }
+  .sp-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 2px 0; }
+  .sp-v { font-variant-numeric: tabular-nums; color: var(--vscode-foreground, #ddd); }
 
   /* 附件（文件引用，输入框区域内） */
   #attachments {
@@ -864,36 +968,119 @@
   .turn-status-text { white-space: nowrap; font-size: 10px; }
   .turn-status-clock { font-size: 13px; font-weight: 400; color: var(--vscode-descriptionForeground, #999); font-variant-numeric: tabular-nums; }
 
-  /* ===== 上游 waterfall 提问弹窗（输入框上方）：pending 时显示，选择/输入 + 回答/取消/关闭 ===== */
+  /* ===== 上游 waterfall 提问弹窗（输入框上方）：一题一屏 + 翻页 + 跳过 + 折叠（对齐上游 QuestionComposer） ===== */
   .q-dialog {
     margin: 0 14px 4px; padding: 12px 14px;
     border: 0.5px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
     border-radius: 8px; background: var(--vscode-editorWidget-background, rgba(0,0,0,0.25));
     display: flex; flex-direction: column; gap: 10px;
+    max-height: min(60vh, 520px);
   }
-  .q-dialog-title { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; color: var(--vscode-foreground, #ddd); }
-  .q-dialog-block { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-  .q-dialog-q { font-size: 13px; color: var(--vscode-foreground, #ddd); white-space: pre-wrap; overflow-wrap: anywhere; }
-  .q-dialog-options { display: flex; flex-wrap: wrap; gap: 6px; }
+  .q-dialog-head { display: flex; align-items: flex-start; gap: 6px; }
+  .q-dialog-eyebrow { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+  .q-dialog-header { font-size: 10.5px; color: var(--vscode-descriptionForeground, #888); }
+  .q-dialog-q { font-size: 13px; font-weight: 600; color: var(--vscode-foreground, #ddd); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .q-dialog-icon {
+    flex: none; border: none; background: none; cursor: pointer; padding: 2px;
+    color: var(--vscode-descriptionForeground, #999); border-radius: 6px;
+  }
+  .q-dialog-icon:hover { color: var(--vscode-foreground, #ddd); background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.22)); }
+  .q-dialog-icon:disabled { opacity: 0.4; cursor: default; background: none; }
+  /* 折叠后只剩标题条：正文与操作条一起收掉（上游同），故不用 display:none 单点控制 */
+  .q-dialog.is-minimized { max-height: none; }
+  .q-dialog-body { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow-y: auto; }
+  .q-dialog-detail { font-size: 12px; color: var(--vscode-descriptionForeground, #999); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .q-dialog-options { display: flex; flex-direction: column; gap: 6px; }
   .q-dialog-opt {
-    display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 6px;
+    display: flex; align-items: flex-start; gap: 8px; padding: 6px 10px; border-radius: 6px; text-align: left;
     border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.12)); background: transparent;
     color: var(--vscode-foreground, #ddd); cursor: pointer; font: inherit; font-size: 12px;
   }
   .q-dialog-opt:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.22)); }
   .q-dialog-opt.selected { border-color: var(--vscode-focusBorder, #3794ff); background: var(--vscode-button-secondaryBackground, rgba(128,128,128,0.3)); }
+  /* 选项序号徽标（上游给每个选项一个从 1 起的数字） */
+  .q-opt-index {
+    flex: none; min-width: 16px; height: 16px; border-radius: 4px; text-align: center; line-height: 16px;
+    font-size: 10.5px; font-variant-numeric: tabular-nums;
+    background: var(--vscode-badge-background, rgba(128,128,128,0.35)); color: var(--vscode-badge-foreground, #ddd);
+  }
+  .q-opt-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .q-opt-label { font-weight: 500; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .q-opt-rec {
+    font-size: 10px; font-weight: 400; padding: 0 4px; border-radius: 3px;
+    color: var(--vscode-foreground, #ddd); background: var(--vscode-badge-background, rgba(128,128,128,0.35));
+  }
   .q-opt-desc { color: var(--vscode-descriptionForeground, #888); }
-  .q-dialog-input {
-    width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 6px;
+  .q-dialog-custom {
+    width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 6px; resize: vertical;
     border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.12)); background: var(--vscode-input-background, rgba(0,0,0,0.2));
     color: var(--vscode-input-foreground, #ddd); font: inherit; font-size: 12px;
+    min-height: 28px; max-height: 144px;
   }
+  .q-dialog-custom.is-block { min-height: 64px; }
+  .q-dialog-feedback { font-size: 11px; color: var(--vscode-errorForeground, #f48771); }
   .q-dialog-bar { display: flex; gap: 8px; align-items: center; }
-  .q-dialog-submit, .q-dialog-cancel {
+  .q-dialog-progress { font-size: 11px; color: var(--vscode-descriptionForeground, #999); font-variant-numeric: tabular-nums; min-width: 34px; text-align: center; }
+  .q-dialog-submit {
     padding: 4px 14px; border: none; border-radius: 6px; cursor: pointer; font: inherit; font-size: 12px;
+    background: var(--vscode-button-background, #0e7ad3); color: var(--vscode-button-foreground, #fff);
+    margin-left: auto;
   }
-  .q-dialog-submit { background: var(--vscode-button-background, #0e7ad3); color: var(--vscode-button-foreground, #fff); }
   .q-dialog-submit:disabled { opacity: 0.5; cursor: default; }
-  .q-dialog-cancel { background: transparent; color: var(--vscode-descriptionForeground, #999); }
-  .q-dialog-close { margin-left: auto; border: none; background: none; color: var(--vscode-descriptionForeground, #999); cursor: pointer; padding: 2px; }
-  .q-dialog-close:hover { color: var(--vscode-foreground, #ddd); }
+  .q-dialog-skip {
+    padding: 4px 10px; border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.12)); border-radius: 6px;
+    background: transparent; color: var(--vscode-descriptionForeground, #999); cursor: pointer; font: inherit; font-size: 12px;
+  }
+  .q-dialog-skip:hover { color: var(--vscode-foreground, #ddd); background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.22)); }
+
+  /* ===== 消息反馈（👍/👎）：动作条里的两个图标 + 「提交反馈」弹窗 + 结果提示 ===== */
+  .fb-actions { display: inline-flex; align-items: center; gap: 2px; }
+  .fb-btn { border: none; background: none; cursor: pointer; padding: 2px; border-radius: 6px;
+    color: var(--vscode-descriptionForeground, #999); line-height: 1; }
+  .fb-btn:hover { color: var(--vscode-foreground, #ddd); background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.22)); }
+  /* 已记录的一侧要**常显**（不靠 hover 才看得见），否则用户看不出自己评过 */
+  .fb-btn.active { color: var(--vscode-foreground, #ddd); background: rgba(128,128,128,0.25); }
+  .fb-btn .codicon { font-size: 13px; display: block; }
+  .fb-dialog {
+    margin: 0 14px 4px; padding: 12px 14px;
+    border: 0.5px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
+    border-radius: 8px; background: var(--vscode-editorWidget-background, rgba(0,0,0,0.25));
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .fb-dialog-head { display: flex; align-items: center; gap: 6px; }
+  .fb-dialog-title { flex: 1; font-size: 12px; font-weight: 600; color: var(--vscode-foreground, #ddd); }
+  .fb-icon { border: none; background: none; cursor: pointer; padding: 2px; border-radius: 6px; color: var(--vscode-descriptionForeground, #999); }
+  .fb-icon:hover { color: var(--vscode-foreground, #ddd); background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.22)); }
+  .fb-icon:disabled { opacity: 0.4; cursor: default; background: none; }
+  .fb-dialog-body { display: flex; flex-direction: column; gap: 8px; }
+  .fb-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .fb-chip {
+    padding: 3px 10px; border-radius: 999px; cursor: pointer; font: inherit; font-size: 11.5px;
+    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.12)); background: transparent;
+    color: var(--vscode-foreground, #ddd);
+  }
+  .fb-chip:hover { background: var(--vscode-toolbar-hoverBackground, rgba(128,128,128,0.22)); }
+  .fb-chip.active { border-color: var(--vscode-focusBorder, #3794ff); background: var(--vscode-button-secondaryBackground, rgba(128,128,128,0.3)); }
+  .fb-chip:disabled { opacity: 0.5; cursor: default; }
+  .fb-detail {
+    width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 8px; resize: vertical;
+    border: 1px solid var(--vscode-panel-border, rgba(255,255,255,0.12)); background: var(--vscode-input-background, rgba(0,0,0,0.2));
+    color: var(--vscode-input-foreground, #ddd); font: inherit; font-size: 12px; min-height: 56px; max-height: 144px;
+  }
+  .fb-dialog-error { font-size: 11px; color: var(--vscode-errorForeground, #f48771); }
+  .fb-dialog-bar { display: flex; justify-content: flex-end; }
+  .fb-submit {
+    padding: 4px 14px; border: none; border-radius: 8px; cursor: pointer; font: inherit; font-size: 12px; font-weight: 500;
+    background: var(--vscode-button-background, #0e7ad3); color: var(--vscode-button-foreground, #fff);
+  }
+  .fb-submit:disabled { opacity: 0.5; cursor: default; }
+  /* 结果提示：浮在输入区上方居中（上游把 toast 挂在 composer 卡片上） */
+  .fb-toast {
+    position: fixed; left: 50%; transform: translateX(-50%); bottom: 104px; z-index: 30;
+    display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 8px;
+    font-size: 11.5px; color: var(--vscode-foreground, #ddd);
+    background: var(--vscode-editorWidget-background, rgba(0,0,0,0.75));
+    border: 0.5px solid var(--vscode-panel-border, rgba(255,255,255,0.12));
+    box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+  }
+  .fb-toast.is-error { color: var(--vscode-errorForeground, #f48771); }

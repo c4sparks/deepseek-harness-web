@@ -4,7 +4,7 @@
 
 import { contextLabels, type ContextLabels } from './context-labels'
 
-/** 与官方 `KNOWN_FORMS` 一致。 */
+/** 与上游 `KNOWN_FORMS` 一致。 */
 export type KnownContextForm = 'instructions' | 'catalog' | 'snapshot' | 'notice' | 'relay' | 'recall'
 
 const MAX_CHARS = 20_000

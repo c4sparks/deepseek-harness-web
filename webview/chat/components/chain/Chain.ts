@@ -1,13 +1,16 @@
 // 过程链（Chain）：`N 次工具调用 · M 条消息` 是**外层折叠**（点它展开/收起过程明细）。
-// 链里有任何过程内容(工具/思考/上下文注入/召回/计数) → 折叠头(进行中展开、定稿收起，
-// 点开看明细：注入/思考/工具/web/提问卡 平铺)；计数全为 0 时折叠头文案兜底「已思考」。
+// **折叠头只出现在「紧凑 + 已完成」**（`turnClosed` 门控：折叠只发生在回合关闭之后）：
+//   进行中 → 无折叠头，过程行直接平铺（能实时看思考/工具在动；两种显示形态下都一样）；
+//   已完成 + 紧凑 → 收起成折叠头，点开看明细（注入/思考/工具/web/提问卡 平铺）；
+//   已完成 + 标准 → 不折叠，过程行平铺（上游「控制已完成轮次的过程内容」的另一取值）。
+// 链里有任何过程内容(工具/思考/上下文注入/召回/计数) 才出折叠头；计数全为 0 时文案兜底「已思考」。
 // **纯思考同样出折叠头**——上游 foldable 对「有过程成员」成立，与「N 次工具调用」是同一套折叠，
 // 不是平铺；定稿后思考行同样收进折叠里。
-// 例外：只含提问行(ask)时不出折叠头，平铺显示问行（提问不参与过程折叠，见 docs/design/10 §2.3）。
-// 进行中(未结束)明细展开(能看到思考/工具在动)，定稿收起成折叠头 —— 与官方 turnClosed 一致。
+// 例外：只含提问行(ask)时不出折叠头，平铺显示问行（提问不参与过程折叠，见 docs/design/06 §4）。
 import { html } from 'htm/preact'
 import { useEffect, useState } from 'preact/hooks'
 import type { ChatRow, DshTurnProcessItem, ChatStore } from '../../core/store/chat'
+import { processDisclosure } from '../../core/process-fold'
 import { ReasoningRow } from './ReasoningRow'
 import { ToolRow } from './ToolRow'
 import { ContextInjectionRow } from '../message/ContextInjectionRow'
@@ -16,30 +19,25 @@ type AssistantRow = Extract<ChatRow, { kind: 'assistant' }>
 
 export function Chain({ row, store }: { row: AssistantRow; store: ChatStore }) {
   const chain = row.chain
-  // 进行中展开、定稿收起
+  // 上游显示偏好（控制已完成轮次的过程内容）；未知/未到 = compact，即接入前的固有形态
+  const compact = store.transcriptView.value === 'compact'
+  // 折叠头的展开态（只在「紧凑 + 已完成」下可见）；定稿收起
   const [open, setOpen] = useState(!row.done)
+  // 依赖刻意不含 compact：切到「标准」再切回来时，保持用户手动展开过的回合（上游对展开态同样是持久记忆）
   useEffect(() => {
     setOpen(!row.done)
   }, [row.done])
   if (chain.length === 0) return null
 
-  // 是否收纳成外层折叠：链里有工具项(ask 提问除外——其交互在 waterfall 弹窗)、思考行、上下文注入/召回项，或定稿计数>0。
-  // 思考行必须计入：上游纯思考同样出折叠头（文案兜底「已思考」），不是平铺。
+  // 链内的实际工具数（ask 提问除外 —— 其交互在 waterfall 弹窗）：折叠**文案**的兜底要用它
   const chainToolCount = chain.filter((c) => c.kind === 'tool' && c.name !== 'ask_user_question').length
-  const hasReasoning = chain.some((c) => c.kind === 'reasoning')
-  const hasContext = chain.some((c) => c.kind === 'context')
-  const hasFold =
-    chainToolCount > 0 ||
-    hasReasoning ||
-    hasContext ||
-    row.counts.toolCallCount > 0 ||
-    row.counts.messageCount > 0 ||
-    row.counts.subagentCount > 0
 
   // 折叠计数：定稿用宿主 counts；进行中用链内实际工具数(实时)。
+  // 但「停止」是宿主本地合成的完成帧、**不带上游计数**（counts 仍为 0），此时必须回落到链内实际数——
+  // 否则明明跑了工具却兜底成「已思考」。
   // 三项顺序与上游一致：工具调用 → 条消息 → subagent；全为 0 兜底「已思考」。
   const parts: string[] = []
-  const toolCount = row.done ? row.counts.toolCallCount : chainToolCount
+  const toolCount = row.done && row.counts.toolCallCount > 0 ? row.counts.toolCallCount : chainToolCount
   if (toolCount > 0) parts.push(`${toolCount} 次工具调用`)
   if (row.counts.messageCount > 0) parts.push(`${row.counts.messageCount} 条消息`)
   if (row.counts.subagentCount > 0) parts.push(`${row.counts.subagentCount} 个 subagent`)
@@ -59,19 +57,34 @@ export function Chain({ row, store }: { row: AssistantRow; store: ChatStore }) {
       if (item.form === 'instructions') return null
       return html`<${ContextInjectionRow} key=${item.key} item=${item} />`
     }
+    if (item.kind === 'text') {
+      // 非回答步的输出文本：上游是独立的回答节点，插件放进过程链 —— 不显示的话中间步的正文就丢了
+      return html`<div class="chain-proc-text" key=${item.key}>${item.text}</div>`
+    }
     return html`<${ToolRow} key=${item.key} item=${item} store=${store} />`
   }
 
-  const head = hasFold
+  // 折叠门控：判据链在 `core/process-fold.ts`（上游同口径），组件只按结果渲染。
+  // 上游对「2 次工具调用 + 已停止」的回合照样折叠 —— 只要**末步有回答内容且已定稿**。
+  const disclosure = processDisclosure({
+    done: row.done,
+    process: row.process,
+    compact,
+    open,
+    // 插件偏离：链里只含提问行时不出折叠头（提问不参与过程折叠，见 design/06 §4）
+    onlyAsk: chain.every((c) => c.kind === 'tool' && c.name === 'ask_user_question'),
+  })
+  const folded = disclosure.head
+  const head = folded
     ? html`<button class="chain-summary" onClick=${() => setOpen((o) => !o)} aria-expanded=${open}>
         <span class="chain-summary-ico codicon codicon-sparkle"></span>
         <span class="chain-summary-text">${foldLabel}</span>
         <span class=${'codicon chain-summary-chev ' + (open ? 'codicon-chevron-down' : 'codicon-chevron-right')}></span>
       </button>`
-    : null // 只含提问行：无折叠头，问行平铺
+    : null // 只含提问行 / 进行中 / 「标准」下的已完成回合：无折叠头，明细平铺
 
-  // 有折叠：点开才看明细；只含提问行：明细恒展
-  const detailVisible = hasFold ? open : true
+  // 折叠时点开才看明细；其余（只含提问行 / 进行中 / 「标准」下的已完成回合）明细恒展
+  const detailVisible = disclosure.detail
 
   return html`<div class="chain">
     ${head}

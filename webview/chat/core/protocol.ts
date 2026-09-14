@@ -6,6 +6,10 @@
  */
 
 // ---------- 共享形状 ----------
+/** 任务清单条目（宿主侧折叠 `todo/write` 后下发的形状；两侧同一定义，页面侧叫 TodoItem）。 */
+import type { DshTodoItem as TodoItem } from '../../../src/dsh/rows/types'
+export type { TodoItem }
+
 export interface ImageAttachment {
   mediaType: string
   data: string
@@ -97,119 +101,11 @@ export interface AtSessionRef {
   mention: string
 }
 
-/** 实时/历史 过程折叠计数（三个计数：toolCallCount=非 subagent 工具调用数；
- *  messageCount=最终答复前带文本的中间 assistant 消息数；subagentCount=subagent 委派数） */
-export interface TurnCounts {
-  toolCallCount?: number
-  messageCount?: number
-  subagentCount?: number
-}
-
-/** 历史会话里 assistant 回复的可视"过程动作"（实时另有 chatActivity/chatReasoning 增量拼装） */
-export type DshHistoryTurnProcessItem =
-  | { kind: 'reasoning'; text: string }
-  | {
-      kind: 'context'
-      content: unknown[]
-      source: unknown
-      provenance: { role: 'inject' | 'recall'; label: string | null }
-      form: string | null
-    }
-  | { kind: 'tool'; name: string; title?: string; summary?: string; argsRaw?: string; callId?: string; status: 'ok' | 'error' | 'stopped'; error?: string; output?: string; exitCode?: number; signal?: string; meta?: unknown
-      /** 结果原始内容块（**仅当结果含图片块时**带；图片块只含附件引用，字节由附件层按需另取） */
-      blocks?: unknown }
-
-/** 单次工具/思考/步骤 活动（宿主 tool/call、tool/result、step/start 透传） */
-export interface ViewActivity {
-  type?: 'step' | 'tool' | 'toolDone'
-  step?: number
-  tool?: string
-  name?: string
-  callId?: string
-  argsRaw?: string
-  error?: string
-  /** toolDone 的终态：宿主按 isError + code 特例判出（见 `src/dsh/official/tool-status.ts`）。
-   *  直接采用，**不要**自己按 `error` 判——那样会把「被打断/被取消」误标成失败。 */
-  status?: 'ok' | 'error' | 'stopped'
-  output?: string
-  /** tool/result 输出末尾 marker 解析出的退出码/终止信号（Terminal 卡 Pill 展示；剥掉 marker 后的干净输出在 output） */
-  exitCode?: number
-  signal?: string
-  /** tool/result.data.meta 原文透传（web_fetch 的 statusCode、web_search 的 sources/answer 等卡数据源） */
-  meta?: unknown
-  /** 结果原始内容块（仅含图片块的结果才带） */
-  blocks?: unknown
-}
-
-/** 历史会话里的一条上下文注入（source.kind !== 'user' 的 user/message：系统提示词/技能/召回…）。 */
-export interface HistoryContextItem {
-  role: 'context'
-  /** dsh 事件自带时间戳(epoch 秒或毫秒) */
-  time?: number
-  seq?: number
-  /** 模型实际读到的 content blocks（原文透传） */
-  content: unknown[]
-  /** durable user/message source 原文 */
-  source: unknown
-  /** 投影角色与生产者名（recall=跨会话召回，其余=上下文注入） */
-  provenance: { role: 'inject' | 'recall'; label: string | null }
-  /** 生产者声明的展示形态；null = opaque */
-  form: string | null
-}
-
-export type HistoryMessage =
-  | {
-      role: 'user'
-      text: string
-      time?: number
-      /** 该回合实际发给模型的 system（上游 `system-prompt` 节点）；仅该回合第一条 user 行带 */
-      systemPrompt?: string
-      /** 该用户消息带的图片附件引用（恢复历史时用；实时路径的图是内联 base64，见 ChatRow 的 images） */
-      images?: AttachmentRef[]
-      /** 该用户消息带的上传文件（只有名字/大小：上游 file 引用不含本地路径，历史里只展示不可点开） */
-      files?: Array<{ name: string; bytes?: number }>
-    }
-  | {
-      role: 'assistant'
-      text: string
-      /** dsh 事件自带时间戳(epoch 秒或毫秒);缺省则页面不显示时间 */
-      time?: number
-      /** 该条 assistant 消息自带的 usage 与提供方/模型（用量/用时图标数据源，仅 assistant 有） */
-      provider?: string
-      model?: string
-      inputTokens?: number
-      outputTokens?: number
-      cacheReadTokens?: number
-      cacheWriteTokens?: number
-      reasoningTokens?: number
-      /** 由快照事件时间算出的消息指标（与实时同口径），有则恢复行显示 ⏱ 用时 */
-      wallSec?: number
-      ttftSec?: number
-      tps?: number
-      /** 停止状态展示文案（已停止 · Stopped），仅被停止的回合最后一条 assistant 有 */
-      status?: string
-      /** assistant 回合的过程链（思考/工具），恢复后同样可折叠展开 */
-      chain?: DshHistoryTurnProcessItem[]
-      counts?: TurnCounts
-    }
-  | HistoryContextItem
-
-/** 上下文注入数据（实时 chatContext 与历史 HistoryContextItem 共用形状）。 */
-export interface LiveContext {
-  role?: undefined
-  seq?: number
-  time?: number
-  content: unknown[]
-  source: unknown
-  provenance: { role: 'inject' | 'recall'; label: string | null }
-  form: string | null
-}
-
 // ---------- 宿主 → 页面 ----------
+/** 消息反馈的评价取值（与上游 wire 字面量一致，不做本地映射）。 */
+export type FeedbackRating = 'positive' | 'negative'
+
 export type HostToViewMessage =
-  | { type: 'chatActivity'; activity?: ViewActivity }
-  | { type: 'chatReasoning'; text?: string; step?: number; index?: number }
-  | { type: 'chatContext'; context?: LiveContext }
   | { type: 'chatApproval'; approvalId?: string; description?: string; toolName?: string }
   | {
       type: 'chatQuestion'
@@ -218,19 +114,14 @@ export type HostToViewMessage =
       questions?: QuestionSpec[]
     }
   | { type: 'questionClosed'; rpcId?: string }
-  // replace 为真时以整段覆盖当前回答，而非追加：上游把增量帧当瞬态数据，尝试被放弃（模型流
-  // 抛错）时要撤回已流出的半截文本，仅靠追加无法收回
-  | { type: 'chatChunk'; text?: string; replace?: boolean }
-  | {
-      type: 'chatDone'
-      text?: string
-      stats?: Record<string, unknown>
-      time?: number
-      /** turn/end 非正常终止原因（error/aborted/interrupted/max-tokens/blocked…），正常完成则无 */
-      end?: { kind?: string; message?: string }
-      /** 过程折叠计数（官方口径） */
-      counts?: TurnCounts
-    }
+  // 提交失败（宿主侧本地失败：没有工作区 / 服务不可用 / RPC 报错）——**不是渲染指令**：
+  // 它属于与审批、提问同一类的「交互事实」。为什么必须单开一条：这类失败发生在服务端**没有回合**的情况下，
+  // 事件流里既不会有 turn/end、也没有对应的行，错误无处承载（行模型的 endMsg 只来自 turn/end）。
+  // rpcId = 该次提交的标识，页面据此把对应那条本地乐观行标为「未提交成功」。
+  | { type: 'chatError'; message?: string; rpcId?: string }
+  // 任务清单（输入框上方的常驻条）：整表替换，`null`/缺省 = 没有清单（该区整块不渲染）。
+  // 与「行」同源、但不是行：清单不属于任何一个回合，位置也不在对话流里。
+  | { type: 'todos'; todos?: TodoItem[] | null }
   | { type: 'filePicked'; path?: string }
   | { type: 'fileUploaded'; key: string; receiptId?: string; name?: string; bytes?: number; error?: string }
   // 附件字节（附件大类）：结果帧只带附件引用，渲染层要显示时按 id 向宿主懒取
@@ -238,20 +129,38 @@ export type HostToViewMessage =
   | {
       type: 'chatInfo'
       projections?: Record<string, unknown>
-      /** 当前会话工作区根路径：终端卡 cwd 标签在工具调用未带 workdir 时兜底（官方同口径） */
+      /** 当前会话工作区根路径：终端卡 cwd 标签在工具调用未带 workdir 时兜底（上游同口径） */
       cwd?: string
       models?: ChatModelInfo
       agentPresets?: { presets?: ChatAgentPreset[] }
       agentPreset?: string
       agentPresetLocked?: boolean
     }
-  | { type: 'draft'; text?: string }
-  | { type: 'chatHistory'; messages?: HistoryMessage[]; sessionId?: string }
+  // 上游显示偏好（全局，与会话无关）：单独一条轻消息，实时跟随只推它，不重拉 chatInfo 那串 RPC
+  | { type: 'chatPrefs'; transcriptView?: 'normal' | 'compact' }
+  // 宿主下发的「行」（阶段 4 切渲染源后页面据此渲染；开关关闭时不下发，见 docs/design/08 §11）。
+  // 形状为宿主侧的行模型（`src/dsh/rows/types.ts`），页面消费时做一次映射。
   | {
-      type: 'chatSystemLine'
-      /** 一个模型请求实际发给模型的 system（上游 `system-prompt` 节点）：在所属回合开头渲染一条可折叠行 */
-      text: string
+      type: 'rows'
+      rows?: unknown[]
+      /** 该批行属于哪个会话（页面据此丢弃上一个会话的本地乐观行） */
+      sessionId?: string
+      /** 本会话是否有一轮**正在跑**（显式事实：页面据此决定「停止」按钮可用，不从行推导） */
+      turnActive?: boolean
     }
+  // 消息反馈的状态回帧（列表 / 写入结果 / 业务失败）。**不是渲染指令**：它只喂反馈切片。
+  | {
+      type: 'feedbackState'
+      sessionId?: string
+      items?: Array<{ messageId: string; rating: 'positive' | 'negative'; version: string }>
+      /** 分类 id 全表（首次下发时带一次；页面按 `category.<id>` 取中文标签，认不出就回显 id） */
+      categories?: string[]
+      /** 业务失败码原样带（version-conflict / note-too-large / …），页面按码选文案 */
+      errorCode?: string
+      /** 成功写入了一条评价（成功后弹一次「感谢你的反馈」） */
+      recorded?: boolean
+    }
+  | { type: 'draft'; text?: string }
   | { type: 'clear' }
   | { type: 'busy'; kind?: 'loading' | 'switching' | null }
   // 自绘标题栏专属(selfDrawn 模式才出现;原生模式宿主不发)
@@ -260,7 +169,8 @@ export type HostToViewMessage =
   | {
       type: 'wsDropdownList'
       currentId?: string
-      workspaces?: Array<{ workspaceId: string; name: string; current?: boolean }>
+      /** `newable: false` = 这一行不能"在此新开会话"（「未分组」没有工作区实体） */
+      workspaces?: Array<{ workspaceId: string; name: string; current?: boolean; newable?: boolean }>
     }
   | {
       type: 'wsDropdownSessions'
@@ -277,10 +187,26 @@ export type HostToViewMessage =
 // ---------- 页面 → 宿主 ----------
 export type ViewToHostMessage =
   | { type: 'ready' }
-  | { type: 'chatSend'; text: string; images?: ImageAttachment[]; files?: Array<{ receiptId: string; name: string; path?: string }> }
+  // rpcId：本面板 mint 的提交标识，宿主拿它当 session/prompt 的 requestId；
+  // 服务端回显 user/message 时带回同一值，页面据此认领本地已出的一行（避免重复出行）
+  | { type: 'chatSend'; text: string; images?: ImageAttachment[]; files?: Array<{ receiptId: string; name: string; path?: string }>; rpcId?: string }
   | { type: 'cancel' }
+  // 从某条回答分叉出新会话（上游 `session/fork`）：atSeq 是该回答的事件序号，
+  // 省略 = 从最后一条已完成回合分叉。宿主负责建子会话、升号并切过去。
+  | { type: 'chatFork'; atSeq?: number }
   | { type: 'copy'; text: string }
   | { type: 'approvalResponse'; approvalId: string; allow: boolean }
+  // 消息反馈（👍/👎）：list = 读全表（首次交互时懒加载）；rate = 写入/替换；retract = 撤回。
+  // ifVersion 是**观察到的现值版本**（null = 首次评价），服务端据此做 CAS。
+  | {
+      type: 'feedback'
+      op: 'list' | 'rate' | 'retract'
+      messageId?: string
+      rating?: 'positive' | 'negative'
+      note?: string
+      category?: string
+      ifVersion?: string | null
+    }
   | { type: 'questionResponse'; rpcId?: string; sessionId?: string; answers: Array<{ id: string; selected: string[]; custom?: string }> }
   | { type: 'questionCancel'; rpcId?: string; sessionId?: string }
   | { type: 'chatSelectPermission'; preset: string }
