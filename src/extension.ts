@@ -7,7 +7,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { DshService, DshNoWorkspaceError } from './api/dshService';
 import { ChatInputService } from './chatInputService';
-import { type DshContentPart, type DshReplyStats } from './dsh';
+import { type DshContentPart, type DshReplyStats, FEEDBACK_CATEGORIES, type FeedbackCategory } from './dsh';
 import { DshPanel } from './dshPanel';
 import { traceTool } from './dsh/trace';
 import {
@@ -21,6 +21,18 @@ import {
 } from './titlebar/index';
 
 const dsh = new DshService();
+
+// 渲染源的唯一通路：宿主把**行**下发给页面，页面据此渲染（旧指令通路已退役，见 docs/design/08 §13）。
+dsh.onRows = (rows, turnActive) => {
+    // 带上会话标识：页面靠它判断「本地的乐观行是不是这个会话的」——
+    // 不带的话切会话时上一个会话的乐观行会被当成未认领而留下，processing 恒真（一直「深度求索中」）。
+    // 带上 turnActive：**是否在跑是本轮的显式事实**，页面从「行」推导不出来（见 dshService.turnActive）。
+    postToChats({ type: 'rows', rows, sessionId: dsh.getSessionId(), turnActive });
+};
+// 任务清单（输入框上方的常驻条）：与行同源、同一处派生，页面按整表替换；`null` = 没有清单。
+dsh.onTodos = (todos) => {
+    postToChats({ type: 'todos', todos });
+};
 // 输入框功能宿主侧服务：承载 "/" 斜杠命令/技能，后续输入触发类功能都挂这里（复用 dsh 的会话/就绪）
 const chatInput = new ChatInputService(dsh);
 const panel = new DshPanel({
@@ -36,98 +48,34 @@ let pendingDraft: string | undefined;
 
 // ---------- 对话视图（UI 层：消息区 + 输入框） ----------
 
-/** 对话视图 HTML */
+/**
+ * 对话视图的**降级页**：只在 `dist/chat/index.html` 读不出来时用（构建产物缺失/损坏）。
+ *
+ * 这里**不再放一个能打字却没有任何回显的假输入框** —— 渲染源切到「宿主下发行」之后，宿主不再发
+ * 增量/完成指令，旧的那套监听（chatChunk/chatDone）一头也接不上；留着只会让人以为「能发、只是没回复」。
+ * 现在它只说明实情并给出修复动作。
+ */
 function getChatContent(): string {
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+          content="default-src 'none'; style-src 'unsafe-inline';">
     <style>
-        html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; font-family: var(--vscode-font-family); }
-        body { display: flex; flex-direction: column; }
-        #messages { flex: 1; overflow-y: auto; padding: 8px; box-sizing: border-box; }
-        .msg { margin-bottom: 10px; font-size: 12px; line-height: 1.6; }
-        .msg .role { font-size: 11px; opacity: 0.7; margin-bottom: 2px; }
-        .msg.user .role { color: var(--vscode-charts-blue, #75beff); }
-        .msg.ai .role { color: var(--vscode-charts-green, #89d185); }
-        .msg .body { white-space: pre-wrap; word-break: break-word; }
-        .msg.ai .body { background: rgba(255,255,255,0.06); border-radius: 4px; padding: 6px 8px; }
-        #composer { display: flex; gap: 6px; padding: 8px; box-sizing: border-box; border-top: 1px solid rgba(255,255,255,0.12); }
-        #input {
-            flex: 1; resize: none; min-height: 44px; box-sizing: border-box;
-            border: 1px solid rgba(255,255,255,0.15); border-radius: 4px; padding: 6px 8px;
-            font-family: var(--vscode-editor-font-family, sans-serif); font-size: 12px;
-            color: var(--vscode-editor-foreground, #ddd); background: var(--vscode-input-background, #252526); outline: none;
-        }
-        #input:focus { border-color: var(--vscode-focusBorder, #4daafc); }
-        #send {
-            border: 1px solid transparent; border-radius: 4px; padding: 0 12px; cursor: pointer;
-            background: var(--vscode-button-background, #0e639c); color: var(--vscode-button-foreground, #fff); font-size: 12px;
-        }
-        #send:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
+        html, body { margin: 0; padding: 0; height: 100%; font-family: var(--vscode-font-family); }
+        body { display: flex; align-items: center; justify-content: center; padding: 24px; box-sizing: border-box; }
+        .fallback { max-width: 420px; font-size: 12px; line-height: 1.7; color: var(--vscode-foreground, #ddd); }
+        .fallback h2 { font-size: 13px; margin: 0 0 8px; }
+        .fallback code { font-family: var(--vscode-editor-font-family, monospace); }
     </style>
 </head>
 <body>
-    <div id="messages"></div>
-    <div id="composer">
-        <textarea id="input" placeholder="发消息给 DSH（Ctrl+Enter 发送）"></textarea>
-        <button id="send">发送</button>
+    <div class="fallback">
+        <h2>对话界面没有加载出来</h2>
+        <p>找不到构建产物 <code>dist/chat/index.html</code>，或它已损坏。</p>
+        <p>在扩展仓库里重新构建后重载窗口即可：<br><code>pnpm run compile</code></p>
     </div>
-    <script>
-        const vscode = acquireVsCodeApi();
-        const messages = document.getElementById('messages');
-        const input = document.getElementById('input');
-
-        function appendMsg(role, text) {
-            const div = document.createElement('div');
-            div.className = 'msg ' + role;
-            const r = document.createElement('div');
-            r.className = 'role';
-            r.textContent = role === 'user' ? '你' : 'DSH';
-            const b = document.createElement('div');
-            b.className = 'body';
-            b.textContent = text;
-            div.appendChild(r);
-            div.appendChild(b);
-            messages.appendChild(div);
-            messages.scrollTop = messages.scrollHeight;
-        }
-
-        function send() {
-            const t = input.value.trim();
-            if (!t) return;
-            appendMsg('user', t);
-            input.value = '';
-            vscode.postMessage({ type: 'chatSend', text: t });
-        }
-        document.getElementById('send').addEventListener('click', send);
-        input.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); send(); }
-        });
-
-        let aiText = '';
-        let aiEl = null;
-        window.addEventListener('message', (e) => {
-            const m = e.data;
-            if (m.type === 'draft') {
-                input.value = input.value ? input.value + '\\n' + m.text : m.text;
-                input.focus();
-            } else if (m.type === 'chatChunk') {
-                if (!aiEl) { appendMsg('ai', ''); aiEl = messages.lastElementChild.querySelector('.body'); }
-                aiText = m.replace ? (m.text || '') : aiText + (m.text || '');
-                aiEl.textContent = aiText;
-            } else if (m.type === 'chatDone') {
-                aiEl = null;
-                aiText = '';
-            } else if (m.type === 'clear') {
-                messages.innerHTML = '';
-                aiEl = null;
-                aiText = '';
-            }
-        });
-    </script>
 </body>
 </html>`;
 }
@@ -435,7 +383,7 @@ async function loadChatHtml(
     }
 }
 
-/** 拉取会话官方投影（统计/权限）+ 模型列表，推给 webview */
+/** 拉取会话上游投影（统计/权限）+ 模型列表，推给 webview */
 async function postChatInfo(webview: vscode.Webview): Promise<void> {
     try {
         // 先列模型（内部会经 getSession() 确保当前会话存在），再读投影，
@@ -462,7 +410,7 @@ async function postChatInfo(webview: vscode.Webview): Promise<void> {
                 : agentPresets?.presets.find((p) => p.isDefault)?.id;
         const sessionMeta = projections?.['sessionListMetadata'] as { blank?: boolean } | undefined;
         const agentPresetLocked = sessionMeta?.blank === false;
-        // 会话工作区根路径：终端卡 cwd 标签在工具调用未带 workdir 时用它兜底（官方同口径）
+        // 会话工作区根路径：终端卡 cwd 标签在工具调用未带 workdir 时用它兜底（上游同口径）
         const cwd = await dsh.currentWorkspacePath();
         void webview.postMessage({
             type: 'chatInfo',
@@ -595,11 +543,23 @@ function setupChatWebview(
                 // 取消失败忽略
             }
         })();
-        post({ type: 'chatDone', end: { kind: 'cancelled' } }); // 停止 → UI 显示“已停止 · Stopped”
+        // 停止的 UI 复位**不再由这里发完成帧**：服务端会补发该回合的 `turn/end`，
+        // 宿主的行构建据此把回答行定稿（`done`）并带上终止原因，页面随之复位（见 docs/design/08 §13）。
+        // 停止不走正常收尾那次投影刷新，而服务端已经把这轮算进去了 —— 不补刷新的话，
+        // 左下角统计（轮次/用量）会一直停在停止前的值，直到切会话或重开面板才对齐。
+        // 取消是异步结算的（服务端要先落 turn/end 再更新投影），所以延时读；再补一次兜住更慢的结算。
+        for (const delay of [400, 1200]) {
+            setTimeout(() => {
+                void postChatInfo(webview);
+            }, delay);
+        }
     };
 
-    // 握手：等页面脚本就绪后再推一次 chatInfo（避免重建/切回视图时数据丢失）
-    let chatInfoPushed = false;
+    // 握手：页面脚本每次就绪都推一次 chatInfo（页面是**重建**的，宿主持有的是它的全部状态）。
+    // **不要**用「只推一次」的标志（无论局部变量还是 readyChats）：页面 reload 时 provider 不重跑，
+    // 标志还停在已推过 → `ready` 再来被挡住 → chatInfo / chatPrefs 一次都不推，
+    // 表现为**面板重开后设置（紧凑/标准）不对齐**。重复推送是幂等的，代价远小于漏推。
+
 
     // 标题栏装配：按本 webview 的模式(mode)挂对应实现的消息处理（自绘标题栏 才有 webview→扩展 消息）。
     // 原生标题栏模式由宿主渲染按钮，webview 侧不需要扩展消息处理。删自绘标题栏时本行保持不变。
@@ -609,7 +569,8 @@ function setupChatWebview(
         displayName: (w) => wsDisplayName(w),
         listWorkspaceSessions: (id) => listWorkspaceSessionsOf(id),
         wsSwitchNew: (id) => wsSwitchNew(id),
-        wsRestore: (id, sid, blank) => wsRestore(id, sid, blank),
+        // 未分组的伪标识在这里收口：`undefined` = 不设当前工作区、不补登记
+        wsRestore: (id, sid, blank) => wsRestore(id === UNGROUPED_ID ? undefined : id, sid, blank),
         wsCreateNew: () => wsCreateNew(),
         getPanelState: () => ({ panelOpen: panel.hasPanel(), viewMode: panel.viewMode }),
         ensureReadyForList: async () => {
@@ -617,12 +578,23 @@ function setupChatWebview(
             await dsh.ensureCurrentWorkspace();
         },
         getCurrentWorkspaceId: () => dsh.getCurrentWorkspaceId(),
+        ungroupedRow: async () => {
+            const sessions = await listWorkspaceSessionsOf(UNGROUPED_ID);
+            if (sessions.length === 0) {
+                return undefined;
+            }
+            return {
+                workspaceId: UNGROUPED_ID,
+                name: UNGROUPED_NAME,
+                current: dsh.getCurrentWorkspaceId() === undefined,
+                newable: false,
+            };
+        },
     };
     installChatTitlebar(webview, titlebarMode, chatTitlebarHost);
 
     webview.onDidReceiveMessage((msg) => {
-        if (msg.type === 'ready' && !chatInfoPushed) {
-            chatInfoPushed = true;
+        if (msg.type === 'ready') {
             readyChats.add(webview);
             void (async () => {
                 try {
@@ -634,6 +606,9 @@ function setupChatWebview(
                 await postChatInfo(webview);
                 await postChatPrefs();
                 ensureSettingsFollow();
+                // 页面是**重建**的，而行的唯一来源是宿主（开关打开时旧的历史指令被忽略）：
+                // 就绪后补发当前会话的行，否则重开面板/切换视图时对话区空白。
+                dsh.pushCurrentRows();
             })();
             return;
         }
@@ -660,95 +635,108 @@ function setupChatWebview(
                     if (parts.length === 0) {
                         return;
                     }
-                    const result = await dsh.askStreaming(
-                        parts,
-                        (delta) => {
+                    // 提交这一刻就把「进行中」立起来：不等 turn/start 到达，
+                    // 否则「用户消息回显」到「turn/start」之间按钮会中途变回「发送」（见 dshService.turnRunning）
+                    dsh.beginTurn();
+                    // 第二个参数是正文增量回调：渲染已改由「行」驱动，这里只需要它内部照常累积（回调空转）
+                    // 提交标识（页面 mint）：一路带到 session/prompt 的 requestId，
+                    // 服务端回显 user/message 会带回同一值，页面据此认领本地已出的行（见 docs/design/08 §11）
+                    const submitId = typeof msg.rpcId === 'string' ? msg.rpcId : undefined;
+                    // 诊断：与 buildRows 的 `user/message … rpcId=…` 对照，能直接断定标识配不配得上
+                    console.warn(`[dsh-send] rpcId=${submitId ?? '(页面未给)'}`);
+                    const result = await dsh.askStreaming(parts, {
+                        requestId: submitId,
+                        // **渲染不再走这里**：全部由宿主下发的「行」驱动（见 docs/design/08 §13）。
+                        // 只留**交互类**回调 —— 审批 / 提问 / 提问关闭，它们不是渲染指令。
+                        onApproval: (a) => {
                             if (g === gen.n) {
-                                post({ type: 'chatChunk', text: delta });
+                                post({
+                                    type: 'chatApproval',
+                                    approvalId: a.approvalId,
+                                    description: a.description,
+                                    toolName: a.toolName,
+                                });
                             }
                         },
-                        {
-                            onReasoning: (r, step, index) => {
-                                if (g === gen.n) {
-                                    post({ type: 'chatReasoning', text: r, step, index });
-                                }
-                            },
-                            onActivity: (a) => {
-                                // 工具结果是**补记数据**（停止后服务端仍会补发），世代守卫若一并拦掉，
-                                // 那条工具行就永远停在「无结果」——所以它不参与世代失效；其余活动维持原守卫。
-                                if (a.type === 'toolDone' || g === gen.n) {
-                                    post({ type: 'chatActivity', activity: a });
-                                }
-                            },
-                            onApproval: (a) => {
-                                if (g === gen.n) {
-                                    post({
-                                        type: 'chatApproval',
-                                        approvalId: a.approvalId,
-                                        description: a.description,
-                                        toolName: a.toolName,
-                                    });
-                                }
-                            },
-                            onQuestion: (q) => {
-                                if (g === gen.n) {
-                                    post({
-                                        type: 'chatQuestion',
-                                        rpcId: q.rpcId,
-                                        sessionId: q.sessionId,
-                                        questions: q.questions,
-                                    });
-                                }
-                            },
-                            // $events 流断了：该提问已无法应答，关掉弹窗（留着只会让用户点了报错）
-                            onQuestionClosed: (rpcId) => {
-                                if (g === gen.n) {
-                                    post({ type: 'questionClosed', rpcId });
-                                }
-                            },
-                            onContext: (c) => {
-                                if (g === gen.n) {
-                                    post({ type: 'chatContext', context: c });
-                                }
-                            },
-                            onSystemPrompt: (s) => {
-                                if (g === gen.n) {
-                                    post({ type: 'chatSystemLine', text: s.text });
-                                }
-                            },
-                            onTextReset: (full) => {
-                                if (g === gen.n) {
-                                    post({ type: 'chatChunk', text: full, replace: true });
-                                }
-                            },
-                        }
-                    );
-                    if (g !== gen.n) {
-                        // 该回合已被停止/取代(stopTurn 已发 chatDone)：只补记已消耗的 usage，不重复发完成帧
-                        await recordUsage(globalState, result.stats, result.time);
-                        return;
-                    }
-                    // 本轮 usage/计时已在 stream.ts 用官方模块(official/turn-stats.ts)算好，直接下发
-                    post({ type: 'chatDone', text: result.text, stats: result.stats, time: result.time, end: result.end, counts: result.counts });
+                        onQuestion: (q) => {
+                            if (g === gen.n) {
+                                post({
+                                    type: 'chatQuestion',
+                                    rpcId: q.rpcId,
+                                    sessionId: q.sessionId,
+                                    questions: q.questions,
+                                });
+                            }
+                        },
+                        // $events 流断了：该提问已无法应答，关掉弹窗（留着只会让用户点了报错）
+                        onQuestionClosed: (rpcId) => {
+                            if (g === gen.n) {
+                                post({ type: 'questionClosed', rpcId });
+                            }
+                        },
+                    });
+                    // 回合的渲染结果（正文/统计/计数）由宿主下发的「行」承载，这里只补记用量与刷新投影
                     await recordUsage(globalState, result.stats, result.time);
-                    void postChatInfo(webview); // 刷新官方统计/权限
+                    if (g === gen.n) {
+                        void postChatInfo(webview); // 刷新上游统计/权限
+                    }
                 } catch (e) {
+                    // 提交失败也要解除「进行中」：它只在收到 turn/end 时才会被清，
+                    // 而失败的提交根本不会有 turn/end（否则会一直显示「终止」）。
+                    dsh.endTurn();
                     if (g !== gen.n) {
                         return;
                     }
                     if (isNoWorkspace(e)) {
                         // 没有工作区：收尾本轮（error note）+ 引导选工作区，绝不静默建“未分组”会话
-                        post({ type: 'chatDone', end: { kind: 'error', message: '请先选择工作区，再开始对话' } });
+                        post({ type: 'chatError', message: '请先选择工作区，再开始对话', rpcId: typeof msg.rpcId === 'string' ? msg.rpcId : undefined });
                         void promptWorkspaceFirst('当前没有工作区，请先选择工作区再发送消息');
                         return;
                     }
-                    // 错误以“回合终止原因”呈现(end-note)，不把 '⚠ …' 塞进正文当内容
+                    // 错误以“回合终止原因”呈现(end-note)，不把 '⚠ …' 塞进正文当内容。
+                    // 走 `chatError` 而非 `chatDone`：这类失败发生在服务端**没有回合**的情况下，
+                    // 事件流里没有 turn/end、也没有对应的行，只能由这条交互帧把它们收尾
+                    // （旧通路退役后继续发 chatDone 会被页面静默丢弃 —— 既没有错误提示，输入区还卡在处理中）。
                     const message = e instanceof Error ? e.message : String(e);
-                    post({ type: 'chatDone', end: { kind: 'error', message } });
+                    post({ type: 'chatError', message, rpcId: typeof msg.rpcId === 'string' ? msg.rpcId : undefined });
                 }
             })();
         } else if (msg.type === 'cancel') {
             stopTurn();
+        } else if (msg.type === 'chatFork') {
+            // 从某条回答分叉（上游 session/fork）：建子会话 → 升号 → 切过去。
+            // **不禁用输入区**（busy:loading 会连「终止」一起挡）——分叉是后台动作，失败只提示。
+            void (async () => {
+                const source = dsh.getSessionId();
+                const atSeq = typeof msg.atSeq === 'number' ? msg.atSeq : undefined;
+                console.warn(`[dsh-fork] 收到分支请求 source=${source ?? '(无会话)'} atSeq=${String(atSeq)}`);
+                if (!source) {
+                    vscode.window.showWarningMessage('还没有会话可分支');
+                    return;
+                }
+                try {
+                    const child = await dsh.forkSession(source, atSeq);
+                    postToChats({ type: 'busy', kind: 'loading' });
+                    // 失败也要解除 loading（同上：本链没有 catch，会让界面卡在「深度求索中」）
+                    await dsh.restoreSession(child.sessionId).catch((e: unknown) => {
+                        postToChats({ type: 'busy', kind: null });
+                        throw e;
+                    });
+                    for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
+                        void postChatInfo(w);
+                    }
+                    postToChats({ type: 'busy', kind: null });
+                    // **必须给可见反馈**：子会话继承到切点为止的完整历史，所以对话区看起来**一模一样** ——
+                    // 不给提示的话，用户只会以为"点了没反应"。（上游不需要它是因为它的会话列表里会多出一行。）
+                    vscode.window.showInformationMessage(
+                        `已在新对话中分支${child.title === undefined ? '' : `：${child.title}`}` +
+                            '（子会话继承到该回合为止的历史，所以内容看起来相同）'
+                    );
+                } catch (e) {
+                    // 上游两条入口都**静默吞掉**分叉失败；这里至少给一次提示（否则用户点了没反应）
+                    vscode.window.showErrorMessage(`分支失败：${(e as Error).message}`);
+                }
+            })();
         } else if (msg.type === 'fileUploadReq') {
             // 文件上送：字节由宿主读并上传（webview 拿不到任意路径的字节）；成功/失败都回帧
             void (async () => {
@@ -771,6 +759,50 @@ function setupChatWebview(
         } else if (msg.type === 'copy') {
             void vscode.env.clipboard.writeText(msg.text ?? '');
             vscode.window.showInformationMessage('已复制');
+        } else if (msg.type === 'feedback') {
+            // 消息反馈（👍/👎）：只做 RPC 桥接。业务失败（冲突/超长）**不抛**，按 code 原样回给页面选文案。
+            void (async () => {
+                const sid = dsh.getSessionId();
+                if (!sid) {
+                    post({ type: 'feedbackState', errorCode: 'no-session' });
+                    return;
+                }
+                try {
+                    if (msg.op === 'list') {
+                        const items = await dsh.listFeedback(sid);
+                        post({ type: 'feedbackState', sessionId: sid, items, categories: [...FEEDBACK_CATEGORIES] });
+                        return;
+                    }
+                    const messageId = typeof msg.messageId === 'string' ? msg.messageId : '';
+                    const outcome = msg.op === 'rate'
+                        ? await dsh.putFeedback(
+                              sid,
+                              messageId,
+                              msg.rating === 'negative' ? 'negative' : 'positive',
+                              typeof msg.note === 'string' ? msg.note : undefined,
+                              typeof msg.category === 'string' ? (msg.category as FeedbackCategory) : undefined,
+                              typeof msg.ifVersion === 'string' ? msg.ifVersion : null
+                          )
+                        : await dsh.deleteFeedback(
+                              sid,
+                              messageId,
+                              typeof msg.ifVersion === 'string' ? msg.ifVersion : ''
+                          );
+                    // 不论成败都重读一次全表：冲突时页面拿到的就是**权威现值**（上游同：用回帧里的 current 对齐，
+                    // 不整表重取；这里表很小，重读一次比在页面维护版本更不容易出错）
+                    const items = await dsh.listFeedback(sid).catch(() => []);
+                    post({
+                        type: 'feedbackState',
+                        sessionId: sid,
+                        items,
+                        ...(outcome.ok ? {} : { errorCode: outcome.error.code ?? 'unknown' }),
+                        ...(outcome.ok && msg.op === 'rate' ? { recorded: true } : {}),
+                    });
+                } catch (e) {
+                    post({ type: 'feedbackState', sessionId: sid, errorCode: 'transport' });
+                    console.warn(`[dsh-feedback] ${msg.op} 失败：${(e as Error).message}`);
+                }
+            })();
         } else if (msg.type === 'approvalResponse') {
             void (async () => {
                 try {
@@ -790,14 +822,17 @@ function setupChatWebview(
             })();
         } else if (msg.type === 'questionCancel') {
             void (async () => {
+                // 关掉弹窗是**无论如何**都要做的第一步：它是本地 UI，不依赖这次取消是否送到服务端
+                post({ type: 'questionClosed', rpcId: msg.rpcId });
                 try {
-                    // dsh 接受"只取消该提问"：卡片移除，本轮 agent 继续，正常以 chatDone 结束
+                    // dsh 接受"只取消该提问"：卡片移除，本轮 agent 继续。
+                    // 返回 false = 该提问已不在挂起表里（已被处理 / 断流清过 / 网页端答过）——
+                    // **那不是错误**：提问已经有结论了，本地关掉即可，**不要**因此停掉整轮
+                    // （真机现象：先停止本轮 → 提问已被服务端 resolve → 再点关闭 → 误报「未找到」并把整轮又停一次）。
                     await dsh.cancelQuestion(msg.rpcId, msg.sessionId);
-                    post({ type: 'questionClosed', rpcId: msg.rpcId });
                 } catch (e) {
-                    // 旧版 dsh 网关会把 ok:false + code:'cancelled' 拒成 bad-response，提问既无法单独
-                    // 取消、本轮又一直挂着（webview 的停止按钮卡在 ■）→ 回退为整轮停止，避免 UI 卡死。
-                    post({ type: 'questionClosed', rpcId: msg.rpcId });
+                    // 只有**发送取消结果本身失败**（网关/网络）才需要回退：那时提问既没被取消、本轮还挂着，
+                    // 停掉整轮避免 UI 卡死。
                     vscode.window.showWarningMessage(
                         `未能单独取消提问（${(e as Error).message}），已改为停止本轮对话`
                     );
@@ -876,7 +911,7 @@ function setupChatWebview(
             const line = (msg.text ?? '').trim();
             const commandName = line.replace(/^\/+/, '').split(/[\s　]+/)[0] || '';
             void (async () => {
-                // /export（无参）：官方 web 命令本体只回一句提示，真实下载是 GET /api/session.export 的 ZIP。
+                // /export（无参）：上游 web 命令本体只回一句提示，真实下载是 GET /api/session.export 的 ZIP。
                 // 插件在这里直接拉该路由 → 用户选保存路径写文件，得到真实「下载面」；服务不支持该路由则回退命令文本回显。
                 if (commandName === 'export' && /^\/export\s*$/.test(line)) {
                     const dl = await chatInput.fetchSessionLogZip();
@@ -907,12 +942,12 @@ function setupChatWebview(
                         post({ type: 'slashResult', ok: false, command: 'export', message: dl.text });
                         return;
                     }
-                    // 本服务没有下载路由：与官方一致，仅把 /export 命令返回的提示文本显示到对话区
+                    // 本服务没有下载路由：与上游一致，仅把 /export 命令返回的提示文本显示到对话区
                     const fallback = await chatInput.runCommand('/export');
                     post({ type: 'slashResult', ok: fallback.ok, command: 'export', message: fallback.text });
                     return;
                 }
-                // 其它命令（含带参 /export foo，官方返回错误）：走 commands/execute 文本回显
+                // 其它命令（含带参 /export foo，上游返回错误）：走 commands/execute 文本回显
                 const res = await chatInput.runCommand(line);
                 post({ type: 'slashResult', ok: res.ok, command: commandName, message: res.text });
                 // 成功/失败结果均已随 slashResult 回给 webview，由 store 显示在对话区(不走 VSCode 通知)；
@@ -1077,7 +1112,7 @@ async function runDshTask(prompt: string, ctx: SelectionContext, mode: 'apply' |
 // ---------- 标题栏"工作区"面板 ----------
 
 type WsPick = vscode.QuickPickItem & {
-    action?: 'info' | 'ws' | 'wsnew' | 'session' | 'new';
+    action?: 'info' | 'ws' | 'wsnew' | 'session' | 'session-ungrouped' | 'wssessions-more' | 'new';
     workspaceId?: string;
     sessionId?: string;
     blank?: boolean;
@@ -1145,8 +1180,20 @@ async function openFileInEditor(p: string, line?: number, cwd?: string): Promise
 /** VS Code 内置图片预览支持的扩展名（这些必须走 `vscode.open`，不能被读成文本）。 */
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico']);
 
-/** 拉取某工作区的会话（供 QuickPick / webview dropdown 共用） */
+/**
+ * 「未分组」这一组的伪工作区标识（会话不属于任何工作区时归到这里）。
+ *
+ * 为什么需要：网页端本来就有这一组；侧栏若没有，那些会话在侧栏里**彻底够不着**（只能去网页端找）。
+ * 它没有工作区实体，所以从它打开会话时**不设当前工作区、也不做补登记**（就是"不属于任何工作区"）。
+ */
+const UNGROUPED_ID = '__ungrouped__';
+const UNGROUPED_NAME = '未分组';
+
+/** 拉取某工作区的会话（供 QuickPick / webview dropdown 共用）；未分组走另一条判据 */
 async function listWorkspaceSessionsOf(wsId: string): Promise<WsSessionRow[]> {
+    if (wsId === UNGROUPED_ID) {
+        return dsh.listUngroupedSessions() as Promise<WsSessionRow[]>;
+    }
     return dsh.listWorkspaceSessions(wsId) as Promise<WsSessionRow[]>;
 }
 
@@ -1164,8 +1211,9 @@ async function wsSwitchNew(wsId: string): Promise<void> {
     vscode.window.showInformationMessage('已切换工作区');
 }
 
-/** 把会话恢复到当前聊天（供 QuickPick / webview dropdown 共用；调用方负责关 UI） */
-async function wsRestore(wsId: string, sessionId: string, blank: boolean): Promise<void> {
+/** 把会话恢复到当前聊天（供 QuickPick / webview dropdown 共用；调用方负责关 UI）。
+ *  `wsId` 传 `undefined` = 这一组是「未分组」：**不设当前工作区、也不补登记**（它本来就不属于任何工作区）。 */
+async function wsRestore(wsId: string | undefined, sessionId: string, blank: boolean): Promise<void> {
     const target = await ensureChatWebview();
     if (!target) {
         throw new Error('聊天视图未就绪，请先打开侧边栏 DSH 面板');
@@ -1173,12 +1221,32 @@ async function wsRestore(wsId: string, sessionId: string, blank: boolean): Promi
     if (!(await waitChatReady(target))) {
         throw new Error('聊天页面尚未就绪，请稍后重试');
     }
-    dsh.setCurrentWorkspace(wsId);
+    if (wsId === undefined) {
+        dsh.setCurrentWorkspace(undefined);
+    } else {
+        dsh.setCurrentWorkspace(wsId);
+        // 侧栏里这个会话是「工作区成员 或 cwd 与该工作区一致」才出现的；后一种并没有登记进成员表，
+        // 网页端就仍显示「未分组」。用户既然从这个工作区点开了它，就把它补登记进该工作区，两边从此一致。
+        void dsh
+            .bindSessionToWorkspace(wsId, sessionId)
+            .then((bound) => {
+                if (bound) {
+                    console.log(`[dsh-ws] 会话已补登记进工作区 session=${sessionId} ws=${wsId}`);
+                }
+            })
+            .catch((e: unknown) => {
+                console.warn(`[dsh-ws] 会话补登记失败 session=${sessionId} ws=${wsId} error=${e instanceof Error ? e.message : String(e)}`);
+            });
+    }
     postToChats({ type: 'busy', kind: 'loading' }); // 恢复历史期间：composer 禁用 + 轻量占位
-    const messages = await dsh.restoreSession(sessionId);
+    // 抛错也要解除 loading：本函数**没有** catch，直接抛出去会让界面永远停在「深度求索中」
+    const messages = await dsh.restoreSession(sessionId).catch((e: unknown) => {
+        postToChats({ type: 'busy', kind: null });
+        throw e;
+    });
     console.warn(`[dsh-restore] session=${sessionId} messages=${messages.length}`);
     if (process.env['DSH_RAWLOG']) {
-        // 历史用量/计时一致性诊断：打印每条 assistant 消息当前拿到的官方字段
+        // 历史用量/计时一致性诊断：打印每条 assistant 消息当前拿到的上游字段
         for (const m of messages) {
             if (m.role !== 'assistant') {
                 continue;
@@ -1190,11 +1258,7 @@ async function wsRestore(wsId: string, sessionId: string, blank: boolean): Promi
             );
         }
     }
-    if (messages.length === 0 && !blank) {
-        vscode.window.showInformationMessage('已恢复会话，但 dsh 快照中没有返回可显示的历史消息');
-    }
-    postToChats({ type: 'clear' });
-    postToChats({ type: 'chatHistory', messages, sessionId });
+    // 历史**不再走页面重建**：行由宿主下发（上面的 restoreSession 已触发），页面整表替换即可。
     for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
         void postChatInfo(w);
     }
@@ -1265,6 +1329,51 @@ async function showWorkspacePicker(): Promise<void> {
 
     const currentId = (): string | undefined => dsh.getCurrentWorkspaceId();
 
+    /**
+     * 每个分组的会话显示上限与网页端一致（普通会话最多 5 条；空白会话不占额）：
+     * 超出的部分折成一行「展开其余 N 个会话」，展开态按分组记在本地。
+     */
+    const COLLAPSED_SESSION_LIMIT = 5;
+    const sessionsExpanded = new Set<string>();
+    /** 折叠视图：普通会话最多 5 条（空白会话不占额）。**与展开态无关** —— 溢出控件的条数由它算。 */
+    function collapsedPickSessions(sessions: WsSessionRow[]): WsSessionRow[] {
+        let ordinary = 0;
+        return sessions.filter((s) => {
+            if (s.blank) {
+                return true;
+            }
+            if (ordinary >= COLLAPSED_SESSION_LIMIT) {
+                return false;
+            }
+            ordinary += 1;
+            return true;
+        });
+    }
+    /** 实际列出的会话：展开态全列，否则折叠视图。 */
+    function shownPickSessions(id: string, sessions: WsSessionRow[]): WsSessionRow[] {
+        return sessionsExpanded.has(id) ? sessions : collapsedPickSessions(sessions);
+    }
+    /**
+     * 折叠时会被折起来的条数 —— 决定要不要出「展开其余 N 个会话 / 收起」这一行。
+     * **展开态也照算**：否则点开之后这一行就消失了，用户没有"收起"可点。
+     */
+    function pickSessionsHidden(sessions: WsSessionRow[]): number {
+        return sessions.length - collapsedPickSessions(sessions).length;
+    }
+    /** 溢出控件行（展开时显示「收起」，否则「展开其余 N 个会话」）。 */
+    function pickMoreRow(workspaceId: string, sessions: WsSessionRow[]): WsPick | undefined {
+        const hidden = pickSessionsHidden(sessions);
+        if (hidden === 0) {
+            return undefined;
+        }
+        return {
+            label: `    $(ellipsis) ${sessionsExpanded.has(workspaceId) ? '收起' : `展开其余 ${hidden} 个会话`}`,
+            action: 'wssessions-more',
+            workspaceId,
+            alwaysShow: true,
+        };
+    }
+
     function buildRows(): WsPick[] {
         const curId = currentId();
         const curWs = workspaces.find((w) => w.workspaceId === curId);
@@ -1303,7 +1412,7 @@ async function showWorkspacePicker(): Promise<void> {
             });
             const sessions = sessionCache.get(w.workspaceId);
             if (sessions) {
-                for (const s of sessions) {
+                for (const s of shownPickSessions(w.workspaceId, sessions)) {
                     rows.push({
                         // 当前会话标选中 + 描述「当前」，与自绘 dropdown 一致
                         label: `        ${s.current ? '$(check) ' : s.running ? '$(sync~spin) ' : '$(history) '}${s.title}`,
@@ -1314,6 +1423,41 @@ async function showWorkspacePicker(): Promise<void> {
                         blank: s.blank,
                         alwaysShow: true,
                     });
+                }
+                const more = pickMoreRow(w.workspaceId, sessions);
+                if (more) {
+                    rows.push(more);
+                }
+            }
+        }
+        // 「未分组」：不属于任何工作区的会话（与网页端同一组）。**与其他工作区同一种组样式**
+        // （同一个展开交互、同一个会话上限与溢出控件），位置在"新建工作区"之上。没有会话时不显示。
+        const ungrouped = sessionCache.get(UNGROUPED_ID);
+        if (ungrouped !== undefined && ungrouped.length > 0) {
+            const ungroupedOpen = expanded.has(UNGROUPED_ID);
+            rows.push({
+                label: `${ungroupedOpen ? '$(chevron-down)' : '$(chevron-right)'} ${
+                    curId === undefined ? '$(check) ' : ''
+                }${UNGROUPED_NAME}`,
+                description: curId === undefined ? '当前' : undefined,
+                action: 'ws',
+                workspaceId: UNGROUPED_ID,
+                alwaysShow: true,
+            });
+            if (ungroupedOpen) {
+                for (const s of shownPickSessions(UNGROUPED_ID, ungrouped)) {
+                    rows.push({
+                        label: `        ${s.current ? '$(check) ' : s.running ? '$(sync~spin) ' : '$(history) '}${s.title}`,
+                        description: s.current ? '当前' : s.running ? '运行中' : '恢复',
+                        action: 'session-ungrouped',
+                        sessionId: s.sessionId,
+                        blank: s.blank,
+                        alwaysShow: true,
+                    });
+                }
+                const more = pickMoreRow(UNGROUPED_ID, ungrouped);
+                if (more) {
+                    rows.push(more);
                 }
             }
         }
@@ -1350,6 +1494,12 @@ async function showWorkspacePicker(): Promise<void> {
         }
     };
 
+    // 「未分组」这一组**不做折叠**（它没有"新开会话"这种动作），所以打开选择器就先拉一次并重画
+    void (async () => {
+        await loadSessions(UNGROUPED_ID);
+        refresh();
+    })();
+
     pick.onDidChangeSelection(async (selection) => {
         const row = selection[0];
         if (!row?.action) {
@@ -1372,6 +1522,18 @@ async function showWorkspacePicker(): Promise<void> {
             } else if (row.action === 'session' && row.workspaceId && row.sessionId) {
                 await wsRestore(row.workspaceId, row.sessionId, row.blank === true);
                 close();
+            } else if (row.action === 'wssessions-more' && row.workspaceId) {
+                // 「展开其余 N 个会话 / 收起」：只切本地展开态，不重拉数据
+                if (sessionsExpanded.has(row.workspaceId)) {
+                    sessionsExpanded.delete(row.workspaceId);
+                } else {
+                    sessionsExpanded.add(row.workspaceId);
+                }
+                refresh();
+            } else if (row.action === 'session-ungrouped' && row.sessionId) {
+                // 未分组：不设当前工作区、不补登记（它本来就不属于任何工作区）
+                await wsRestore(undefined, row.sessionId, row.blank === true);
+                close();
             } else if (row.action === 'new') {
                 if (await wsCreateNew()) {
                     close();
@@ -1383,7 +1545,7 @@ async function showWorkspacePicker(): Promise<void> {
     });
 
     // items 先填再 show：sideX 等宿主对「show() 之后再写 items」的 QuickPick 可能不重绘列表
-    //（现象：只剩搜索框、下面无行）。官方 createQuickPick 用法即“先 items 后 show”。
+    //（现象：只剩搜索框、下面无行）。上游 createQuickPick 用法即“先 items 后 show”。
     // show() 之后的动态填行只发生在展开/懒加载路径（refresh），那时列表已挂到 DOM，安全。
     pick.items = buildRows();
     pick.show();
@@ -1405,6 +1567,14 @@ async function promptWorkspaceFirst(message: string): Promise<void> {
 // ---------- 激活入口（薄装配） ----------
 
 export function activate(context: vscode.ExtensionContext) {
+    // 让服务层能记住自起实例的端口/pid（随机端口下次才找得回来）
+    dsh.attachGlobalState(context.globalState);
+    // 端点端口变化 → 在途连接已由 DshService 重新指向；这里再把**本地网页代理**换到新端口并刷新内嵌面板。
+    // 只重绑插件这一侧的通道，不动服务端进程：侧栏 / 本地面板 / 外部浏览器共用同一个实例。
+    dsh.onEndpointChanged = () => {
+        void panel.rebindEndpoint();
+    };
+
     // 命令：打开 DSH 网页面板
     context.subscriptions.push(
         vscode.commands.registerCommand('dsh.open', async () => {
@@ -1561,10 +1731,13 @@ export function activate(context: vscode.ExtensionContext) {
                 }
                 try {
                     postToChats({ type: 'busy', kind: 'loading' });
-                    const messages = await dsh.restoreSession(sessionId);
+                    // 同 wsRestore：出错路径若不清 loading，界面会卡在「深度求索中」
+                    const messages = await dsh.restoreSession(sessionId).catch((e: unknown) => {
+                        postToChats({ type: 'busy', kind: null });
+                        throw e;
+                    });
                     console.warn(`[dsh-move] session=${sessionId} messages=${messages.length}`);
-                    postToChats({ type: 'clear' });
-                    postToChats({ type: 'chatHistory', messages, sessionId });
+                    // 同 wsRestore：行由宿主下发，页面整表替换
                     for (const w of new Set([chatTarget, chatPanel?.webview].filter((x): x is vscode.Webview => !!x))) {
                         void postChatInfo(w);
                     }

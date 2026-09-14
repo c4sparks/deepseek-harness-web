@@ -1,7 +1,7 @@
 // "@" 引用触发器：与 "/" 指令同套 trigger 框架的另一个 source（适配上游 0.1.5-rc.2）。
-// 行首或空白(含换行)后输入 @（或 @"…"）唤起「文件与文件夹 / 对话」候选，数据源与官方同名：
+// 行首或空白(含换行)后输入 @（或 @"…"）唤起「文件与文件夹 / 对话」候选，数据源与上游同名：
 //   fileReferences/list（返回 {path,kind}）、sessionReferenceResolver/candidates（返回含 mention）。
-// 选中后在光标处插入官方 mention 文本（发送时只是正文文本，dsh 宿主 pre-step 会解析会话/文件引用）：
+// 选中后在光标处插入上游 mention 文本（发送时只是正文文本，dsh 宿主 pre-step 会解析会话/文件引用）：
 //   文件/目录 @rel/path（含空白用 @"…"；目录补尾 /），会话 @[label](dsh-session:<b64url(id)>)
 // 命中即向宿主请求候选（store.requestAtList，最新查询 wins）。
 import type { TriggerDef, TriggerRow } from './useTrigger'
@@ -26,7 +26,7 @@ function tailName(path: string): string {
 export function atTrigger(store: ChatStore): TriggerDef {
   return {
     id: 'at',
-    // 官方触发语法：行首/空白后的 @ 或 @"（含换行）；光标位于 token 末尾
+    // 上游触发语法：行首/空白后的 @ 或 @"（含换行）；光标位于 token 末尾
     match(text, caret) {
       const prefix = text.slice(0, caret)
       const m = /(^|[\s　])(@(?:"([^"\n]*)|([^\s　]*)))$/.exec(prefix)
@@ -110,7 +110,7 @@ export function atTrigger(store: ChatStore): TriggerDef {
       store.addRef(kind, label, row.value ?? '@' + label)
     },
     drill(row, helpers) {
-      // 目录钻取（官方）：保留 '@dir/'，让菜单继续列其下一层；不关菜单
+      // 目录钻取（上游）：保留 '@dir/'，让菜单继续列其下一层；不关菜单
       if (row.kind !== 'directory') return false
       helpers.replace(row.value ?? '@')
       return true

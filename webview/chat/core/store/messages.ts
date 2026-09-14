@@ -1,36 +1,20 @@
-// 消息行模型切片：不可变 messages 列表、正文流式与过程归约、通知行与审批行。
+// 消息行模型切片：宿主下发的行（整表替换 + 乐观行认领）、通知行与审批行。
 // 行 key 计数器在本切片内（per-store），不跨 store 实例共享——key 只用于同一列表内的替换匹配
 // 与列表渲染 diff，各自从 1 计数即可。
 import { computed, signal } from '@preact/signals'
 import type { ChatHost } from '../host'
-import type { ViewActivity, ImageAttachment, LiveContext, AttachmentRef } from '../protocol'
-import { toolTitle, deriveToolSummary, formatMsgClock, turnStatusBadge } from '../format'
-import type { ChatRow, ChatStore, DshTurnProcessItem, RefChip } from './types'
+import type { ImageAttachment, AttachmentRef } from '../protocol'
+import { formatMsgClock } from '../format'
+import type { DshStreamRow } from '../../../../src/dsh/rows/types'
+import { toChatRows } from './host-rows'
+import type { ChatRow, ChatStore, RefChip } from './types'
 
 export interface MessagesSlice {
   store: Pick<ChatStore, 'messages' | 'view' | 'processing' | 'scrollPend' | 'showNotice' | 'answerApproval' | 'openFile'>
-  /** 过程事件落链（tool 调用与结果）。 */
-  activity(a: ViewActivity | undefined): void
-  /** 思考增量（同 step+index 续接为一段）。 */
-  reasoning(text: string, step?: number, index?: number): void
-  /** 上下文注入入链（instructions 形态跳过）。 */
-  contextRow(c: LiveContext | undefined, time?: number): void
-  /** 正文增量；replace 为真时以整段覆盖当前回答（撤回被放弃尝试的瞬态增量）。 */
-  chunk(delta: string, replace?: boolean): void
-  /** 回合收尾：时间/全文/终态角标/用量/counts，并收敛仍 running 的工具。 */
-  finish(
-    stats?: Record<string, unknown>,
-    time?: number,
-    text?: string,
-    end?: { kind?: string; message?: string },
-    counts?: { toolCallCount?: number; messageCount?: number; subagentCount?: number }
-  ): void
   /** 追加一条审批行。 */
   pushApproval(approvalId: string, description: string, toolName?: string): void
-  /** 追加一条用户行（历史恢复时传入事件自带时刻）。 */
-  addUser(text: string, imgs?: ImageAttachment[], time?: number, refs?: Array<{ kind: RefChip['kind']; label: string }>, imageRefs?: AttachmentRef[], files?: Array<{ name: string; path?: string; bytes?: number }>): void
-  /** 插入一条系统提示词行（上游 `system-prompt`）：落在最近一条用户行之前，即该回合的开头。 */
-  systemLine(text: string): void
+  /** 追加一条用户行（本地乐观行：发出即显示，等宿主行回显后由提交标识认领）。 */
+  addUser(text: string, imgs?: ImageAttachment[], time?: number, refs?: Array<{ kind: RefChip['kind']; label: string }>, imageRefs?: AttachmentRef[], files?: Array<{ name: string; path?: string; bytes?: number }>, rpcId?: string): void
   /** 开启（或复用）当前进行中的 assistant 行。 */
   beginAssistant(prompt?: string): void
   /** 取一个列表内唯一行 key。 */
@@ -43,6 +27,12 @@ export interface MessagesSlice {
   bumpScroll(): void
   /** 清空消息与进行中标记；不动 scrollPend 与 key 计数器。 */
   resetRows(): void
+  /** 接受宿主下发的行（阶段 4）：映射后写入列表，并保留本地尚未被回显认领的乐观行。
+   *  `sessionId` 用于判归属：会话一变，上一个会话的乐观行必须丢弃（否则 processing 恒真）。 */
+  applyHostRows(rows: unknown, sessionId?: string, turnActive?: boolean): void
+  /** 本次提交**失败**（宿主 `chatError`）：把该标识对应的本地乐观行标为「未提交成功」，
+   *  并把仍挂着的回答行定稿成错误。不这么做的话，它会一直被当成「在等回显」→ `processing` 恒真。 */
+  failSubmission(rpcId: string | undefined, message: string): void
 }
 
 /** 本地时刻串（实时上送用；历史恢复走事件自带时刻）。 */
@@ -54,6 +44,10 @@ export function createMessages(host: ChatHost): MessagesSlice {
   const processing = signal(false)
   const scrollPend = signal(0)
   let rowKey = 1
+  /** 当前列表属于哪个会话：会话一变就丢弃本地乐观行（见 applyHostRows） */
+  let rowsSessionId: string | undefined
+  /** 上一次宿主下发里出现过的提交标识：判「这条本地行是否已被服务端回显认领」 */
+  let claimedRpcIds = new Set<string>()
 
   // ---------- 不可变列表更新 ----------
   const replace = (key: number, next: ChatRow): void => {
@@ -78,25 +72,13 @@ export function createMessages(host: ChatHost): MessagesSlice {
   // 当前"流式进行中"的 assistant 行(至多一个);无则 undefined
   const activeAssistantIndex = (): number =>
     messages.value.findIndex((r) => r.kind === 'assistant' && !r.done)
-  /** 含该 callId 的 assistant 行（**不要求未定稿**）：补记类事件回落到已存在的行时用。
-   *  不能退回 ensureAssistant()——它找不到活跃行会**新建一个空行**，等于平白多出一行。 */
-  const assistantRowOfCall = (callId: string | undefined): ChatRow | undefined => {
-    if (!callId) return undefined
-    for (let i = messages.value.length - 1; i >= 0; i -= 1) {
-      const r = messages.value[i]
-      if (r.kind === 'assistant' && r.chain.some((c) => c.kind === 'tool' && c.callId === callId)) {
-        return r
-      }
-    }
-    return undefined
-  }
   const ensureAssistant = (prompt = ''): ChatRow | undefined => {
     let idx = activeAssistantIndex()
     if (idx === -1) {
       push({
         kind: 'assistant',
         key: rowKey++,
-        time: '', // 回答行的真实时刻由 chatDone 携带的事件时间填充,此处不伪造
+        time: '', // 真实时刻由宿主的行带来（本行是本地占位，不伪造时刻）
         done: false,
         prompt,
         text: '',
@@ -116,182 +98,147 @@ export function createMessages(host: ChatHost): MessagesSlice {
   }
 
   // ---------- 消息流动作(本地渲染) ----------
-  function addUser(textMsg: string, imgs: ImageAttachment[] = [], time?: number, refs?: Array<{ kind: RefChip['kind']; label: string }>, imageRefs?: AttachmentRef[], files?: Array<{ name: string; path?: string; bytes?: number }>): void {
+  function addUser(textMsg: string, imgs: ImageAttachment[] = [], time?: number, refs?: Array<{ kind: RefChip['kind']; label: string }>, imageRefs?: AttachmentRef[], files?: Array<{ name: string; path?: string; bytes?: number }>, rpcId?: string): void {
     // 实时本地上送用本地时刻;恢复历史时传入事件自带时间戳,不覆盖为"现在"
-    push({ kind: 'user', key: rowKey++, text: textMsg, images: imgs, time: time !== undefined ? formatMsgClock(time) : nowTime(), refs, ...(imageRefs && imageRefs.length > 0 ? { imageRefs } : {}), ...(files && files.length > 0 ? { files } : {}) })
+    push({ kind: 'user', key: rowKey++, text: textMsg, images: imgs, time: time !== undefined ? formatMsgClock(time) : nowTime(), refs, ...(imageRefs && imageRefs.length > 0 ? { imageRefs } : {}), ...(files && files.length > 0 ? { files } : {}), ...(rpcId !== undefined ? { rpcId } : {}) })
   }
-  /** 系统提示词行：上游把它锚在该回合可见消息序列的开头（用户提问之前），
-   *  而该事件到达时用户行已在列表里 → 回插到最近一条用户行之前。 */
-  function systemLine(text: string): void {
-    if (!text) return
-    const rows = messages.value
-    let at = -1
-    for (let i = rows.length - 1; i >= 0; i--) {
-      if (rows[i].kind === 'user') { at = i; break }
+  /**
+   * 接受宿主下发的行（阶段 4，见 docs/design/08 §11）：**整表替换** —— 宿主是行列表的唯一权威。
+   * 只有一种例外：本地已出、但尚未被回显认领的**乐观行**要留住（否则刚发出去的消息会一闪而没）。
+   * 认领判定用提交标识：宿主行里已有同标识 → 已被认领；没有 → 还没回显，保留在末尾。
+   */
+  function applyHostRows(rows: unknown, sessionId?: string, turnActive?: boolean): void {
+    // 会话变了 → 列表里那些「本地已出、尚未被回显认领」的乐观行属于**上一个会话**，必须丢掉：
+    // 留着会让 pending 恒非空 → processing 恒真（一直「深度求索中」，停止按钮还对着别人的行）。
+    // 上游的做法更彻底（乐观态挂在**会话**上、不混进时间线），这里先按会话归属把它清掉。
+    if (sessionId !== undefined) {
+      // 只在**确实换过会话**时丢弃：首次还没有归属，不算「换会话」
+      // （否则页面刚打开就发消息的话，第一次下发会把那条乐观行清掉）。
+      if (rowsSessionId !== undefined && rowsSessionId !== sessionId) {
+        messages.value = []
+        processing.value = false
+      }
+      rowsSessionId = sessionId
     }
-    const row: ChatRow = { kind: 'sysprompt', key: rowKey++, text }
-    messages.value = at === -1 ? [...rows, row] : [...rows.slice(0, at), row, ...rows.slice(at)]
+    const host = toChatRows(Array.isArray(rows) ? (rows as DshStreamRow[]) : [])
+    const claimed = new Set(
+      host
+        .filter((r): r is Extract<ChatRow, { kind: 'user' }> => r.kind === 'user')
+        .map((r) => r.rpcId)
+        .filter((id): id is string => id !== undefined)
+    )
+    claimedRpcIds = claimed
+    // 认领时把**本地行独有**的附件信息并回宿主行：内联图（base64）与文件的**本地路径**
+    // （宿主事件里只有附件引用、名字与字节数，路径点不开）。不回填则「发图 / 发文件」后这两样立刻消失。
+    const localByRpc = new Map<string, Extract<ChatRow, { kind: 'user' }>>()
+    for (const r of messages.value) {
+      if (r.kind === 'user' && r.rpcId !== undefined) localByRpc.set(r.rpcId, r)
+    }
+    const merged = host.map((r): ChatRow => {
+      if (r.kind !== 'user' || r.rpcId === undefined) return r
+      const local = localByRpc.get(r.rpcId)
+      if (local === undefined) return r
+      return {
+        ...r,
+        ...(local.images.length > 0 ? { images: local.images } : {}),
+        ...(local.files !== undefined ? { files: local.files } : {}),
+        ...(local.refs !== undefined ? { refs: local.refs } : {}),
+      }
+    })
+    const pending = messages.value.filter(
+      (r): r is Extract<ChatRow, { kind: 'user' }> =>
+        r.kind === 'user' && r.rpcId !== undefined && !claimed.has(r.rpcId)
+    )
+    /**
+     * 本地乐观行的**落位**：插到本轮未定稿的回答行**之前**，而不是一律追加到末尾。
+     *
+     * 为什么：这条路只在「回显还没到」或「回显永远不会到」时才有行可放。
+     * 一律追加到末尾的话，一旦回显没来（丢帧，或提交与回显之间出过错），这条提问就会留在列表最后 ——
+     * **看起来就是「回答在上面、我发的问题在下面」**（真机现象）。
+     * 插到本轮回答行之前，「提问 → 回答」的顺序在任何情况下都成立；宿主真没这一行时它也仍在对话里可见。
+     * 往回答行**之后**找是取最靠下的那条未定稿行，保证插在当前这一轮而不是更早的残留行旁边。
+     */
+    let openAssistantAt = -1
+    for (let i = merged.length - 1; i >= 0; i -= 1) {
+      const row = merged[i]
+      if (row !== undefined && row.kind === 'assistant' && !row.done) {
+        openAssistantAt = i
+        break
+      }
+    }
+    /**
+     * 兜底去重（**只在标识认领没生效时才会用到**）：宿主已经有一条**同文案**的用户行，
+     * 就说明本地这条是重复的 —— 丢掉它，而不是继续贴在末尾。
+     *
+     * 为什么需要：认领靠提交标识配对，一旦配不上（回显没带标识、或标识不一致），
+     * 本地这条既不会被认领、又不该留在列表里 —— 留着就会出现在本轮回答**下面**
+     * （真机现象：回答在上面、我发的问题在下面）。宿主那条位置本来就是对的。
+     *
+     * 代价：同一文案连发两次时，第二条在回显到达前会短暂消失（随之由宿主行补上）；
+     * 这比"永久错位"轻。**这是兜底**，标识配对正常时它一次都不会触发。
+     */
+    const hostUserTexts = new Map<string, number>()
+    for (const r of merged) {
+      if (r.kind === 'user') hostUserTexts.set(r.text, (hostUserTexts.get(r.text) ?? 0) + 1)
+    }
+    const pendingKept = pending.filter((r) => {
+      const seen = hostUserTexts.get(r.text) ?? 0
+      if (seen === 0) return true
+      hostUserTexts.set(r.text, seen - 1)
+      console.warn(`[chat] 本地行未被标识认领，按同文案去重（宿主已有该消息，位置以宿主为准）`)
+      return false
+    })
+    messages.value =
+      openAssistantAt === -1
+        ? [...merged, ...pendingKept]
+        : [...merged.slice(0, openAssistantAt), ...pendingKept, ...merged.slice(openAssistantAt)]
+    // 「处理中」三个来源：本地还有**在等回显**的乐观行 / **宿主说本轮在跑** / 最后一条回答行尚未定稿。
+    // **不能**看「末行」：用户消息回显后、回答行还没建的一瞬末行是用户行，
+    // 按末行判会把处理中算成 false —— 按钮中途变回「发送」并禁用（真机：停止点不动）。
+    // 提交失败的行（failed）留在列表里但**不算在等**：它永远不会被回显认领。
+    const waiting = pendingKept.filter((r) => r.failed !== true)
+    const lastAssistant = [...messages.value].reverse().find((r) => r.kind === 'assistant')
+    processing.value =
+      waiting.length > 0 || turnActive === true || (lastAssistant !== undefined && !lastAssistant.done)
   }
+
+  /**
+   * 本次提交失败：本地乐观行标 `failed`（留作历史，但不再算「在等回显」），仍挂着的回答行定稿成错误。
+   * 这是**本地**失败（没工作区 / 服务不可用 / RPC 报错），服务端根本没有这一回合 ——
+   * 所以事件流里不会有 turn/end，行的 `endMsg` 只能由这里写进去（与旧通路的 `chatDone(end=error)` 同口径）。
+   */
+  function failSubmission(rpcId: string | undefined, msgText: string): void {
+    let hit = false
+    messages.value = messages.value.map((r): ChatRow => {
+      if (r.kind !== 'user' || r.failed === true) return r
+      // **只标还没被服务端回显认领的行**：已经认领的说明消息确实送到了，它不该被标成「未提交成功」
+      if (r.rpcId === undefined || claimedRpcIds.has(r.rpcId)) return r
+      // 没有标识时（宿主没带上）退化为「把所有还没回显的本地行都标掉」，宁可多标也不能留下卡住的
+      if (rpcId !== undefined && r.rpcId !== rpcId) return r
+      hit = true
+      return { ...r, failed: true }
+    })
+    const idx = activeAssistantIndex()
+    if (idx !== -1) {
+      const row = messages.value[idx]
+      if (row.kind === 'assistant') {
+        replace(row.key, {
+          ...row,
+          done: true,
+          // 本地失败没有上游 reason.kind；角标沿用「错误」这一档，与 turn/end 的 error 同形
+          status: 'error',
+          endMsg: msgText || row.endMsg,
+          bodyStarted: true,
+        })
+        hit = true
+      }
+    }
+    if (!hit) showNotice(msgText)
+    processing.value = false
+  }
+
   function beginAssistant(prompt = ''): void {
     ensureAssistant(prompt)
-  }
-  /** 追加一条过程动作到当前 assistant 行链尾。 */
-  const pushChain = (row: Extract<ChatRow, { kind: 'assistant' }>, item: DshTurnProcessItem): void => {
-    replace(row.key, { ...row, chain: [...row.chain, item] })
-  }
-  function activity(a: ViewActivity | undefined): void {
-    if (!a) return
-    // 工具结果是**补记数据**：停止之后服务端仍会补发，而它要落到的行往往已经定稿
-    // （停止时已发完成帧）。所以先按 callId 回溯**已存在**的行，找不到才退回活跃行。
-    const row = (a.type === 'toolDone' ? assistantRowOfCall(a.callId) : undefined) ?? ensureAssistant()
-    if (!row || row.kind !== 'assistant') return
-    if (a.type === 'tool') {
-      // 追加一条工具调用：raw name + 标题 + 参数摘要；流式中 status running，toolDone 到达后置 ok/error
-      const name = a.tool ?? a.name ?? ''
-      if (!name) return
-      pushChain(row, {
-        kind: 'tool',
-        key: rowKey++,
-        step: a.step,
-        callId: a.callId,
-        name,
-        title: toolTitle(name),
-        summary: deriveToolSummary(a.argsRaw, name),
-        argsRaw: a.argsRaw,
-        status: 'running',
-      })
-    } else if (a.type === 'toolDone') {
-      // 按 callId 精确落位；无 callId 时回落标记该 step 的最后一个 running（官方每步工具收敛）
-      let matched = false
-      const chain = row.chain.map((c): DshTurnProcessItem => {
-        if (c.kind !== 'tool' || c.status !== 'running') return c
-        if (matched) return c
-        const hit = (a.callId && c.callId === a.callId) || (!a.callId && !c.callId && c.step === a.step)
-        if (!hit) return c
-        matched = true
-        return {
-          ...c,
-          // 终态由宿主判好传下来（isError + code 特例，见 official/tool-status.ts）。
-          // 宿主在 toolDone 帧必带 status；万一缺失就按「未失败」处理——
-          // **绝不能**回退成「有 error 即失败」，那正是 ASK_CANCELLED 被标红的根因。
-          status: (a.status ?? 'ok') as 'ok' | 'error' | 'stopped',
-          error: a.error,
-          output: a.output ?? c.output,
-          exitCode: a.exitCode ?? c.exitCode,
-          signal: a.signal ?? c.signal,
-          meta: a.meta ?? c.meta,
-          blocks: a.blocks ?? c.blocks,
-        }
-      })
-      replace(row.key, { ...row, chain })
-    }
-    // type 'step'：无需额外动作——reasoning/tool 已按事件顺序落链
-  }
-  /** 把一次上下文注入并入当前 assistant 的过程链（与思考/工具同一行链，折叠时仅在展开可见）。
-   *  系统提示词(agent-instructions, form==='instructions')走左上角常驻入口，不入链（否则只含它的链展开为空）。 */
-  function contextRow(c: LiveContext | undefined, time?: number): void {
-    void time
-    if (!c) return
-    if (c.form === 'instructions') return
-    const row = ensureAssistant()
-    if (!row || row.kind !== 'assistant') return
-    pushChain(row, {
-      kind: 'context',
-      key: rowKey++,
-      content: c.content,
-      source: c.source,
-      provenance: c.provenance,
-      form: c.form,
-    })
-  }
-  function reasoning(rText: string, step?: number, index?: number): void {
-    if (!rText) return
-    const row = ensureAssistant()
-    if (!row || row.kind !== 'assistant') return
-    const chain = row.chain
-    const tail = chain[chain.length - 1]
-    // 同一段(step+index)持续追加；否则开新的 reasoning 段（每段=一次模型推理，官方按块分行）
-    const same =
-      tail !== undefined &&
-      tail.kind === 'reasoning' &&
-      tail.step === step &&
-      (index === undefined || tail.index === index || tail.index === undefined)
-    const next = same
-      ? chain.map((c, i): DshTurnProcessItem => (i === chain.length - 1 && c.kind === 'reasoning' ? { ...c, text: c.text + rText } : c))
-      : [...chain, { kind: 'reasoning' as const, key: rowKey++, step, index, text: rText }]
-    replace(row.key, { ...row, chain: next })
-  }
-  function chunk(delta: string, replaceText?: boolean): void {
-    const idx = activeAssistantIndex()
-    if (idx === -1) {
-      push({
-        kind: 'assistant',
-        key: rowKey++,
-        time: '',
-        done: false,
-        prompt: '',
-        text: delta,
-        stats: '',
-        chain: [],
-        counts: { toolCallCount: 0, messageCount: 0, subagentCount: 0 },
-        bodyStarted: delta !== '',
-      })
-      return
-    }
-    const row = messages.value[idx]
-    if (row.kind === 'assistant') {
-      // 正文开始 = 过程定稿：链允许自动收起（组件据 bodyStarted/done 决定折叠）
-      const text = replaceText ? delta : row.text + delta
-      replace(row.key, { ...row, text, bodyStarted: row.bodyStarted || text !== '' })
-    }
-  }
-  function finish(
-    stats?: Record<string, unknown>,
-    time?: number,
-    text?: string,
-    end?: { kind?: string; message?: string },
-    counts?: { toolCallCount?: number; messageCount?: number; subagentCount?: number }
-  ): void {
-    const idx = activeAssistantIndex()
-    if (idx === -1) return
-    const row = messages.value[idx]
-    if (row.kind !== 'assistant') return
-    // time 取 chatDone 里该回答事件的自带时间戳(完成时刻),非本地伪造;
-    // text 若带(chatDone 的 assistant/message 全文),以 API 整条消息为准覆盖流式拼接;
-    // end = turn/end 非正常终止原因 → 本地化提示,正常完成则不显示
-    const rowTime = time !== undefined ? formatMsgClock(time) : row.time
-    const rowText = typeof text === 'string' && text !== '' ? text : row.text
-    // 所有非正常终止(停止/中断/出错/超长/阻塞) → 右下角角标：直接回显官方 reason.kind 原值
-    const statusBadge = turnStatusBadge(end?.kind) || undefined
-    // error 时把服务端返回的原始错误消息附上（不翻译）
-    const endMsg = end?.kind === 'error' && end?.message ? end.message : ''
-    // 收敛仍 running 的工具：该调用所在回合已关闭而它仍没有结果 → **一律**视为「被中断」。
-    // 上游在 step/turn closed 且该调用无结果时合成一份等价结果（content 空、isError、
-    // error.code='interrupted'），再由该码映射成 stopped —— **与 turn 的结束原因无关**：
-    // 正常 completed 也不会让「缺结果的调用」变成 ok。
-    const chain = row.chain.map((c): DshTurnProcessItem =>
-      c.kind === 'tool' && c.status === 'running'
-        ? { ...c, status: 'stopped' as const, error: c.error ?? 'interrupted' }
-        : c
-    )
-    replace(row.key, {
-      ...row,
-      chain,
-      done: true,
-      time: rowTime,
-      text: rowText,
-      endMsg: endMsg || undefined,
-      status: statusBadge,
-      stats: '', // 用量/用时已由图标+弹窗呈现，不再生成独立脚注文本
-      usageRaw: stats ? { ...stats } : undefined,
-      counts: {
-        toolCallCount: counts?.toolCallCount ?? row.counts.toolCallCount,
-        messageCount: counts?.messageCount ?? row.counts.messageCount,
-        subagentCount: counts?.subagentCount ?? row.counts.subagentCount,
-      },
-      bodyStarted: true,
-    })
-    processing.value = false
   }
 
   // ---------- 审批 ----------
@@ -316,14 +263,10 @@ export function createMessages(host: ChatHost): MessagesSlice {
   return {
     store: { messages, view, processing, scrollPend, showNotice, answerApproval, openFile },
     openFile,
-    activity,
-    reasoning,
-    contextRow,
-    chunk,
-    finish,
+    applyHostRows,
+    failSubmission,
     pushApproval,
     addUser,
-    systemLine,
     beginAssistant,
     nextKey,
     push,

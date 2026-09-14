@@ -15,8 +15,7 @@ export function createPrefs(): PrefsSlice {
   const transcriptView = signal<'normal' | 'compact'>('compact')
 
   function apply(next: 'normal' | 'compact' | undefined): void {
-    if (next === undefined) return
-    transcriptView.value = next
+    if (next !== undefined) transcriptView.value = next
   }
 
   return { store: { transcriptView }, apply }

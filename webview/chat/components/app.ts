@@ -17,6 +17,10 @@ import { slashTrigger } from '../core/trigger/slash'
 import { atTrigger } from '../core/trigger/at'
 import { MessageList } from './message/MessageList'
 import { QuestionDialog } from './message/QuestionDialog'
+import { FeedbackDialog } from './message/FeedbackDialog'
+import { FeedbackToast } from './FeedbackToast'
+import { TodoCard } from './TodoCard'
+import { StatsCards } from './StatsCards'
 
 // goal chip 的阶段中文标签（与上游 GoalPhase 对应；complete 时不显示 chip）
 const GOAL_PHASE_LABEL: Record<string, string> = {
@@ -437,6 +441,7 @@ function Composer({ store }: { store: ChatStore }) {
         </div>`
       : null}
     <${AttachmentBar} store=${store} />
+    <${TodoCard} todos=${store.todos.value} />
     <div id="inputbox">
       ${store.refs.value.length > 0
         ? html`<div id="refRow" ref=${refRowRef}>${store.refs.value.map(
@@ -516,11 +521,6 @@ function Composer({ store }: { store: ChatStore }) {
   </div>`
 }
 
-function Statsbar({ store }: { store: ChatStore }) {
-  const line = store.statsLine.value
-  return html`<div id="statsbar" title=${line.title}>${line.text}</div>`
-}
-
 // ---------------- 弹窗 / 标题栏 静态壳(命令式子树) ----------------
 function ModalShell() {
   return html`<div id="dshModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="dshModalTitle">
@@ -570,8 +570,10 @@ function ChatApp({ store }: { store: ChatStore }) {
     <${Welcome} store=${store} />
     <${MessageList} store=${store} />
     <${QuestionDialog} key=${store.pendingQuestion.value?.rpcId ?? 'none'} store=${store} />
+    <${FeedbackDialog} store=${store} />
+    <${FeedbackToast} store=${store} />
     <${Composer} store=${store} />
-    <${Statsbar} store=${store} />
+    <${StatsCards} store=${store} />
     ${ModalShell()}`
 }
 

@@ -12,6 +12,14 @@
   /* 明细容器：行距只由各行自身的上下 margin 决定（不设 gap），
      过程行之间 = 2 + 2 = 4px，折叠头到首行 = margin-top 2 + 2 = 4px，链内统一 4px。 */
   .chain-detail { margin-top: 2px; display: flex; flex-direction: column; }
+  /* 非回答步的输出文本（过程文本）：上游是独立的回答节点，插件一回合只开一条行 → 放进过程链显示。
+     用正文色与正常行高，避免它被当成「次要信息」而看不出那是模型当时说的话。 */
+  .chain-proc-text {
+    white-space: pre-wrap; word-break: break-word;
+    padding: 3px 8px; margin: 1px 0;
+    color: var(--vscode-foreground, #ddd);
+    font-size: 12px; line-height: 1.5;
+  }
   /* 思考全文框：全文保留，截断只用 max-height+渐隐遮罩（peek/live/open，不删 DOM 文本） */
   .chain-reason {
     position: relative; margin: 2px 2px; padding: 2px 8px;
@@ -105,6 +113,15 @@
   }
   .chain-row-preview.chain-file-link:hover, .chain-row-preview.chain-file-link:focus-visible {
     border-bottom-color: currentColor;
+  }
+  /* 虚线的**长度只跟路径一样**：收起行摘要默认是 `flex: 1 1 auto`（占满标签后的剩余宽度，方便省略号），
+     而虚线画在这个盒子的 border 上 —— 撑满行尾就成了一整行的虚线，很难看。
+     这里让它**按内容宽度**排（`flex-basis: auto`）：短路径 → 线随字宽；长路径 → 仍按 max-width 收缩、
+     走省略号截断，线跟到截断处，不会拉到行尾。
+     选择器多一层 `.chain-row-head` 是为了盖住后面那两条同优先级的 `flex: 1 1 auto`（源码顺序在它们之前）。 */
+  .chain-row-head .chain-row-preview.chain-file-link {
+    flex: 0 1 auto;
+    max-width: 100%;
   }
   /* 真失败行（isError）的摘要位装着结果文本首行 → 上行错误色（上游 ToolRow `.errorSummary` 同义）。
      注意与行首红点不同源：这条只在 isError 时挂，非零退出的行仍是描述色。 */

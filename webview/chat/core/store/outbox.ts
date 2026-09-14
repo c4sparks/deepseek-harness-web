@@ -1,8 +1,7 @@
-// 发送切片（用户发起的发送动作）：发送、建议、重新生成，以及目录到达后对被挂起「/」行的裁决。
+// 发送切片（用户发起的动作）：发送、建议、从此处分叉，以及目录到达后对被挂起「/」行的裁决。
 // 这组动作只读写既有切片的信号，不自持状态；依赖由装配层注入。
 import type { ChatHost } from '../host'
 import { fileLabels } from '../file-labels'
-import type { ImageAttachment } from '../protocol'
 import type { ChatStore } from './types'
 import type { ComposerSlice } from './composer'
 import type { CatalogsSlice } from './catalogs'
@@ -16,7 +15,7 @@ export interface OutboxDeps {
 }
 
 export interface OutboxSlice {
-  store: Pick<ChatStore, 'send' | 'suggestion' | 'regenerate'>
+  store: Pick<ChatStore, 'send' | 'suggestion' | 'forkAt'>
   /** 目录到达后裁决被挂起的「/」行（由归约器在 slashCatalog 分支调用）。 */
   resolvePendingSlash(): void
 }
@@ -50,7 +49,7 @@ export function createOutbox(deps: OutboxDeps): OutboxSlice {
         requestSlashList()
         return
       }
-      // cat 已到但首词未命中(技能/未知斜杠 token)：落回普通发送(技能走 chatSend、未知 token 走消息，与官方一致)
+      // cat 已到但首词未命中(技能/未知斜杠 token)：落回普通发送(技能走 chatSend、未知 token 走消息，与上游一致)
     }
     // 文件走「文件上送」：必须全部就绪才允许发送（canSend 也挡，这里是兜底）
     const notReady = attach.find((a) => a.state !== 'ready')
@@ -65,14 +64,17 @@ export function createOutbox(deps: OutboxDeps): OutboxSlice {
     const refSnap = refs.value.map((r) => ({ kind: r.kind, label: r.label }))
     // 用户主动发送：即使滚动条在上面也强制滚到底看新内容（流式中自己翻上去则不受影响）
     messages.bumpScroll()
-    messages.addUser(display, imgs, undefined, refSnap.length ? refSnap : undefined, undefined, files.length > 0 ? files : undefined)
+    // 提交标识：由本面板 mint，一路带到 session/prompt 的 requestId；
+    // 服务端回显 user/message 时会带回同一个值，据它认领本地这一行（避免出现两行）
+    const rpcId = crypto.randomUUID()
+    messages.addUser(display, imgs, undefined, refSnap.length ? refSnap : undefined, undefined, files.length > 0 ? files : undefined, rpcId)
     attachments.value = []
     images.value = []
     refs.value = []
     text.value = ''
     processing.value = true
     messages.beginAssistant(prompt) // 立即出现"思考中…"行(与 setProcessing(true) 行为一致)
-    host.post({ type: 'chatSend', text: prompt, images: imgs, ...(files.length > 0 ? { files } : {}) })
+    host.post({ type: 'chatSend', text: prompt, images: imgs, ...(files.length > 0 ? { files } : {}), rpcId })
   }
 
   /** 目录到达后裁决被挂起的「/」行：命中命令→执行；未命中→按普通消息发出(仅当用户没改写输入)。 */
@@ -106,14 +108,13 @@ export function createOutbox(deps: OutboxDeps): OutboxSlice {
     host.post({ type: 'chatSend', text: p })
   }
 
-  function regenerate(p: string, imgs?: ImageAttachment[]): void {
-    if (!p || processing.value) return
-    processing.value = true
-    messages.bumpScroll()
-    messages.beginAssistant(p)
-    // user 行带图时重生成保留原图（assistant 行重生成传 text-only，images 为空数组）
-    host.post({ type: 'chatSend', text: p, images: imgs ?? [] })
+  /**
+   * 从某条回答分叉出新会话（上游 `session/fork`）。这里只上报锚点序号 ——
+   * **建子会话、升号、切过去都在宿主**（只有宿主知道当前会话与工作区）。
+   */
+  function forkAt(seq: number): void {
+    host.post({ type: 'chatFork', atSeq: seq })
   }
 
-  return { store: { send, suggestion, regenerate }, resolvePendingSlash }
+  return { store: { send, suggestion, forkAt }, resolvePendingSlash }
 }

@@ -61,8 +61,10 @@ async function doRead(): Promise<DshTranscriptView | undefined> {
         return undefined;
     }
     const ns = value?.namespaces?.find((item) => item?.ns === TRANSCRIPT_VIEW_NS);
-    // 优先生效值，回退用户段；两者都没有 = 用户没设过，按上游默认 compact
-    cached = normalize(ns?.value?.['transcriptView'] ?? ns?.user?.['transcriptView']);
+    // 读 **`user` 段**（用户层），不读 `value`（schema 解析后的生效值）。
+    // 实测：两段在「用户改过设置」时都会跟着变（双向验过 normal ↔ compact）；
+    // 取用户层是因为它离「用户选了什么」最近，而 `value` 还叠着解析层的默认。
+    cached = normalize(ns?.user?.['transcriptView']);
     if (cached !== notified) {
         notified = cached;
         for (const cb of subscribers) {

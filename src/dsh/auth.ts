@@ -28,8 +28,31 @@ export interface DshEndpoint {
     authUrl?: string;
 }
 let currentEndpoint: DshEndpoint = { port: DEFAULT_DSH_PORT };
+/**
+ * 端点**端口**变化时的订阅者。
+ *
+ * 为什么要广播：在途的 mux 流（`session/follow`、`$events`）与本地网页代理都是**开的时候**取一次端点，
+ * 之后不会再读。端口一变（dsh 重启 / 换实例），它们会继续指着旧端口重试，而界面**不会报错**、只是不再更新。
+ * 所以由这里广播一次，让各持有者把在途连接重新指向。
+ * 只比 `port`：`authUrl` 变了不影响已建立的流（cookie 是按端口缓存的）。
+ */
+const endpointListeners = new Set<(ep: DshEndpoint) => void>();
+
 export function setEndpoint(ep: DshEndpoint): void {
+    const changed = currentEndpoint.port !== ep.port;
     currentEndpoint = { port: ep.port, authUrl: ep.authUrl };
+    if (changed) {
+        for (const listener of [...endpointListeners]) {
+            listener(getEndpoint());
+        }
+    }
+}
+/** 订阅端点变化；返回取消订阅。 */
+export function onEndpointChange(listener: (ep: DshEndpoint) => void): () => void {
+    endpointListeners.add(listener);
+    return () => {
+        endpointListeners.delete(listener);
+    };
 }
 export function getEndpoint(): DshEndpoint {
     return { ...currentEndpoint };

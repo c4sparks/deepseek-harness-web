@@ -1,5 +1,5 @@
 // dsh 会话日志导出（ZIP）传输。适配 dsh v0.1.2-alpha（web 端 `/export` 的下载路由）：
-// 官方浏览器插件在 `/export` 命令成功后去拉 GET `/api/session.export?sessionId=…&includeDescendants=true`，
+// 上游浏览器插件在 `/export` 命令成功后去拉 GET `/api/session.export?sessionId=…&includeDescendants=true`，
 // host 以流式 ZIP 返回（fflate，application/zip + content-disposition）。命令本体只返回
 // `Session log download requested.`，真正的导出内容只能经该 GET 路由拿 —— 本函数即该路由的宿主侧取回。
 // 运行中的 dsh 若不支持该路由（HTTP 404/405）→ 抛 ExportUnsupportedError，由上层回退为仅回显命令文本。

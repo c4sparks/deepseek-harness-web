@@ -1,6 +1,6 @@
-// 插件 UI 层：DSH 官方网页面板的 Webview 宿主。
+// 插件 UI 层：DSH 网页面板的 Webview 宿主。
 // dsh 协议/进程编排在 DshService（src/api/dshService.ts），本文件只负责“在编辑器里
-// 打开官方网页”的 UI 生命周期与查看模式，避免 DshService 混入面板逻辑。
+// 打开网页”的 UI 生命周期与查看模式，避免 DshService 混入面板逻辑。
 import * as vscode from 'vscode';
 import {
     getEndpoint,
@@ -42,6 +42,22 @@ export class DshPanel {
             panelOpen: this.hasPanel(),
             viewMode: this._viewMode,
         });
+    }
+
+    /**
+     * 面板集合一变就把「开着没有」同步出去 —— **唯一的出口**，两处状态（原生 `view/title` 的
+     * `setContext` 与自绘标题栏的 `panelState`）都在这里写，避免只更新一半。
+     *
+     * 每次变化都重算，而不是只在「变成空」时更新：只在空转换点更新的话，
+     * 任何一次漏掉的事件（面板在别的分组/后台标签里被关、宿主重载）都会让图标状态卡住不回来。
+     * 日志把真实计数打出来：标题栏图标与直觉不符时，先看它到底认为开了几个。
+     */
+    private syncPanelState(): void {
+        const open = this.hasPanel();
+        vscode.commands.executeCommand('setContext', 'dshPanelOpen', open);
+        vscode.commands.executeCommand('setContext', 'dshViewMode', this._viewMode);
+        console.warn(`[dsh-panel] panelOpen=${String(open)} count=${String(this.openPanels.size)} viewMode=${this._viewMode}`);
+        this.notifyState();
     }
 
     /** 停用插件时关闭全部面板并回收本地代理端口。 */
@@ -106,6 +122,32 @@ export class DshPanel {
         return proxy;
     }
 
+    /**
+     * 端点变化后重新指向：把本地代理换成对新端口的那条，并刷新已打开的内嵌面板。
+     *
+     * 不这么做的话，**已经打开**的内嵌页会一直走指向旧端口的代理 —— 表现为页面还在、但不再有数据。
+     * 只重建代理与 iframe，**不动服务端**：外部浏览器那个视图连的是同一个实例，杀/重启会把它一起打断。
+     */
+    async rebindEndpoint(): Promise<void> {
+        if (this.openPanels.size === 0) {
+            // 没有打开的内嵌面板：代理留着也没用，直接回收；下次开面板会按新端点重建
+            await this.closeWebProxy();
+            return;
+        }
+        let proxy: DshWebProxy;
+        try {
+            proxy = await this.ensureWebProxy(getEndpoint());
+        } catch (e) {
+            console.warn(`[dsh-panel] 端点变化后重建本地代理失败：${e instanceof Error ? e.message : String(e)}`);
+            return;
+        }
+        // **必须重设 HTML**：代理重建后监听端口是新的，而 iframe 的地址是在建面板时写进 HTML 的，
+        // 光发一条 reload 只会把 iframe 刷回**旧代理**（那条已经关了）。重设 HTML 才是整页按新地址重载。
+        for (const p of this.openPanels) {
+            p.webview.html = this.getWebviewContent(proxy.url);
+        }
+    }
+
     /** 停用面板后回收本地代理端口。 */
     private async closeWebProxy(): Promise<void> {
         const current = this.webProxy;
@@ -165,16 +207,15 @@ export class DshPanel {
         );
         panel.webview.html = this.getWebviewContent(frameUrl);
         this.openPanels.add(panel);
-        vscode.commands.executeCommand('setContext', 'dshPanelOpen', true);
         panel.onDidDispose(() => {
             this.openPanels.delete(panel);
             if (this.openPanels.size === 0) {
                 void this.closeWebProxy();
-                vscode.commands.executeCommand('setContext', 'dshPanelOpen', false);
-                this.notifyState();
             }
+            // **每次关闭都重算**（不只在"变成空"那一次）：漏一次事件就会让标题栏图标卡住不回来
+            this.syncPanelState();
         });
-        this.notifyState();
+        this.syncPanelState();
         return panel;
     }
 
@@ -197,8 +238,7 @@ export class DshPanel {
             return;
         }
         this._viewMode = 'browser';
-        await vscode.commands.executeCommand('setContext', 'dshViewMode', 'browser');
-        this.notifyState();
+        this.syncPanelState();
         vscode.env.openExternal(vscode.Uri.parse(endpointAuthUrl()));
     }
 
@@ -207,8 +247,7 @@ export class DshPanel {
             return;
         }
         this._viewMode = 'internal';
-        await vscode.commands.executeCommand('setContext', 'dshViewMode', 'internal');
-        this.notifyState();
         await this.openPanel();
+        this.syncPanelState();
     }
 }

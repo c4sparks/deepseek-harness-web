@@ -73,6 +73,55 @@ interface FollowSnapshot {
     hasMore: boolean;
 }
 /**
+ * 快照记录 → 事件（按 `seq` 排序）。
+ *
+ * 跟随流的**首帧快照**与单独读快照共用这一份规整：两个入口各写一遍的话，
+ * 「内嵌增量要不要展开」这类规则迟早只落在一半路径上（后果是那条路上的会话永远没有 TTFT/TPS）。
+ */
+export function snapshotRecordsToEvents(records: readonly unknown[]): RawEvent[] {
+    const events: RawEvent[] = [];
+    for (const r of records) {
+        const rr = r as { type?: unknown } | undefined;
+        if (rr && rr.type === 'chunks') {
+            for (const e of expandChunkRows(r)) {
+                events.push(e as RawEvent);
+            }
+            continue;
+        }
+        const e = toRawEvent(r);
+        if (!e) {continue;}
+        // 上游 0.1.5 起，增量内嵌在结算事件的 data.stream（0.1.5-rc.2 的独立 assistant/chunk
+        // 与 chunkrow packing 均已消失）。这里还原成内部标签 assistant/chunk，下游的文本累加
+        // 与计时统计便无需区分两种编码。seq 借用结算事件的、并把合成事件排在它之前：
+        // 增量本无持久 seq，而 Array.sort 自 ES2019 起保证稳定，借此保住既有次序
+        // （先逐块累加，再由 assistant/message 分支用整条文本覆盖）。
+        // assistant/attempt 是未提交可见消息的失败/取消尝试，其 stream 正是半截回答的来源。
+        if (e.type === 'assistant/message' || e.type === 'assistant/attempt') {
+            const turn = e.data?.['turn'];
+            const step = e.data?.['step'];
+            // 每个增量块必须有**自己的**序号：与父消息共用 `e.seq` 的话，入列那道「按 seq 去重」
+            // 会把同一个 seq 的第 2 条起全部丢掉 —— 包括**父消息自己**（真机数据：288 条结算消息
+            // 全被丢，于是正文为空、没有回答锚点与用量，链上的过程文本也一起消失）。
+            // 序号取 `seq - 1/(k+1)`：落在 (seq-1, seq) 区间、随块序递增、永不等于任何整数 seq，
+            // 与实时帧的合成序号同一手法（见 official/live-chunk-seq），排序后仍排在父消息之前。
+            let k = 0;
+            for (const tsc of expandAssistantStream(e.data?.['stream'])) {
+                k += 1;
+                events.push({
+                    type: 'assistant/chunk',
+                    seq: e.seq - 1 / (k + 1),
+                    time: tsc.time,
+                    data: { turn, step, chunk: tsc.chunk },
+                });
+            }
+        }
+        events.push(e);
+    }
+    events.sort((a, b) => a.seq - b.seq);
+    return events;
+}
+
+/**
  * 打开一次 session/follow 并读到 snapshot 后即取消（适配上游 0.1.5-rc.2）。
  * 上游：session-controller 的流式远程 `session/follow`，首帧 snapshot 形如
  *   { header, cursor, records: SessionHistoryRecord[], hasMore, projections:{ asOfSeq, values } }，
@@ -113,39 +162,7 @@ export async function readFollowSnapshot(sessionId: string, maxMessages = 5000, 
                     if (!v || v['type'] !== 'snapshot') {
                         return;
                     }
-                    const records = Array.isArray(v['records']) ? v['records'] : [];
-                    const events: RawEvent[] = [];
-                    for (const r of records) {
-                        const rr = r as { type?: unknown } | undefined;
-                        if (rr && rr.type === 'chunks') {
-                            for (const e of expandChunkRows(r)) {
-                                events.push(e as RawEvent);
-                            }
-                            continue;
-                        }
-                        const e = toRawEvent(r);
-                        if (!e) {continue;}
-                        // 上游 0.1.5 起，增量内嵌在结算事件的 data.stream（0.1.5-rc.2 的独立 assistant/chunk
-                        // 与 chunkrow packing 均已消失）。这里还原成内部标签 assistant/chunk，下游的文本累加
-                        // 与计时统计便无需区分两种编码。seq 借用结算事件的、并把合成事件排在它之前：
-                        // 增量本无持久 seq，而 Array.sort 自 ES2019 起保证稳定，借此保住既有次序
-                        // （先逐块累加，再由 assistant/message 分支用整条文本覆盖）。
-                        // assistant/attempt 是未提交可见消息的失败/取消尝试，其 stream 正是半截回答的来源。
-                        if (e.type === 'assistant/message' || e.type === 'assistant/attempt') {
-                            const turn = e.data?.['turn'];
-                            const step = e.data?.['step'];
-                            for (const tsc of expandAssistantStream(e.data?.['stream'])) {
-                                events.push({
-                                    type: 'assistant/chunk',
-                                    seq: e.seq,
-                                    time: tsc.time,
-                                    data: { turn, step, chunk: tsc.chunk },
-                                });
-                            }
-                        }
-                        events.push(e);
-                    }
-                    events.sort((a, b) => a.seq - b.seq);
+                    const events = snapshotRecordsToEvents(Array.isArray(v['records']) ? v['records'] : []);
                     const proj = (v['projections'] as { values?: Record<string, unknown> } | undefined)?.values ?? {};
                     const cursor = typeof v['cursor'] === 'number' ? v['cursor'] : -1;
                     // 快照日志（回合前后差分实证用）：env DSH_RAWLOG=1/full，含累计投影数值
@@ -205,7 +222,7 @@ export type DshHistoryTurnProcessItem =
     | { kind: 'tool'; name: string; callId?: string; argsRaw?: string; status: 'running' | 'ok' | 'error' | 'stopped'; error?: string; output?: string; exitCode?: number; signal?: string; meta?: unknown;
         /** 结果原始内容块（**仅当结果含图片块时**带） */
         blocks?: unknown };
-/** 过程折叠计数（官方口径，见 stream.ts DshTurnCounts 注释） */
+/** 过程折叠计数（上游口径，见 stream.ts DshTurnCounts 注释） */
 export type HistoryCounts = { toolCallCount: number; messageCount: number; subagentCount: number };
 export type SessionMessageItem =
     | {
@@ -234,9 +251,9 @@ export type SessionMessageItem =
         wallSec?: number;
         ttftSec?: number;
         tps?: number;
-        /** 停止状态展示文案（已停止 · Stopped），仅该回合被停止/中断/取消时给最后一条 assistant */
+        /** 该回合的终止原因（上游 reason.kind 原值，如 aborted/interrupted），仅非正常终止的最后一条 assistant 有 */
         status?: string;
-        /** 过程链：思考/工具（官方 content blocks 重建）；仅供 assistant 消息 */
+        /** 过程链：思考/工具（上游 content blocks 重建）；仅供 assistant 消息 */
         chain?: DshHistoryTurnProcessItem[];
         counts?: HistoryCounts;
     };
@@ -281,6 +298,8 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
     }
     const partialText = new Map<number, string>();
     const finalTextTurns = new Set<number>();
+    /** 出现过工具结果的回合：判断「没有结算消息的回合要不要合成回答行」用（纯过程回合）。 */
+    const turnsWithToolResult = new Set<number>();
     const chunkPiece = (e: RawEvent): string => {
         const ch = e.data?.['chunk'] as { type?: string; text?: string; block?: { type?: string; text?: string } } | undefined;
         if (!ch) {return '';}
@@ -294,6 +313,9 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
         // seq 游标：上下文注入事件无 turn，落进当前打开的 turn(区间 [turn/start, turn/end])
         if (e.type === 'turn/start' && turn !== undefined) { openTurn = turn; }
         if (e.type === 'turn/end' && turn !== undefined) { openTurn = undefined; }
+        if (turn !== undefined && e.type === 'tool/result') {
+            turnsWithToolResult.add(turn);
+        }
         // 累计该回合流式文本(半截终止但无最终 message 时用来合成回答行)
         if (turn !== undefined && e.type === 'assistant/chunk') {
             const piece = chunkPiece(e);
@@ -352,10 +374,12 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
             if (kind && kind !== 'completed' && turn !== undefined) {
                 endStatus.set(turn, kind); // 先回显核心 kind，不翻译
             }
-            // 有流式文本、被打断/中止且无最终 assistant/message → 合成半截回答行(官方会显示并给用时)
+            // 被打断/中止且无最终 assistant/message → 合成回答行，承担该回合的半截文本与过程链。
+            // 条件必须放宽到「有半截文本 **或** 该回合出现过工具结果」：只认文本时，**纯过程回合**
+            // （还没出正文就被停）会连 assistant 消息都不产出，而工具/思考行是挂在它上面的 → 整块一起丢。
             if (turn !== undefined && !finalTextTurns.has(turn)) {
                 const partial = (partialText.get(turn) ?? '').trim();
-                if (partial) {
+                if (partial || turnsWithToolResult.has(turn)) {
                     out.push({ role: 'assistant', text: partial, time: e.time });
                     lastAsst.set(turn, out.length - 1);
                     partialText.delete(turn);
@@ -396,7 +420,7 @@ export async function getSessionMessages(sessionId: string): Promise<SessionMess
             if (m.tokensPerSecond !== undefined) {item.tps = Math.round(m.tokensPerSecond);}
         }
         const rm = facts.runMs.get(turn);
-        // 不预舍入：保留精确 ms→s，展示端按官方整秒向下取整
+        // 不预舍入：保留精确 ms→s，展示端按上游整秒向下取整
         if (rm !== undefined) {item.wallSec = rm / 1000;}
     }
     // 调试：每回合计时诊断（env DSH_RAWLOG=full 才打）
@@ -609,9 +633,10 @@ export async function readSessionAttachment(sessionId: string, attachmentId: str
  * v0.1.5-rc.2 起 request 必须带客户端 mint 的 requestId（uuid，user/message 事件会回显）；
  * mode='queue' 表示进 agent 队列。content 支持文本 + 图片（data URL base64）块。
  */
-export async function sendPrompt(sessionId: string, content: DshContentPart[]): Promise<void> {
+export async function sendPrompt(sessionId: string, content: DshContentPart[], requestId?: string): Promise<void> {
     await rpcCall<{ accepted: boolean }>('session.prompt', {
-        requestId: crypto.randomUUID(),
+        // 调用方给了标识就用它（页面 mint → 回显按同一标识认领）；没给则本地生成
+        requestId: requestId ?? crypto.randomUUID(),
         sessionId,
         mode: 'queue',
         content,
@@ -620,6 +645,22 @@ export async function sendPrompt(sessionId: string, content: DshContentPart[]): 
 /** 会话改名（上游 `session/rename`，SessionRenameRequest { sessionId, title }）。 */
 export async function renameSession(sessionId: string, title: string): Promise<void> {
     await rpcCall<{ title: string; seq: number }>('session.rename', { sessionId, title });
+}
+/**
+ * 从一段**已完成回合**分叉出新会话（上游 `session/fork`，SessionForkRequest { sessionId, atSeq? }）。
+ *
+ * `atSeq` 是事件序号，服务端取**第一条 `seq >= atSeq` 的 `turn/end`** 作为切点（含该回合），
+ * 再把切点推到下一个 `turn/start` 之前；**省略或不传** = 从最后一条已完成的回合分叉。
+ * 因此锚点落在「正在跑、还没 turn/end」的回合里会被服务端拒（`session/fork-unavailable`）。
+ * 序号可能带小数（中断回合的冻结节点），服务端只接受非负整数，故这里先取整。
+ * @returns 子会话标识。
+ */
+export async function forkSession(sessionId: string, atSeq?: number): Promise<string> {
+    const result = await rpcCall<{ sessionId: string }>('session.fork', {
+        sessionId,
+        ...(atSeq === undefined ? {} : { atSeq: Math.floor(atSeq) }),
+    });
+    return result.sessionId;
 }
 /** 取消当前回合（上游 `session/cancel`，SessionCancelRequest { sessionId }）→ { accepted }。 */
 export async function cancelSession(sessionId: string): Promise<void> {
